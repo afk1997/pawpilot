@@ -1,24 +1,13 @@
-import OpenAI from "openai";
-import { DENTIST_SYSTEM_PROMPT } from "@/lib/system-prompt";
-
-const openai = new OpenAI({
-  baseURL: "https://openrouter.ai/api/v1",
-  apiKey: process.env.OPENROUTER_API_KEY,
-});
-
+/**
+ * AI tool-using agent — Phase 2 will replace this stub with a Vercel AI SDK
+ * tool loop (find_ambulance_by_area, get_nearest_ambulance, etc.).
+ *
+ * For Phase 1 the webhook route only sends an instant acknowledgment, so
+ * nothing imports this yet. The stub exists to keep the file present and
+ * type-checkable as we build out the agent.
+ */
 export async function getAIResponse(
-  messages: { role: "user" | "assistant"; content: string }[]
-) {
-  const completion = await openai.chat.completions.create({
-    model: process.env.AI_MODEL || "anthropic/claude-sonnet-4-20250514",
-    messages: [
-      {
-        role: "system",
-        content: DENTIST_SYSTEM_PROMPT,
-      },
-      ...messages,
-    ],
-  });
-
-  return completion.choices[0]?.message?.content || "Sorry, I couldn't generate a response.";
+  _messages: { role: "user" | "assistant"; content: string }[]
+): Promise<string> {
+  return "[Phase 1 stub] LLM not yet wired — instant ack already sent by the webhook.";
 }

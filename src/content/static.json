@@ -1,0 +1,93 @@
+{
+  "_README": [
+    "Static content the agent uses for non-emergency intents.",
+    "Fill in the TODO fields before pilot launch. Edit via PR.",
+    "Languages: en (English), hi (Hindi), mr (Marathi), gu (Gujarati).",
+    "Clinic info is NOT here — it comes from the `clinics` DB table at runtime."
+  ],
+  "donate": {
+    "en": {
+      "summary": "Arham Always Care relies on donations to keep our 45+ ambulances on the road and our clinics open. Every rupee saves an animal in pain.",
+      "url": "TODO: https://arhamalwayscare.org/donate",
+      "upi": "TODO: arham@upi",
+      "bank": "TODO: account name / number / IFSC",
+      "tax_note": "Donations are eligible for 80G tax exemption."
+    },
+    "hi": {
+      "summary": "TODO: Hindi summary about donations.",
+      "url": "TODO",
+      "upi": "TODO",
+      "bank": "TODO",
+      "tax_note": "TODO"
+    },
+    "mr": {
+      "summary": "TODO: Marathi summary about donations.",
+      "url": "TODO",
+      "upi": "TODO",
+      "bank": "TODO",
+      "tax_note": "TODO"
+    },
+    "gu": {
+      "summary": "TODO: Gujarati summary about donations.",
+      "url": "TODO",
+      "upi": "TODO",
+      "bank": "TODO",
+      "tax_note": "TODO"
+    }
+  },
+  "volunteer": {
+    "en": {
+      "summary": "We welcome volunteers — for ambulance ride-alongs, clinic shifts, fund-raising, and online awareness work.",
+      "url": "TODO: https://arhamalwayscare.org/volunteer",
+      "contact_phone": "TODO: +91XXXXXXXXXX",
+      "contact_email": "TODO: volunteer@arhamalwayscare.org"
+    },
+    "hi": { "summary": "TODO", "url": "TODO", "contact_phone": "TODO", "contact_email": "TODO" },
+    "mr": { "summary": "TODO", "url": "TODO", "contact_phone": "TODO", "contact_email": "TODO" },
+    "gu": { "summary": "TODO", "url": "TODO", "contact_phone": "TODO", "contact_email": "TODO" }
+  },
+  "about": {
+    "en": "Arham Always Care is the animal-rescue project of Arham Yuva Seva Group, a registered Indian non-profit. We have donated 45+ ambulances and run 5 clinics across India. We treat injured stray animals free of cost.",
+    "hi": "TODO",
+    "mr": "TODO",
+    "gu": "TODO"
+  },
+  "faq": [
+    {
+      "q_en": "Is your service free?",
+      "a_en": "Yes. All our ambulance rescue and clinic treatment is completely free for stray animals.",
+      "q_hi": "TODO",
+      "a_hi": "TODO",
+      "q_mr": "TODO",
+      "a_mr": "TODO",
+      "q_gu": "TODO",
+      "a_gu": "TODO"
+    },
+    {
+      "q_en": "Do you treat pets too?",
+      "a_en": "Our priority is injured stray and street animals. For pets, we'd recommend visiting a local veterinary clinic. We can share contacts on request.",
+      "q_hi": "TODO",
+      "a_hi": "TODO",
+      "q_mr": "TODO",
+      "a_mr": "TODO",
+      "q_gu": "TODO",
+      "a_gu": "TODO"
+    },
+    {
+      "q_en": "What if I see an injured animal but I'm not in a city you cover?",
+      "a_en": "We're expanding all the time, but for now we'd recommend contacting a local rescue group. You can also try Animal Helpline India at 1800-419-5860.",
+      "q_hi": "TODO",
+      "a_hi": "TODO",
+      "q_mr": "TODO",
+      "a_mr": "TODO",
+      "q_gu": "TODO",
+      "a_gu": "TODO"
+    }
+  ],
+  "human_emergency_referral": {
+    "en": "Our service is for animal emergencies only. For a human medical emergency, please call 102 or 108 immediately. For police, call 112.",
+    "hi": "हमारी सेवा केवल जानवरों के लिए है। मानव चिकित्सा आपात स्थिति के लिए कृपया तुरंत 102 या 108 पर कॉल करें। पुलिस के लिए 112।",
+    "mr": "TODO",
+    "gu": "TODO"
+  }
+}

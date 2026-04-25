@@ -1,256 +1,143 @@
-# WhatsApp AI Agent
+# Arham Always Care — WhatsApp Dispatch Agent
 
-A full-stack WhatsApp AI agent built with Next.js. It receives messages via the Meta WhatsApp Business API, generates AI replies using OpenRouter, and provides a real-time dashboard to view and manage all conversations. It also has `Human` & `AI` reply mode
+WhatsApp dispatcher copilot for **Arham Always Care**, the animal-rescue project of Arham Yuva Seva Group. It augments the central 24/7 ops dispatcher who connects reporters of injured stray animals to the right ambulance team.
+
+> **Life-and-death software.** Designed conservatively: the LLM never types phone numbers; phone numbers come from real DB rows. Every action is audited.
+
+## What it does
+
+A reporter messages the Arham Always Care WhatsApp number to report an injured stray animal. Within seconds the agent acks. It then:
+
+1. Asks for the location (city + area, or a WhatsApp location pin).
+2. Calls a structured tool to look up the right ambulance from the directory of 45+ ambulances (most operated by Arham, ~11 by partner NGOs).
+3. Sends the reporter the driver's phone number, plus a clear note of who operates the ambulance. The reporter calls the driver directly. **The agent does not dispatch.**
+4. Gathers context (photo/video/situation) for the case record.
+5. 5 minutes later, follows up: "Did you reach the driver?". If "no", it acknowledges, registers the feedback, and escalates to the human dispatcher.
+6. When Arham logs a case for the reporter into the Cases API, an opportunistic closure summary is sent.
+
+Languages: English, Hindi (Devanagari + Hinglish), Marathi, Gujarati.
 
 ## Architecture
 
 ```
-User sends WhatsApp message
-  -> Meta forwards to POST /api/webhook
-  -> Message stored in Supabase
-  -> Sent to AI model (OpenRouter)
-  -> AI reply sent back via Meta Graph API
-  -> Reply stored in Supabase
-  -> Dashboard updates in real-time
+Reporter on WhatsApp
+  → POST /api/webhook (Interakt)               ← signature verified, deduped
+  → instant ack within ~1 second               ← Phase 1 (live)
+  → background LLM tool loop                   ← Phase 2 (planned)
+       • find_ambulance_by_area
+       • get_nearest_ambulance (GPS API)
+       • get_case_by_reporter (Cases API)
+       • escalate_to_dispatcher
+       • get_static_content (donate/volunteer/faq)
+  → Interakt API → reporter
+  → Supabase + Realtime → dispatcher dashboard
 ```
 
-## Tech Stack
+Data layer:
+- `ngo_operators` — Arham + partner NGOs.
+- `ambulances` — directory (45+ rows, ingested from `ambulances-clinics.csv`).
+- `clinics` — Arham clinics.
+- `conversations` — extends prototype with status, intent, language, dispatch claim.
+- `messages` — adds multimedia + delivery status.
+- `agent_actions` — full audit log.
 
-- **Framework:** Next.js 16 (App Router, TypeScript)
-- **Database:** Supabase (PostgreSQL + Realtime)
-- **AI:** OpenRouter API (OpenAI-compatible)
-- **Styling:** Tailwind CSS
+Scheduled jobs (Phase 4):
+- Vercel Cron every 1 min → 5-minute follow-up.
+- Vercel Cron every 5 min → opportunistic closure summary.
 
-## Getting Started
+## Stack
 
-### 1. Install dependencies
+- Next.js 16 App Router (TypeScript)
+- Supabase (Postgres + Realtime)
+- Interakt (WhatsApp Business)
+- Vercel AI SDK + OpenRouter (default `anthropic/claude-sonnet-4-6`)
+- Tailwind CSS
+- Vercel (Functions, Cron, Queues)
+
+## Getting started
+
+### 1. Install
 
 ```bash
 npm install
 ```
 
-### 2. Set up environment variables
-
-Copy the example and fill in your credentials:
+### 2. Configure environment
 
 ```bash
 cp .env.example .env.local
 ```
 
-| Variable | Description |
-|---|---|
-| `WHATSAPP_ACCESS_TOKEN` | Permanent token from Meta Business > System Users |
-| `WHATSAPP_PHONE_NUMBER_ID` | From Meta App > WhatsApp > API Setup |
-| `WHATSAPP_VERIFY_TOKEN` | Any string you choose for webhook verification |
-| `OPENROUTER_API_KEY` | API key from openrouter.ai |
-| `AI_MODEL` | Model ID (e.g. `anthropic/claude-sonnet-4-20250514`) |
-| `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase anon/public key |
-| `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role key |
+Fill in: Interakt API key + webhook secret, OpenRouter key, Supabase keys, Cases API + GPS API credentials. The `.env.example` file documents each variable.
 
-### 3. Set up the database
+### 3. Provision the database
 
-Create these tables in your Supabase project (via SQL Editor or MCP):
+Either run the full schema from a fresh Supabase project:
 
-```sql
-create table conversations (
-  id uuid default gen_random_uuid() primary key,
-  phone text unique not null,
-  name text,
-  mode text not null default 'agent' check (mode in ('agent', 'human')),
-  updated_at timestamp with time zone default now(),
-  created_at timestamp with time zone default now()
-);
-
-create table messages (
-  id uuid default gen_random_uuid() primary key,
-  conversation_id uuid references conversations(id) on delete cascade not null,
-  role text not null check (role in ('user', 'assistant')),
-  content text not null,
-  whatsapp_msg_id text unique,
-  created_at timestamp with time zone default now()
-);
-
-create index idx_messages_conversation on messages(conversation_id);
-create index idx_conversations_updated on conversations(updated_at desc);
-
--- Enable real-time
-alter publication supabase_realtime add table messages;
-alter publication supabase_realtime add table conversations;
+```bash
+psql "$SUPABASE_DB_URL" -f supabase-schema.sql
 ```
 
-### 4. Run the dev server
+Or apply the incremental migration on top of the prototype:
+
+```bash
+psql "$SUPABASE_DB_URL" -f supabase-migration.sql
+```
+
+### 4. Ingest the directory
+
+Place the partner / ambulance / clinic spreadsheet at the project root as `ambulances-clinics.csv` (gitignored — contains driver personal numbers), then:
+
+```bash
+npm run ingest:ambulances
+```
+
+The script is idempotent: re-run any time the spreadsheet changes.
+
+### 5. Configure Interakt webhook
+
+In the Interakt dashboard:
+
+1. Set webhook URL to `https://<your-domain>/api/webhook`.
+2. Set the verification token; copy it into `INTERAKT_WEBHOOK_SECRET`.
+3. Subscribe to inbound message events.
+
+For local dev, expose `localhost:3000` via ngrok and use the ngrok URL.
+
+### 6. Run
 
 ```bash
 npm run dev
 ```
 
-### 5. Expose your local server
+Dashboard at `http://localhost:3000`.
 
-Use ngrok (or deploy to Vercel) to get a public URL:
-
-```bash
-ngrok http 3000
-```
-
-### 6. Configure the Meta webhook
-
-1. Go to [Meta App Dashboard](https://developers.facebook.com) > your app > WhatsApp > Configuration
-2. Set webhook URL to `https://your-url.com/api/webhook`
-3. Set verify token to match your `WHATSAPP_VERIFY_TOKEN`
-4. Subscribe to the **messages** field
-
-## API Routes
+## API routes
 
 | Method | Route | Description |
 |---|---|---|
-| GET | `/api/webhook` | Meta webhook verification |
-| POST | `/api/webhook` | Receive incoming WhatsApp messages |
-| GET | `/api/conversations` | List all conversations |
-| PATCH | `/api/conversations/[id]` | Update conversation mode (agent/human) |
-| GET | `/api/conversations/[id]/messages` | Get messages for a conversation |
-| POST | `/api/conversations/[id]/send` | Send a manual message from the dashboard |
+| GET  | `/api/webhook` | Health probe (returns "ok") |
+| POST | `/api/webhook` | Inbound from Interakt — verifies, dedups, instant-acks, audits, optionally escalates |
+| GET  | `/api/conversations` | List all conversations (dashboard) |
+| GET  | `/api/conversations/:id/messages` | Conversation messages |
+| PATCH| `/api/conversations/:id` | Update mode/status/claim (dispatcher take-over) |
+| POST | `/api/conversations/:id/send` | Manual send from dispatcher dashboard |
 
-## Dashboard Features
+## Hard rules (carry into every change)
 
-- **Sidebar:** All conversations sorted by latest message, with mode badges (AI/Human)
-- **Chat panel:** WhatsApp-style message bubbles with timestamps
-- **Mode toggle:** Switch between Agent (AI auto-reply) and Human (manual reply) per conversation
-- **Manual send:** Type and send messages from the dashboard in either mode
-- **Real-time:** New messages appear instantly via Supabase Realtime
+1. **LLM never types phone digits.** Phone numbers come from DB / API responses.
+2. **No dispatching language.** "We're sending" / "they're on the way" — these phrases are forbidden. We hand over a phone number; the reporter calls.
+3. **Narrow auto-escalation only.** "Can't reach" + manual "human" + model failure. Severe wording does NOT auto-escalate.
+4. **Time-to-driver-number is the metric.** Photo/video/situation gathering happens after delivery, never blocking.
+5. **Audit everything.** Every inbound, every tool call (args + result), every outbound, every dispatcher action.
 
-## Deployment
+Full design plan: `/Users/kaivan108icloud.com/.claude/plans/now-we-need-to-sprightly-hedgehog.md`.
 
-Deploy to Vercel:
+## Implementation status
 
-```bash
-vercel
-```
-
-Then update your Meta webhook URL to point to your Vercel deployment.
-
----
-
-## Step-by-Step Setup Guide
-
-Follow these steps in order to go from zero to a working WhatsApp AI agent.
-
-### Step 1: Create a Meta Business App
-
-1. Go to https://developers.facebook.com and log in
-2. Click **My Apps** > **Create App**
-3. Select **Business** as the app type
-4. Give it a name (e.g. "WhatsApp AI Agent") and click **Create**
-5. On the app dashboard, find **WhatsApp** and click **Set Up**
-6. You'll be assigned a test phone number and a temporary access token
-
-### Step 2: Get a Permanent Access Token
-
-The temporary token expires in 24 hours. To get a permanent one:
-
-1. Go to https://business.facebook.com/settings/system-users
-2. Click **Add** to create a new System User (Admin role)
-3. Click **Add Assets** > select your app > toggle **Full Control**
-4. Click **Generate Token** > select your app > check `whatsapp_business_messaging` and `whatsapp_business_management`
-5. Copy the token — this is your `WHATSAPP_ACCESS_TOKEN`
-
-### Step 3: Get Your Phone Number ID
-
-1. Go to https://developers.facebook.com > your app > WhatsApp > **API Setup**
-2. Under "From", you'll see your test phone number and its **Phone Number ID**
-3. Copy it — this is your `WHATSAPP_PHONE_NUMBER_ID`
-
-### Step 4: Create a Supabase Project
-
-1. Go to https://supabase.com and create a new project
-2. Once created, go to **Project Settings** > **API**
-3. Copy these values:
-   - **Project URL** -> `NEXT_PUBLIC_SUPABASE_URL`
-   - **anon public key** -> `NEXT_PUBLIC_SUPABASE_ANON_KEY`
-   - **service_role secret key** -> `SUPABASE_SERVICE_ROLE_KEY`
-4. Go to **SQL Editor** and run the SQL from the "Set up the database" section above
-
-### Step 5: Get an OpenRouter API Key
-
-1. Go to https://openrouter.ai and create an account
-2. Go to https://openrouter.ai/keys and create a new API key
-3. Copy it — this is your `OPENROUTER_API_KEY`
-4. Choose a model ID for `AI_MODEL` (e.g. `anthropic/claude-sonnet-4-20250514`, `openai/gpt-4o`, `minimax/minimax-m2.5`)
-
-### Step 6: Configure the Project
-
-1. Clone this repo and install dependencies:
-   ```bash
-   git clone <repo-url>
-   cd whatsapp_claude_code
-   npm install
-   ```
-
-2. Create your `.env.local` file:
-   ```bash
-   cp .env.example .env.local
-   ```
-
-3. Fill in all the values you collected in Steps 2-5
-
-### Step 7: Start the App
-
-```bash
-npm run dev
-```
-
-The app will start on http://localhost:3000. Open it in your browser — you should see the dashboard with an empty conversation list.
-
-### Step 8: Expose Your Local Server
-
-Meta needs a public HTTPS URL to send webhooks to. Use ngrok:
-
-```bash
-# Install ngrok if you haven't: https://ngrok.com/download
-ngrok http 3000
-```
-
-Copy the `https://` forwarding URL (e.g. `https://abc123.ngrok-free.app`).
-
-### Step 9: Configure the Webhook in Meta
-
-1. Go to https://developers.facebook.com > your app > WhatsApp > **Configuration**
-2. Under "Webhook", click **Edit**
-3. Set the **Callback URL** to: `https://your-ngrok-url.ngrok-free.app/api/webhook`
-4. Set the **Verify Token** to the same value as your `WHATSAPP_VERIFY_TOKEN` in `.env.local`
-5. Click **Verify and Save**
-6. Under "Webhook Fields", click **Manage** and subscribe to **messages**
-
-### Step 10: Add Your Phone Number to Recipients
-
-If using the Meta test phone number:
-
-1. Go to WhatsApp > API Setup
-2. Under "To", add your personal WhatsApp phone number
-3. You'll receive a verification code on WhatsApp — enter it to confirm
-
-### Step 11: Send a Test Message
-
-1. Open WhatsApp on your phone
-2. Send a message to the Meta test phone number (shown in API Setup)
-3. You should receive an AI-generated reply within a few seconds
-4. Open the dashboard at http://localhost:3000 — the conversation should appear in the sidebar
-
-### Step 12: Deploy to Production (Optional)
-
-1. Push your code to GitHub
-2. Import the project on https://vercel.com
-3. Add all your environment variables in Vercel's project settings
-4. Deploy — Vercel will give you a production URL
-5. Go back to Meta > WhatsApp > Configuration and update the webhook URL to your Vercel URL
-6. Remove the ngrok dependency — you're live!
-
-### Troubleshooting
-
-| Problem | Solution |
-|---|---|
-| Webhook verification fails | Double-check `WHATSAPP_VERIFY_TOKEN` matches in both `.env.local` and Meta dashboard |
-| Messages received but no AI reply | Check your `OPENROUTER_API_KEY` and `AI_MODEL` are valid |
-| Dashboard shows no conversations | Make sure you're opening the correct port (check terminal output) |
-| Duplicate replies | Meta retries if your webhook doesn't respond within 5 seconds — check server logs for slow AI responses |
-| "Message failed to send" | Verify your `WHATSAPP_ACCESS_TOKEN` hasn't expired and `WHATSAPP_PHONE_NUMBER_ID` is correct |
+- [x] Phase 1 — Foundation (provider swap, DB, ingest, env, audit, instant-ack)
+- [ ] Phase 2 — Tool-using agent (Vercel AI SDK, 5 tools, multilingual prompt, queue)
+- [ ] Phase 3 — Dashboard (status badges, take-over, audit log panel)
+- [ ] Phase 4 — Followup + closure (Vercel Cron)
+- [ ] Phase 5 — Multilingual polish + load test
+- [ ] Phase 6 — Pilot
