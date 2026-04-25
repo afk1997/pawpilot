@@ -11,13 +11,14 @@
  * NOTE: Phase 1 sends a static instant ack only. Phase 2 plugs in the
  * tool-using LLM in a background processor.
  */
-import { NextRequest } from "next/server";
+import { NextRequest, after } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { sendWhatsAppMessage } from "@/lib/whatsapp";
 import { parseInteraktPayload, verifyInteraktSignature } from "@/lib/interakt-webhook";
 import { audit } from "@/lib/audit";
 import { detectLanguage, isCannotReachMessage, isHumanHandoffRequest } from "@/lib/lang";
 import { instantAck } from "@/lib/instant-ack";
+import { processIncoming } from "@/lib/processor/process-incoming";
 import type { Language } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -186,19 +187,39 @@ export async function POST(request: NextRequest) {
   });
 
   // Hardcoded rails — narrow auto-escalation paths.
+  let escalatedThisTurn = false;
   if (
     conversation.status === "number_delivered" ||
     conversation.status === "awaiting_followup"
   ) {
     if (isCannotReachMessage(incoming.text)) {
       await escalate(conversation.id, "cannot_reach_driver", incoming.text, language);
+      escalatedThisTurn = true;
     }
   }
-  if (isHumanHandoffRequest(incoming.text)) {
+  if (!escalatedThisTurn && isHumanHandoffRequest(incoming.text)) {
     await escalate(conversation.id, "manual_human_request", incoming.text, language);
+    escalatedThisTurn = true;
   }
 
-  // TODO Phase 2: enqueue background LLM tool loop here.
+  // Kick off the LLM tool loop in the background. `after()` schedules work
+  // to run after this response has been sent to Interakt — keeps us inside
+  // the 5-second contract regardless of LLM latency.
+  if (!escalatedThisTurn) {
+    after(async () => {
+      try {
+        await processIncoming({
+          conversationId: conversation.id,
+          inboundMessageId,
+          reporterPhone: incoming.fromPhone,
+          reporterName: incoming.fromName,
+          language,
+        });
+      } catch (e) {
+        console.error("background processIncoming failed:", e);
+      }
+    });
+  }
 
   return Response.json({ status: "ack_sent" });
 }
