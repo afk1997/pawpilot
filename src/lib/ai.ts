@@ -1,8 +1,9 @@
 /**
  * Tool-using LLM agent for the Arham Always Care WhatsApp dispatcher.
  *
- * Wires Vercel AI SDK v6 against OpenRouter (default `anthropic/claude-sonnet-4-6`)
- * with the 5 tools defined in src/lib/tools.
+ * Wires Vercel AI SDK v6 against the provider chosen by `AI_MODEL` (the
+ * `provider/model` string is the routing key — see src/lib/ai-provider.ts).
+ * Default `anthropic/claude-sonnet-4-6`.
  *
  * Hard properties:
  *  - LLM never types phone digits — phone numbers come from tool results,
@@ -12,31 +13,14 @@
  *  - Audit every tool call — args + result captured to agent_actions.
  */
 import { generateText, stepCountIs } from "ai";
-import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { ARHAM_SYSTEM_PROMPT } from "./system-prompt";
 import { buildAgentTools } from "./tools";
 import { audit } from "./audit";
+import { resolveModel } from "./ai-provider";
 import type { Language } from "./types";
 
 const MAX_STEPS = Number(process.env.AI_MAX_STEPS ?? 5);
 const MODEL_ID = process.env.AI_MODEL ?? "anthropic/claude-sonnet-4-6";
-
-let _openrouter: ReturnType<typeof createOpenAICompatible> | null = null;
-function getProvider() {
-  if (_openrouter) return _openrouter;
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) throw new Error("OPENROUTER_API_KEY not set");
-  _openrouter = createOpenAICompatible({
-    name: "openrouter",
-    baseURL: "https://openrouter.ai/api/v1",
-    apiKey,
-    headers: {
-      "HTTP-Referer": "https://arhamalwayscare.org",
-      "X-Title": "Arham Always Care WhatsApp Agent",
-    },
-  });
-  return _openrouter;
-}
 
 export interface AgentTurnInput {
   conversationId: string;
@@ -67,7 +51,6 @@ const FALLBACK_BY_LANG: Record<Language, string> = {
 };
 
 export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResult> {
-  const provider = getProvider();
   const tools = buildAgentTools(input.conversationId);
 
   // Frame the conversation context so the LLM has structured awareness of
@@ -86,9 +69,11 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
   let text = "";
   let usage: AgentTurnResult["usage"];
 
+  const { model } = resolveModel(MODEL_ID);
+
   try {
     const result = await generateText({
-      model: provider(MODEL_ID),
+      model,
       system: `${ARHAM_SYSTEM_PROMPT}\n\n${contextNote}`,
       messages: input.history,
       tools,
