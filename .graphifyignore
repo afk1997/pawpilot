@@ -1,0 +1,27 @@
+# Files graphify should NEVER read or include in the knowledge graph.
+# graphify already has built-in heuristics for skipping common secret files;
+# this list adds Arham-specific items to be explicit and audit-safe.
+
+# Env / secrets — never let agents read these.
+.env
+.env.*
+!.env.example
+
+# Driver personal phone numbers, case exports.
+ambulances-clinics.csv
+ambulances-clinics.xlsx
+ambulances-clinics-*.csv
+ambulances-clinics-*.xlsx
+*.cases-export.json
+*.cases-export.csv
+arham-private/
+
+# Build artifacts.
+.next/
+node_modules/
+.vercel/
+graphify-out/
+
+# Generated content.
+*.tsbuildinfo
+package-lock.json

@@ -30,9 +30,27 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
-.env*.local
+# env files — never commit any real values
 .env
+.env.local
+.env.*.local
+.env.development
+.env.development.local
+.env.production
+.env.production.local
+.env.test
+.env.test.local
+# Allow the template:
+!.env.example
+
+# secret-shaped files
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets/
+private/
 
 # vercel
 .vercel
@@ -44,7 +62,11 @@ next-env.d.ts
 # graphify
 /graphify-out
 
-# Arham private data (driver personal phone numbers) — kept locally, not committed
+# Arham private data (driver personal phone numbers, case exports) — keep local only
 ambulances-clinics.csv
 ambulances-clinics.xlsx
+ambulances-clinics-*.csv
+ambulances-clinics-*.xlsx
 *.cases-export.json
+*.cases-export.csv
+arham-private/
