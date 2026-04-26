@@ -3,13 +3,10 @@
  * messages from reporters.
  *
  * Hard contract:
- *  - Return 200 within 5 seconds (Interakt retries otherwise).
+ *  - Return 200 within 3 seconds (Interakt's spec). LLM runs in `after()`.
  *  - Send the instant ack BEFORE running any LLM. Reporter never waits.
  *  - Idempotent: dedup by Interakt's message id.
  *  - Audit every step.
- *
- * NOTE: Phase 1 sends a static instant ack only. Phase 2 plugs in the
- * tool-using LLM in a background processor.
  */
 import { NextRequest, after } from "next/server";
 import { supabase } from "@/lib/supabase";
@@ -34,8 +31,22 @@ export async function POST(request: NextRequest) {
   // Read raw body once for signature verification, then parse.
   const rawBody = await request.text();
 
+  // Debug: capture Interakt's exact wire format. Truncated to 4KB.
+  // Toggle off via INTERAKT_DEBUG_LOG=0 once we've confirmed the parser.
+  if (process.env.INTERAKT_DEBUG_LOG !== "0") {
+    const sigHeader =
+      request.headers.get("interakt-signature") ??
+      request.headers.get("x-interakt-signature") ??
+      "(none)";
+    console.log("[webhook] inbound", {
+      sig: sigHeader.slice(0, 32) + "...",
+      bodyPreview: rawBody.slice(0, 4096),
+    });
+  }
+
   const verified = await verifyInteraktSignature(rawBody, request.headers);
   if (!verified) {
+    console.warn("[webhook] signature verification failed");
     return new Response("forbidden", { status: 403 });
   }
 
@@ -48,7 +59,12 @@ export async function POST(request: NextRequest) {
 
   const incoming = parseInteraktPayload(payload);
   if (!incoming) {
-    return Response.json({ status: "ignored_event" });
+    const eventType =
+      typeof payload === "object" && payload !== null
+        ? (payload as { type?: string }).type ?? "(no type)"
+        : "(non-object)";
+    console.log("[webhook] ignored event:", eventType);
+    return Response.json({ status: "ignored_event", event_type: eventType });
   }
 
   // Idempotency — if we've already processed this providerMessageId, bail.
