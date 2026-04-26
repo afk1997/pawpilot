@@ -7,8 +7,8 @@
   ],
   "donate": {
     "en": {
-      "summary": "Arham Always Care relies on donations to keep our 45+ ambulances on the road and our clinics open. Every rupee saves an animal in pain.",
-      "url": "TODO: https://arhamalwayscare.org/donate",
+      "summary": "Your donation keeps our 45+ ambulances on the road and our clinics open. Every rupee saves an animal in pain.",
+      "url": "https://alwayscare.org/donate",
       "upi": "TODO: arham@upi",
       "bank": "TODO: account name / number / IFSC",
       "tax_note": "Donations are eligible for 80G tax exemption."
@@ -37,10 +37,10 @@
   },
   "volunteer": {
     "en": {
-      "summary": "We welcome volunteers — for ambulance ride-alongs, clinic shifts, fund-raising, and online awareness work.",
-      "url": "TODO: https://arhamalwayscare.org/volunteer",
+      "summary": "We welcome volunteers — for ambulance ride-alongs, clinic shifts, fund-raising, and online awareness.",
+      "url": "https://alwayscare.org/volunteer",
       "contact_phone": "TODO: +91XXXXXXXXXX",
-      "contact_email": "TODO: volunteer@arhamalwayscare.org"
+      "contact_email": "TODO: volunteer@alwayscare.org"
     },
     "hi": { "summary": "TODO", "url": "TODO", "contact_phone": "TODO", "contact_email": "TODO" },
     "mr": { "summary": "TODO", "url": "TODO", "contact_phone": "TODO", "contact_email": "TODO" },
