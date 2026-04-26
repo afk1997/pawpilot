@@ -11,7 +11,7 @@ import { supabase } from "../supabase";
 import { sendWhatsAppMessage } from "../whatsapp";
 import { audit } from "../audit";
 import { runAgentTurn, type ToolCallRecord } from "../ai";
-import { buildAmbulanceCard } from "../ambulance-card";
+import { buildAmbulanceCard, buildMultiAmbulanceCard } from "../ambulance-card";
 import { buildDonationCard } from "../cards/donation";
 import { buildVolunteerCard } from "../cards/volunteer";
 import { buildClinicCard, type ClinicRow } from "../cards/clinic";
@@ -45,10 +45,14 @@ const FALLBACK_CLARIFY: Record<Language, string> = {
 
 export async function processIncoming(input: ProcessIncomingInput): Promise<void> {
   // Quick-path rails before we even invoke the LLM. These don't need the model.
-  // 1. "menu" / "options" / numeric — re-display the menu.
-  if (isMenuRequest(input.inboundText)) {
+  // The model can be unreliable at simple-greeting handling — Gemini and most
+  // LLMs love to greet back warmly when prompted "hello", ignoring "be terse"
+  // instructions. Route greetings + menu requests deterministically.
+  if (isMenuRequest(input.inboundText) || isPlainGreeting(input.inboundText)) {
     const text = menuMessage(input.language);
-    await sendAndPersist(input, text, { kind: "menu_redisplay" });
+    await sendAndPersist(input, text, {
+      kind: isMenuRequest(input.inboundText) ? "menu_redisplay" : "greeting_menu",
+    });
     return;
   }
 
@@ -140,29 +144,18 @@ async function deriveCardFromToolCalls(
   toolCalls: ToolCallRecord[],
   language: Language
 ): Promise<ToolDerivedDelivery | null> {
-  // 1. find_ambulance_by_area returned EXACTLY 1 row → deliver card.
+  // 1. find_ambulance_by_area:
+  //    1 row → single card delivery.
+  //    2-3 rows → multi-card delivery (e.g. Rajkot has 2 partner NGOs both
+  //              covering the whole city; user can't disambiguate by area).
+  //    4+ rows → fall through; let the LLM ask for area (Mumbai etc.).
   for (const tc of toolCalls) {
     if (tc.name !== "find_ambulance_by_area") continue;
     if (tc.failed) continue;
     const rows = (tc.output as Array<unknown>) ?? [];
-    if (!Array.isArray(rows) || rows.length !== 1) continue;
-    const row = rows[0] as {
-      id: string;
-      city: string;
-      area: string | null;
-      phone: string;
-      operator_name: string;
-      operator_is_arham: boolean;
-    };
-    const card = buildAmbulanceCard(row, language);
-    return { text: card.full_message, delivered_ambulance_id: row.id };
-  }
+    if (!Array.isArray(rows) || rows.length === 0) continue;
 
-  // 2. get_nearest_ambulance returned a row → deliver card.
-  for (const tc of toolCalls) {
-    if (tc.name !== "get_nearest_ambulance") continue;
-    if (tc.failed) continue;
-    const row = tc.output as null | {
+    type Row = {
       id: string;
       city: string;
       area: string | null;
@@ -170,9 +163,25 @@ async function deriveCardFromToolCalls(
       operator_name: string;
       operator_is_arham: boolean;
     };
-    if (!row) continue;
-    const card = buildAmbulanceCard(row, language);
-    return { text: card.full_message, delivered_ambulance_id: row.id };
+
+    if (rows.length === 1) {
+      const row = rows[0] as Row;
+      const card = buildAmbulanceCard(row, language);
+      return { text: card.full_message, delivered_ambulance_id: row.id };
+    }
+
+    if (rows.length <= 3) {
+      const typed = rows as Row[];
+      const text = buildMultiAmbulanceCard(typed, language);
+      // Don't stamp a single delivered_ambulance_id for multi-card delivery —
+      // we don't know which the reporter will pick. Followup cron skips
+      // these (it requires delivered_ambulance_id set).
+      return { text };
+    }
+
+    // 4+ rows: fall through — orchestrator will keep the LLM's text (the
+    // LLM is supposed to ask "which area in <city>?").
+    continue;
   }
 
   // 3. get_static_content('donate') → donation card.
@@ -236,6 +245,25 @@ function isMenuRequest(text: string): boolean {
   const t = text.trim().toLowerCase();
   if (/^(menu|options?|help|sahaay|मेन्यू|पर्याय|मेनू|menyu)$/.test(t)) return true;
   return false;
+}
+
+/**
+ * Plain greetings (hi/hello/hey/namaste/etc.) — short messages with no
+ * actionable content. Route these to the menu instead of asking the LLM,
+ * which loves to greet back with verbose openers.
+ *
+ * Keep tight: must be the entire message (no embedded text), short, and
+ * matches one of the known greeting tokens.
+ */
+function isPlainGreeting(text: string): boolean {
+  if (!text) return false;
+  const t = text.trim().toLowerCase().replace(/[!.?,;:]+$/g, "");
+  if (t.length === 0 || t.length > 30) return false;
+  // Strip trailing emojis to match "hi 👋" style.
+  const stripped = t.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}‍\u{FE0F}]+$/gu, "").trim();
+  return /^(hi+|hello+|hey+|hii+|hyy+|yo|hola|namaste|namaskaar|namaskar|namaskaram|adab|salaam|salam|वणक्कम|नमस्ते|नमस्कार|नमस्कारम|नमस्कारे|नमस्कारम्|नमस्ते जी|नमस्कार जी|नमस्ते जी|નમસ્તે|નમસ્કાર|good\s+(morning|afternoon|evening|day))$/.test(
+    stripped
+  );
 }
 
 async function hasUsableLocation(conversationId: string): Promise<boolean> {

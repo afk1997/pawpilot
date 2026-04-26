@@ -104,3 +104,38 @@ export function buildAmbulanceCard(
     full_message: lines.join("\n"),
   };
 }
+
+const MULTI_HEADER_BY_LANG: Record<Language, (n: number, place: string) => string> = {
+  en: (n, p) => `${n} ambulances are available in ${p}. Please call any one of them:`,
+  hi: (n, p) => `${p} में ${n} एम्बुलेंस उपलब्ध हैं। कृपया इनमें से किसी एक को कॉल करें:`,
+  mr: (n, p) => `${p} मध्ये ${n} एम्बुलन्स उपलब्ध आहेत. कृपया यांपैकी कोणालाही कॉल करा:`,
+  gu: (n, p) => `${p} માં ${n} એમ્બ્યુલન્સ ઉપલબ્ધ છે. કૃપા કરીને કોઈ પણ એકને કૉલ કરો:`,
+};
+
+/**
+ * Build a single multi-ambulance card when we have 2-3 matching rows that
+ * can't be disambiguated by area (e.g. Rajkot's two partner NGOs both
+ * cover the whole city). Lists each option with phone + operator suffix.
+ */
+export function buildMultiAmbulanceCard(
+  rows: AmbulanceRowMinimal[],
+  language: Language = "en"
+): string {
+  if (rows.length === 0) return "";
+  if (rows.length === 1) return buildAmbulanceCard(rows[0], language).full_message;
+
+  // Use the city of the first row as the place label (assumes same city).
+  const place = rows[0].city;
+  const header = MULTI_HEADER_BY_LANG[language](rows.length, place);
+
+  const lines: string[] = [header, ""];
+  rows.forEach((row, idx) => {
+    const card = buildAmbulanceCard(row, language);
+    lines.push(`${idx + 1}. ${card.display_name}`);
+    lines.push(`   ${card.phone_formatted}`);
+    if (card.operator_suffix) lines.push(`   ${card.operator_suffix}`);
+    lines.push("");
+  });
+
+  return lines.join("\n").trimEnd();
+}
