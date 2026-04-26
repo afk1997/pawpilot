@@ -22,6 +22,7 @@ import { supabase } from "../supabase";
 import { buildAmbulanceCard, formatIndianPhone } from "../ambulance-card";
 import { fuzzyEqual } from "../fuzzy-match";
 import { neighborCandidates } from "../area-neighbors";
+import { applyCityAliases } from "../city-aliases";
 import type { Language } from "../types";
 
 export const findAmbulanceByAreaParams = z.object({
@@ -59,13 +60,19 @@ export interface AmbulanceRow {
   operator_suffix: string | null;
 }
 
-/** Normalize a string for fuzzy matching: lowercase, strip non-alphanum. */
+/**
+ * Normalize a string for fuzzy matching: lowercase, strip non-alphanum,
+ * then map colloquial city names (Bangalore, Bombay, …) to canonical
+ * (Bengaluru, Mumbai) so user-side aliasing matches directory-side spelling.
+ */
 function norm(s: string): string {
-  return s
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s]/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  return applyCityAliases(
+    s
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+  );
 }
 
 export async function findAmbulanceByArea(
