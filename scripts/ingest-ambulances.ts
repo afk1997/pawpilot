@@ -68,6 +68,24 @@ function parseAreasCovered(value: string, city: string, area: string): string[] 
 
 const ARHAM_NAME = "Arham Yuva Seva Group";
 
+/**
+ * Detect whether the CSV's "Area" column is actually the partner NGO label
+ * masquerading as a geographic area (e.g. "ALAI Trust", "K9 Safe Animal",
+ * "Sadbhavna Vrudhashram"). We strip it in that case.
+ *
+ * Heuristic: substring overlap between area and operator name, where both
+ * are at least 4 chars. Catches exact matches AND truncated forms like
+ * "K9 Safe Animal" vs "K9 Safe Animal - Vision Gaushala".
+ */
+function isPartnerNameLeak(area: string, operator: string): boolean {
+  if (!area || !operator) return false;
+  if (operator === ARHAM_NAME) return false; // Arham rows are always geographic
+  const a = area.trim().toLowerCase();
+  const o = operator.trim().toLowerCase();
+  if (a.length < 4 || o.length < 4) return false;
+  return a === o || a.includes(o) || o.includes(a);
+}
+
 async function main() {
   // Step 1 — collect unique operators (Arham itself + each partner NGO)
   const operatorNames = new Set<string>();
@@ -106,15 +124,25 @@ async function main() {
     const operatorId = operatorIdByName.get(r["Operated By"].trim());
     if (!operatorId) throw new Error(`Missing operator for ${r.Name}`);
 
+    const operatorName = r["Operated By"].trim();
+    const rawArea = r.Area?.trim() || "";
+
+    // Strip partner-NGO names that leaked into the Area column.
+    const isLeak = isPartnerNameLeak(rawArea, operatorName);
+    const cleanArea = isLeak ? null : rawArea || null;
+    const cleanAreasCovered = isLeak
+      ? [r.City.trim()]
+      : parseAreasCovered(r["Area of Operation"], r.City, rawArea);
+
     const payload = {
       operator_id: operatorId,
       label: r.Name.trim(),
       city: r.City.trim(),
-      area: r.Area?.trim() || null,
+      area: cleanArea,
       state: r.State.trim(),
       phone: normalizePhone(r.Phone),
       phone_raw: r.Phone.trim(),
-      areas_covered: parseAreasCovered(r["Area of Operation"], r.City, r.Area || ""),
+      areas_covered: cleanAreasCovered,
       category: r.Category?.trim() || "Animal Ambulance",
       active: true,
       updated_at: new Date().toISOString(),
