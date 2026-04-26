@@ -49,9 +49,11 @@ export interface AgentTurnResult {
   hitStepCap: boolean;
   /** Token usage for cost tracking. */
   usage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number };
-  /** All tool calls made this turn. The orchestrator inspects these to apply
-   *  deterministic delivery-card overrides post-LLM. */
+  /** All tool calls made this turn. */
   toolCalls: ToolCallRecord[];
+  /** Set when generateText threw despite retries. "transient" → caller may
+   *  prefer a softer fallback message; "exhausted" → escalate to dispatcher. */
+  error?: "transient" | "exhausted";
 }
 
 const FALLBACK_BY_LANG: Record<Language, string> = {
@@ -80,22 +82,74 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
   let text = "";
   let finishReason: string | undefined;
   let usage: AgentTurnResult["usage"];
+  let errorState: AgentTurnResult["error"];
   const toolCalls: ToolCallRecord[] = [];
 
   const { model } = resolveModel(MODEL_ID);
 
+  // Retry generateText up to 2 times on transient failures (rate limit,
+  // 5xx, network). On exhaustion, return error="exhausted" so the
+  // orchestrator can send the right fallback message.
+  const MAX_ATTEMPTS = 2;
+  let lastError: unknown = null;
+  // Use a structural type — the model is parameterized by the tools record
+  // which leaks generic types up the stack; we only need the few fields
+  // (text, steps, usage, finishReason) that all generateText returns share.
+  type GenerateTextLike = {
+    text?: string;
+    steps?: unknown[];
+    usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
+    finishReason?: string;
+  };
+  let result: GenerateTextLike | null = null;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      result = await generateText({
+        model,
+        system: `${ARHAM_SYSTEM_PROMPT}\n\n${contextNote}`,
+        messages: input.history,
+        tools,
+        toolChoice: "auto",
+        stopWhen: stepCountIs(MAX_STEPS),
+      });
+      lastError = null;
+      break;
+    } catch (e) {
+      lastError = e;
+      const msg = e instanceof Error ? e.message : String(e);
+      const transient = /(rate limit|429|5\d\d|timeout|temporar|ECONNRESET|ETIMEDOUT|network)/i.test(msg);
+      console.warn(
+        `[agent] generateText attempt ${attempt}/${MAX_ATTEMPTS} failed${transient ? " (transient)" : ""}: ${msg}`
+      );
+      await audit({
+        conversationId: input.conversationId,
+        actionType: "degraded",
+        metadata: {
+          source: "ai_generate_text",
+          attempt,
+          transient,
+          error: msg.slice(0, 500),
+        },
+      });
+      if (!transient || attempt === MAX_ATTEMPTS) break;
+      await new Promise((r) => setTimeout(r, 250 * attempt)); // simple linear backoff
+    }
+  }
+
+  if (!result) {
+    const msg = lastError instanceof Error ? lastError.message : String(lastError);
+    const transient = /(rate limit|429|5\d\d|timeout|temporar|ECONNRESET|ETIMEDOUT|network)/i.test(msg);
+    console.error("[agent] generateText exhausted retries:", msg);
+    return {
+      text: "",
+      escalated: false,
+      hitStepCap: false,
+      toolCalls,
+      error: transient ? "transient" : "exhausted",
+    };
+  }
+
   try {
-    const result = await generateText({
-      model,
-      system: `${ARHAM_SYSTEM_PROMPT}\n\n${contextNote}`,
-      messages: input.history,
-      tools,
-      // Force the model to actually invoke tools when it has the info to.
-      // Some providers (notably DeepSeek via openai-compatible) need this
-      // explicit hint or they ignore the tool list.
-      toolChoice: "auto",
-      stopWhen: stepCountIs(MAX_STEPS),
-    });
 
     text = result.text ?? "";
     finishReason = (result as { finishReason?: string }).finishReason;
@@ -161,16 +215,16 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
       hitStepCap = finishReason === "tool-calls";
     }
   } catch (e) {
-    console.error("runAgentTurn failed:", e);
+    console.error("[agent] post-generation processing failed:", e);
     await audit({
       conversationId: input.conversationId,
       actionType: "degraded",
-      metadata: { source: "ai_generate_text", error: e instanceof Error ? e.message : String(e) },
+      metadata: { source: "ai_post_processing", error: e instanceof Error ? e.message : String(e) },
     });
-    text = FALLBACK_BY_LANG[input.language] ?? FALLBACK_BY_LANG.en;
+    errorState = "exhausted";
   }
 
-  return { text, escalated, hitStepCap, usage, toolCalls };
+  return { text, escalated, hitStepCap, usage, toolCalls, error: errorState };
 }
 
 /** Backwards compat — Phase 1 stub kept for old imports. Will be removed once webhook is fully wired. */

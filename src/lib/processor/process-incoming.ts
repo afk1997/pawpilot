@@ -1,11 +1,21 @@
 /**
  * Background processor: runs after the webhook returns 200 to Interakt.
  *
- * Key responsibility (V1.1): the LLM contributes zero characters to
- * delivery messages. The orchestrator inspects the LLM's tool calls and,
- * if a card-class tool succeeded, replaces the LLM's text with the
- * deterministic card. The LLM's job is reduced to deciding which tool to
- * call and writing conversational glue when no tool resolved the turn.
+ * V1.2 architecture — LLM-driven:
+ *   - The LLM owns the conversation. Greetings, intent recognition,
+ *     dispatch, donate, volunteer, clinic, suggestions — all driven by
+ *     the model and its tools.
+ *   - The orchestrator's only jobs are:
+ *       1. Concurrency control (advisory lock per conversation, so two
+ *          inbounds 1ms apart don't produce contradictory replies).
+ *       2. Post-LLM card override — if a card-class tool returned data,
+ *          replace the LLM's text with the deterministic card. This is
+ *          the SAFETY NET against phone-digit hallucination.
+ *       3. Fallback when the LLM literally throws (with retry).
+ *       4. "menu" keyword shortcut (cheap, harmless).
+ *   - The deterministic intent rails introduced in V1.1.1 have been
+ *     removed — they made the agent feel like a chatbot and the user
+ *     explicitly rejected that pattern.
  */
 import { supabase } from "../supabase";
 import { sendWhatsAppMessage } from "../whatsapp";
@@ -16,6 +26,7 @@ import { buildDonationCard } from "../cards/donation";
 import { buildVolunteerCard } from "../cards/volunteer";
 import { buildClinicCard, type ClinicRow } from "../cards/clinic";
 import { menuMessage } from "../messages/welcome";
+import { withConversationLock } from "../conversation-lock";
 import type { Language } from "../types";
 
 const FOLLOWUP_DELAY_MIN = Number(process.env.FOLLOWUP_DELAY_MIN ?? 5);
@@ -23,6 +34,8 @@ const FOLLOWUP_DELAY_MIN = Number(process.env.FOLLOWUP_DELAY_MIN ?? 5);
 export interface ProcessIncomingInput {
   conversationId: string;
   inboundMessageId: string;
+  /** The just-arrived inbound text — passed in so we don't depend on Supabase
+   *  read replicas catching up before we run the LLM turn. */
   inboundText: string;
   reporterPhone: string;
   reporterName: string | null;
@@ -31,30 +44,50 @@ export interface ProcessIncomingInput {
 
 interface ToolDerivedDelivery {
   text: string;
-  /** Set when the agent should mark this conversation as having delivered a
-   *  specific ambulance, so the followup cron can find it. */
   delivered_ambulance_id?: string;
 }
 
-const FALLBACK_CLARIFY: Record<Language, string> = {
-  en: "Sorry, could you tell me what you need help with? Reply 'menu' to see the options again.",
-  hi: "माफ़ कीजिए, कृपया बताएँ आपको किस चीज़ में मदद चाहिए? विकल्प देखने के लिए 'menu' लिखें।",
-  mr: "क्षमस्व, कृपया सांगा तुम्हाला कशासाठी मदत हवी आहे? पर्याय पाहण्यासाठी 'menu' लिहा.",
-  gu: "માફ કરશો, કૃપા કરીને જણાવો તમને કઈ બાબતમાં મદદ જોઈએ છે? વિકલ્પો જોવા માટે 'menu' લખો.",
+const FALLBACK_TRANSIENT: Record<Language, string> = {
+  en: "One moment — let me check that for you.",
+  hi: "एक पल — मैं आपके लिए देख रहा हूँ।",
+  mr: "एक क्षण — मी तुमच्यासाठी तपासतो.",
+  gu: "એક ક્ષણ — હું તમારા માટે તપાસું છું.",
+};
+
+const FALLBACK_EXHAUSTED: Record<Language, string> = {
+  en: "Sorry, I'm having trouble right now. A team member will reach out shortly.",
+  hi: "क्षमा करें, मुझे अभी कुछ समस्या आ रही है। हमारी टीम का सदस्य जल्द ही आपसे संपर्क करेगा।",
+  mr: "क्षमस्व, मला आत्ता थोडी अडचण येत आहे. आमच्या टीममधील कोणीतरी लवकरच तुमच्याशी संपर्क करेल.",
+  gu: "માફ કરશો, મને હાલ થોડી તકલીફ છે. અમારી ટીમનો કોઈ સભ્ય ટૂંક સમયમાં તમારો સંપર્ક કરશે.",
 };
 
 export async function processIncoming(input: ProcessIncomingInput): Promise<void> {
-  // Quick-path rails before we even invoke the LLM. These don't need the model.
-  // The model can be unreliable at simple-greeting handling — Gemini and most
-  // LLMs love to greet back warmly when prompted "hello", ignoring "be terse"
-  // instructions. Route greetings + menu requests deterministically.
-  if (isMenuRequest(input.inboundText) || isPlainGreeting(input.inboundText)) {
-    const text = menuMessage(input.language);
-    await sendAndPersist(input, text, {
-      kind: isMenuRequest(input.inboundText) ? "menu_redisplay" : "greeting_menu",
-    });
+  // Per-conversation lock: serialize parallel inbounds so two messages
+  // milliseconds apart don't produce contradictory replies. The lock is
+  // released automatically when the inner function returns.
+  await withConversationLock(input.conversationId, async () => {
+    await processIncomingLocked(input);
+  });
+}
+
+async function processIncomingLocked(input: ProcessIncomingInput): Promise<void> {
+  // Load current conversation status.
+  const { data: convo } = await supabase
+    .from("conversations")
+    .select("status, mode, delivered_ambulance_id")
+    .eq("id", input.conversationId)
+    .single();
+  if (!convo) return;
+  if (convo.mode === "human") return;
+
+  // Cheap shortcut — explicit "menu" keyword re-displays the menu without
+  // burning an LLM call. This isn't intent detection; it's a UI affordance.
+  if (isMenuRequest(input.inboundText)) {
+    await sendAndPersist(input, menuMessage(input.language), { kind: "menu_redisplay" });
     return;
   }
+
+  // ── Everything else: LLM owns the turn ───────────────────────────────
 
   // Pull last 20 messages as conversation history (excluding old instant-acks).
   const { data: history } = await supabase
@@ -76,16 +109,6 @@ export async function processIncoming(input: ProcessIncomingInput): Promise<void
     filtered.push({ role: "user", content: input.inboundText });
   }
 
-  // Determine current conversation status.
-  const { data: convo } = await supabase
-    .from("conversations")
-    .select("status, mode, delivered_ambulance_id")
-    .eq("id", input.conversationId)
-    .single();
-
-  if (!convo) return;
-  if (convo.mode === "human") return;
-
   const hasLocation = await hasUsableLocation(input.conversationId);
 
   const result = await runAgentTurn({
@@ -98,18 +121,15 @@ export async function processIncoming(input: ProcessIncomingInput): Promise<void
     hasLocation,
   });
 
-  // Escalation handler — runAgentTurn already flipped DB state via the tool.
   if (result.escalated) {
-    if (result.text) {
-      await sendAndPersist(input, result.text, { escalated: true });
-    }
+    if (result.text) await sendAndPersist(input, result.text, { escalated: true });
     return;
   }
 
-  // ── Post-LLM deterministic card override ─────────────────────────────────
-  // Inspect tool calls. If a card-class tool succeeded, the orchestrator
-  // builds the card and uses it as the outbound text — overriding any
-  // text the LLM generated.
+  // ── Post-LLM deterministic card override (the safety net) ────────────
+  // If the LLM called a card-class tool, replace its text with the canonical
+  // card. This is critical: even if the model hallucinates phone digits or
+  // formats the response wrong, the orchestrator wins.
   const override = await deriveCardFromToolCalls(result.toolCalls, input.language);
 
   let outboundText = result.text;
@@ -119,14 +139,17 @@ export async function processIncoming(input: ProcessIncomingInput): Promise<void
     outboundText = override.text;
     deliveredAmbulanceId = override.delivered_ambulance_id;
   } else if (!outboundText || outboundText.trim().length === 0) {
-    // No card to deliver, no LLM text → degraded path. Send a clarification.
-    outboundText = FALLBACK_CLARIFY[input.language] ?? FALLBACK_CLARIFY.en;
+    outboundText =
+      result.error === "transient"
+        ? FALLBACK_TRANSIENT[input.language] ?? FALLBACK_TRANSIENT.en
+        : FALLBACK_EXHAUSTED[input.language] ?? FALLBACK_EXHAUSTED.en;
   }
 
   await sendAndPersist(input, outboundText, {
     hit_step_cap: result.hitStepCap,
     usage: result.usage ?? null,
     overridden: !!override,
+    error: result.error,
   });
 
   await updateStatusAfterTurn(input.conversationId, deliveredAmbulanceId, override !== null);
@@ -134,21 +157,13 @@ export async function processIncoming(input: ProcessIncomingInput): Promise<void
 
 /**
  * Look at the tool calls the LLM made this turn. If any of them produced a
- * deterministic delivery card, build that card and return it. Single-row
- * ambulance match is the most common case.
- *
- * Priority order — if multiple tools fired, ambulance dispatch wins (it's
- * the highest-stakes path).
+ * deterministic delivery card, build that card and return it.
  */
 async function deriveCardFromToolCalls(
   toolCalls: ToolCallRecord[],
   language: Language
 ): Promise<ToolDerivedDelivery | null> {
-  // 1. find_ambulance_by_area:
-  //    1 row → single card delivery.
-  //    2-3 rows → multi-card delivery (e.g. Rajkot has 2 partner NGOs both
-  //              covering the whole city; user can't disambiguate by area).
-  //    4+ rows → fall through; let the LLM ask for area (Mumbai etc.).
+  // 1. find_ambulance_by_area: 1 → single card; 2-3 → multi-card; 4+ defer to LLM.
   for (const tc of toolCalls) {
     if (tc.name !== "find_ambulance_by_area") continue;
     if (tc.failed) continue;
@@ -173,28 +188,35 @@ async function deriveCardFromToolCalls(
     if (rows.length <= 3) {
       const typed = rows as Row[];
       const text = buildMultiAmbulanceCard(typed, language);
-      // Don't stamp a single delivered_ambulance_id for multi-card delivery —
-      // we don't know which the reporter will pick. Followup cron skips
-      // these (it requires delivered_ambulance_id set).
       return { text };
     }
-
-    // 4+ rows: fall through — orchestrator will keep the LLM's text (the
-    // LLM is supposed to ask "which area in <city>?").
     continue;
   }
 
-  // 3. get_static_content('donate') → donation card.
+  // 2. get_nearest_ambulance returns a single row → deliver card.
+  for (const tc of toolCalls) {
+    if (tc.name !== "get_nearest_ambulance") continue;
+    if (tc.failed) continue;
+    const row = tc.output as null | {
+      id: string;
+      city: string;
+      area: string | null;
+      phone: string;
+      operator_name: string;
+      operator_is_arham: boolean;
+    };
+    if (!row) continue;
+    const card = buildAmbulanceCard(row, language);
+    return { text: card.full_message, delivered_ambulance_id: row.id };
+  }
+
+  // 3. get_static_content topic → deterministic card.
   for (const tc of toolCalls) {
     if (tc.name !== "get_static_content") continue;
     if (tc.failed) continue;
     const inp = tc.input as { topic?: string };
-    if (inp?.topic === "donate") {
-      return { text: buildDonationCard(language) };
-    }
-    if (inp?.topic === "volunteer") {
-      return { text: buildVolunteerCard(language) };
-    }
+    if (inp?.topic === "donate") return { text: buildDonationCard(language) };
+    if (inp?.topic === "volunteer") return { text: buildVolunteerCard(language) };
     if (inp?.topic === "clinics") {
       const rows = Array.isArray(tc.output) ? (tc.output as ClinicRow[]) : [];
       return { text: buildClinicCard(rows, language) };
@@ -243,27 +265,7 @@ async function sendAndPersist(
 function isMenuRequest(text: string): boolean {
   if (!text) return false;
   const t = text.trim().toLowerCase();
-  if (/^(menu|options?|help|sahaay|मेन्यू|पर्याय|मेनू|menyu)$/.test(t)) return true;
-  return false;
-}
-
-/**
- * Plain greetings (hi/hello/hey/namaste/etc.) — short messages with no
- * actionable content. Route these to the menu instead of asking the LLM,
- * which loves to greet back with verbose openers.
- *
- * Keep tight: must be the entire message (no embedded text), short, and
- * matches one of the known greeting tokens.
- */
-function isPlainGreeting(text: string): boolean {
-  if (!text) return false;
-  const t = text.trim().toLowerCase().replace(/[!.?,;:]+$/g, "");
-  if (t.length === 0 || t.length > 30) return false;
-  // Strip trailing emojis to match "hi 👋" style.
-  const stripped = t.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}‍\u{FE0F}]+$/gu, "").trim();
-  return /^(hi+|hello+|hey+|hii+|hyy+|yo|hola|namaste|namaskaar|namaskar|namaskaram|adab|salaam|salam|वणक्कम|नमस्ते|नमस्कार|नमस्कारम|नमस्कारे|नमस्कारम्|नमस्ते जी|नमस्कार जी|नमस्ते जी|નમસ્તે|નમસ્કાર|good\s+(morning|afternoon|evening|day))$/.test(
-    stripped
-  );
+  return /^(menu|options?|help|sahaay|मेन्यू|पर्याय|मेनू|menyu|મેનુ)$/.test(t);
 }
 
 async function hasUsableLocation(conversationId: string): Promise<boolean> {
@@ -293,7 +295,7 @@ const LOCATION_HINTS: string[] = [
   "kandivali", "borivali", "dahisar", "malad", "mira road", "bhayandar",
   "andheri", "vile parle", "juhu", "santacruz", "jogeshwari", "lokhandwala",
   "ghatkopar", "vikhroli", "chembur", "mulund", "bhandup", "nahur",
-  "dombivali", "tardeo", "dadar", "wadala",
+  "dombivali", "tardeo", "dadar", "wadala", "goregaon",
   "pcmc", "pimpri", "chinchwad", "dehu", "bhosari", "baner", "khadki",
   "hinjewadi", "swargate", "dhankawadi", "kondwa", "yewalewadi",
   "ambegaon", "handewadi", "ghorpadi",
@@ -303,12 +305,6 @@ const LOCATION_HINTS: string[] = [
   "મુંબઈ", "અમદાવાદ", "સુરત", "વડોદરા",
 ];
 
-/**
- * After the orchestrator overrides with a card, transition status:
- *   - delivered an ambulance card → status=number_delivered, awaiting_followup_at=now+N
- *   - any other override or LLM text → status=awaiting_intent if from 'new'
- *     (one step further into the conversation)
- */
 async function updateStatusAfterTurn(
   conversationId: string,
   deliveredAmbulanceId: string | undefined,
@@ -329,15 +325,12 @@ async function updateStatusAfterTurn(
     return;
   }
 
-  // No ambulance delivery — just nudge status one step further if we were 'new'.
   const { data: convo } = await supabase
     .from("conversations")
     .select("status")
     .eq("id", conversationId)
     .single();
   if (convo?.status === "new" || convo?.status === "awaiting_intent") {
-    // If the LLM is still chatting (no card delivered), and the inbound
-    // hinted at an ambulance, we've moved into awaiting_location.
     await supabase
       .from("conversations")
       .update({

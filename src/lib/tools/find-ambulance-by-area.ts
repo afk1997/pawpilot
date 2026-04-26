@@ -20,6 +20,8 @@ import { z } from "zod";
 import { tool } from "ai";
 import { supabase } from "../supabase";
 import { buildAmbulanceCard, formatIndianPhone } from "../ambulance-card";
+import { fuzzyEqual } from "../fuzzy-match";
+import { neighborCandidates } from "../area-neighbors";
 import type { Language } from "../types";
 
 export const findAmbulanceByAreaParams = z.object({
@@ -119,54 +121,78 @@ export async function findAmbulanceByArea(
     };
   });
 
-  // Require length ≥ 4 so single-word noise tokens ("the", "for", "old", "new",
-  // 3-letter areas like "PMC") don't drive false matches.
   const tokens = q.split(" ").filter((t) => t.length >= 4);
 
-  // Compute all match tiers up front, then prefer the most specific.
-  const cityMatches = rows.filter((r) => {
-    const c = norm(r.city);
-    if (c === q) return true; // single-token city exactly typed
-    // Token match only counts when the query is a single token. Multi-token
-    // queries like "Mumbai Ghatkopar" must NOT trigger tier 1 just because
-    // "Mumbai" appears as a token — they should drop to tier 2 (area).
-    if (tokens.length === 1 && tokens[0] === c) return true;
-    return false;
-  });
+  const matches = matchInRows(q, tokens, rows);
+  if (matches.length > 0) return matches;
 
+  // No direct hit — try fuzzy-equal of any query token against city/area/
+  // areas_covered. Rescues common typos like "Munbai" → "Mumbai".
+  const fuzzyMatches = rows.filter((r) => {
+    const haystack = [r.city, r.area ?? "", ...r.areas_covered]
+      .map(norm)
+      .filter((h) => h.length >= 4);
+    return tokens.some((t) => haystack.some((h) => fuzzyEqual(t, h)));
+  });
+  if (fuzzyMatches.length > 0) return fuzzyMatches;
+
+  // Still nothing — try geographic neighbors (Goregaon → Malad/Andheri etc.).
+  // Use the original query AND each individual token as the lookup key.
+  const neighborQueries = new Set<string>();
+  for (const k of [q, ...tokens]) {
+    for (const n of neighborCandidates(k)) neighborQueries.add(n);
+  }
+  for (const nq of neighborQueries) {
+    const nqTokens = nq.split(" ").filter((t) => t.length >= 4);
+    const neighborMatches = matchInRows(nq, nqTokens, rows);
+    if (neighborMatches.length > 0) return neighborMatches;
+  }
+
+  return [];
+}
+
+/**
+ * Run the four-tier match (area-exact, city-exact, substring, token) and
+ * return the most specific non-empty tier.
+ */
+function matchInRows(
+  q: string,
+  tokens: string[],
+  rows: AmbulanceRow[]
+): AmbulanceRow[] {
+  // Tier 1 — area exact match.
   const areaExact = rows.filter((r) => {
     if (r.area && norm(r.area) === q) return true;
     if (r.areas_covered.some((a) => norm(a) === q)) return true;
-    // Token equality (not substring) on areas_covered — "Ghatkopar" appearing
-    // as a query token should match a row whose areas_covered includes "Ghatkopar".
     return r.areas_covered.some((a) => {
       const na = norm(a);
       return tokens.some((t) => t === na);
     });
   });
+  if (areaExact.length > 0) return areaExact;
 
-  // Substring match — query string appears inside the haystack. We do NOT
-  // do the reverse (haystack appears inside query) because that produces
-  // false positives whenever a query happens to contain a directory token.
+  // Tier 2 — city exact match.
+  const cityMatches = rows.filter((r) => {
+    const c = norm(r.city);
+    if (c === q) return true;
+    if (tokens.length === 1 && tokens[0] === c) return true;
+    return false;
+  });
+  if (cityMatches.length > 0) return cityMatches;
+
+  // Tier 3 — substring (query inside haystack).
   const substring = rows.filter((r) => {
     const haystack = [r.label, r.city, r.area ?? "", ...r.areas_covered].map(norm);
     return haystack.some((h) => h.length >= 4 && h.includes(q));
   });
+  if (substring.length > 0) return substring;
 
-  // Token match against full-string haystack values. Useful for queries
-  // like "I am in Ghatkopar near the station" — token "Ghatkopar" picks
-  // up the ambulance whose areas_covered includes "Ghatkopar".
+  // Tier 4 — token match.
   const tokenMatch = rows.filter((r) => {
     const haystack = [r.label, r.city, r.area ?? "", ...r.areas_covered].map(norm);
     return tokens.some((t) => haystack.some((h) => h === t || h.includes(t)));
   });
-
-  // Specificity order: area > city > substring > token-fuzzy.
-  if (areaExact.length > 0) return areaExact;
-  if (cityMatches.length > 0) return cityMatches;
-  if (substring.length > 0) return substring;
-  if (tokenMatch.length > 0) return tokenMatch;
-  return [];
+  return tokenMatch;
 }
 
 export const findAmbulanceByAreaTool = tool({
