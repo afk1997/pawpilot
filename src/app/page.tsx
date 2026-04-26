@@ -54,6 +54,11 @@ export default function Dashboard() {
         { event: "INSERT", schema: "public", table: "messages" },
         (payload) => {
           const newMsg = payload.new as Message;
+          // Realtime broadcasts every messages-table insert, including ones
+          // belonging to /test-chat conversations. We only care about the
+          // currently-selected dispatcher conversation; the conversation-list
+          // refresh below will skip is_test rows because /api/conversations
+          // already filters them out server-side.
           if (newMsg.conversation_id === selectedId) {
             setMessages((prev) => {
               if (prev.some((m) => m.id === newMsg.id)) return prev;
@@ -66,7 +71,12 @@ export default function Dashboard() {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "conversations" },
-        () => fetchConversations()
+        (payload) => {
+          // Skip events for test conversations — they belong to /test-chat.
+          const row = (payload.new ?? payload.old) as { is_test?: boolean } | null;
+          if (row?.is_test) return;
+          fetchConversations();
+        }
       )
       .subscribe();
 

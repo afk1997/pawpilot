@@ -22,11 +22,16 @@ export async function POST(
 
   const { data: conversation, error: convoError } = await supabase
     .from("conversations")
-    .select("id, phone, mode")
+    .select("id, phone, mode, is_test")
     .eq("id", id)
     .single();
 
   if (convoError || !conversation) {
+    return Response.json({ error: "Conversation not found" }, { status: 404 });
+  }
+  // Dispatcher MUST NEVER manually send to a test conversation — that would
+  // route to the synthetic +91TEST_* phone via Interakt.
+  if (conversation.is_test) {
     return Response.json({ error: "Conversation not found" }, { status: 404 });
   }
 

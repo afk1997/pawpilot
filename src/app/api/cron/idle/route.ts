@@ -46,6 +46,7 @@ export async function GET(request: NextRequest) {
     .from("conversations")
     .select("id, phone, language, last_inbound_at")
     .eq("status", "awaiting_location")
+    .eq("is_test", false)
     .lte("last_inbound_at", nudgeBefore)
     .limit(50);
 
@@ -84,6 +85,7 @@ export async function GET(request: NextRequest) {
   const { data: stale } = await supabase
     .from("conversations")
     .select("id")
+    .eq("is_test", false)
     .not("status", "in", "(closed,escalated)")
     .lte("last_inbound_at", closeBefore)
     .limit(200);

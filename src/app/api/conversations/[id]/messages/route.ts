@@ -7,6 +7,17 @@ export async function GET(
 ) {
   const { id } = await params;
 
+  // Defense in depth: dispatcher dashboard endpoints must not surface test
+  // conversations even if a stale id is passed.
+  const { data: convo } = await supabase
+    .from("conversations")
+    .select("id, is_test")
+    .eq("id", id)
+    .maybeSingle();
+  if (!convo || convo.is_test) {
+    return Response.json({ error: "Conversation not found" }, { status: 404 });
+  }
+
   const { data: messages, error } = await supabase
     .from("messages")
     .select("*")

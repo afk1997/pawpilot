@@ -40,6 +40,10 @@ export interface ProcessIncomingInput {
   reporterPhone: string;
   reporterName: string | null;
   language: Language;
+  /** When true, sendAndPersist persists the assistant message but does NOT
+   *  call Interakt. Used by the /test-chat harness (synthetic +91TEST_*
+   *  conversations). Bound to conversations.is_test by the caller. */
+  isTest?: boolean;
 }
 
 interface ToolDerivedDelivery {
@@ -233,11 +237,13 @@ async function sendAndPersist(
 ): Promise<void> {
   if (process.env.INTERAKT_DEBUG_LOG !== "0") {
     console.log(
-      `[processor] sending to ${input.reporterPhone} (${text.length} chars) meta=${JSON.stringify(metadata)}`
+      `[processor] ${input.isTest ? "(test) skipping send to" : "sending to"} ${input.reporterPhone} (${text.length} chars) meta=${JSON.stringify(metadata)}`
     );
   }
-  const send = await sendWhatsAppMessage(input.reporterPhone, text);
-  if (process.env.INTERAKT_DEBUG_LOG !== "0") {
+  const send = input.isTest
+    ? { ok: true, status: 0, body: null, error: null }
+    : await sendWhatsAppMessage(input.reporterPhone, text);
+  if (!input.isTest && process.env.INTERAKT_DEBUG_LOG !== "0") {
     console.log(
       `[processor] send result ok=${send.ok} status=${send.status} error=${send.error ?? "none"}`
     );
@@ -249,8 +255,8 @@ async function sendAndPersist(
       role: "assistant",
       content: text,
       message_type: "text",
-      delivery_status: send.ok ? "sent" : "failed",
-      failed_reason: send.ok
+      delivery_status: input.isTest ? "test_skipped" : (send.ok ? "sent" : "failed"),
+      failed_reason: input.isTest || send.ok
         ? null
         : `status=${send.status} body=${JSON.stringify(send.body).slice(0, 200)}`,
     })

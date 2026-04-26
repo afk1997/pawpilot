@@ -38,6 +38,7 @@ export async function GET(request: NextRequest) {
       "id, phone, language, delivered_ambulance_id, ambulances:delivered_ambulance_id(label)"
     )
     .eq("status", "number_delivered")
+    .eq("is_test", false)
     .lte("awaiting_followup_at", nowIso)
     .limit(50);
 

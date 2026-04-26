@@ -84,6 +84,7 @@ export async function POST(request: NextRequest) {
     mode: "agent" | "human";
     status: string;
     language: Language | null;
+    is_test: boolean;
   };
 
   const conversation: ConvoLite | null = await (async (): Promise<ConvoLite | null> => {
@@ -99,7 +100,7 @@ export async function POST(request: NextRequest) {
         },
         { onConflict: "phone", ignoreDuplicates: true }
       )
-      .select("id, phone, name, mode, status, language")
+      .select("id, phone, name, mode, status, language, is_test")
       .maybeSingle();
 
     if (upserted.data) {
@@ -114,7 +115,7 @@ export async function POST(request: NextRequest) {
 
     const existing = await supabase
       .from("conversations")
-      .select("id, phone, name, mode, status, language")
+      .select("id, phone, name, mode, status, language, is_test")
       .eq("phone", incoming.fromPhone)
       .maybeSingle();
     if (existing.data) return existing.data as ConvoLite;
@@ -125,6 +126,14 @@ export async function POST(request: NextRequest) {
 
   if (!conversation) {
     return Response.json({ status: "error" }, { status: 500 });
+  }
+
+  // Defense in depth: real Interakt phones never use the +91TEST_* prefix
+  // that the test harness generates, but if a phone collision somehow
+  // happens we refuse to process — would otherwise corrupt test data.
+  if (conversation.is_test) {
+    console.error("[webhook] phone collision with test conversation:", incoming.fromPhone);
+    return Response.json({ status: "ignored_test_conv" });
   }
 
   // Persist inbound message.

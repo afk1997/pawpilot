@@ -42,6 +42,7 @@ export async function GET(request: NextRequest) {
   const { data: candidates, error } = await supabase
     .from("conversations")
     .select("id, phone, language, delivered_at, last_inbound_at")
+    .eq("is_test", false)
     .not("delivered_at", "is", null)
     .not("status", "in", "(closed,escalated)")
     .order("delivered_at", { ascending: true })

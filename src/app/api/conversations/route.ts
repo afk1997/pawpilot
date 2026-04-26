@@ -5,6 +5,7 @@ export async function GET() {
   const { data: conversations, error } = await supabase
     .from("conversations")
     .select("*")
+    .eq("is_test", false)
     .order("updated_at", { ascending: false });
 
   if (error) {

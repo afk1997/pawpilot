@@ -34,6 +34,7 @@ export async function PATCH(
     .from("conversations")
     .update(update)
     .eq("id", id)
+    .eq("is_test", false)
     .select()
     .single();
 
