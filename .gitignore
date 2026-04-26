@@ -51,6 +51,8 @@ yarn-error.log*
 *.pfx
 secrets/
 private/
+# MCP server configs frequently inline tokens — never commit
+.mcp.json
 
 # vercel
 .vercel

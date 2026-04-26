@@ -231,13 +231,17 @@ async function sendAndPersist(
   text: string,
   metadata: Record<string, unknown> = {}
 ): Promise<void> {
-  console.log(
-    `[processor] sending to ${input.reporterPhone} (${text.length} chars) meta=${JSON.stringify(metadata)}`
-  );
+  if (process.env.INTERAKT_DEBUG_LOG !== "0") {
+    console.log(
+      `[processor] sending to ${input.reporterPhone} (${text.length} chars) meta=${JSON.stringify(metadata)}`
+    );
+  }
   const send = await sendWhatsAppMessage(input.reporterPhone, text);
-  console.log(
-    `[processor] send result ok=${send.ok} status=${send.status} error=${send.error ?? "none"}`
-  );
+  if (process.env.INTERAKT_DEBUG_LOG !== "0") {
+    console.log(
+      `[processor] send result ok=${send.ok} status=${send.status} error=${send.error ?? "none"}`
+    );
+  }
   const inserted = await supabase
     .from("messages")
     .insert({

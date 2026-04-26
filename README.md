@@ -22,8 +22,8 @@ Languages: English, Hindi (Devanagari + Hinglish), Marathi, Gujarati.
 ```
 Reporter on WhatsApp
   → POST /api/webhook (Interakt)               ← signature verified, deduped
-  → instant ack within ~1 second               ← Phase 1 (live)
-  → background LLM tool loop                   ← Phase 2 (planned)
+  → first contact: deterministic welcome + menu (sync)
+  → subsequent turns: background LLM tool loop (Vercel after())
        • find_ambulance_by_area
        • get_nearest_ambulance (GPS API)
        • get_case_by_reporter (Cases API)
@@ -117,7 +117,7 @@ Dashboard at `http://localhost:3000`.
 | Method | Route | Description |
 |---|---|---|
 | GET  | `/api/webhook` | Health probe (returns "ok") |
-| POST | `/api/webhook` | Inbound from Interakt — verifies, dedups, instant-acks, audits, optionally escalates |
+| POST | `/api/webhook` | Inbound from Interakt — verifies signature, dedups by message id, sends welcome+menu on first contact, runs LLM in background |
 | GET  | `/api/conversations` | List all conversations (dashboard) |
 | GET  | `/api/conversations/:id/messages` | Conversation messages |
 | PATCH| `/api/conversations/:id` | Update mode/status/claim (dispatcher take-over) |
@@ -135,7 +135,7 @@ Full design plan: `/Users/kaivan108icloud.com/.claude/plans/now-we-need-to-sprig
 
 ## Implementation status
 
-- [x] Phase 1 — Foundation (provider swap, DB, ingest, env, audit, instant-ack)
+- [x] Phase 1 — Foundation (provider swap, DB, ingest, env, audit)
 - [ ] Phase 2 — Tool-using agent (Vercel AI SDK, 5 tools, multilingual prompt, queue)
 - [ ] Phase 3 — Dashboard (status badges, take-over, audit log panel)
 - [ ] Phase 4 — Followup + closure (Vercel Cron)
