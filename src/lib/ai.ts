@@ -78,6 +78,10 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
       system: `${ARHAM_SYSTEM_PROMPT}\n\n${contextNote}`,
       messages: input.history,
       tools,
+      // Force the model to actually invoke tools when it has the info to.
+      // Some providers (notably DeepSeek via openai-compatible) need this
+      // explicit hint or they ignore the tool list.
+      toolChoice: "auto",
       stopWhen: stepCountIs(MAX_STEPS),
     });
 
