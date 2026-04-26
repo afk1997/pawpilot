@@ -32,6 +32,14 @@ export interface AgentTurnInput {
   hasLocation: boolean;
 }
 
+export interface ToolCallRecord {
+  name: string;
+  input: unknown;
+  output: unknown;
+  /** True when the tool's execute threw or returned a typed error. */
+  failed?: boolean;
+}
+
 export interface AgentTurnResult {
   /** Final text to send to the reporter. May be empty if the agent decided not to speak. */
   text: string;
@@ -41,6 +49,9 @@ export interface AgentTurnResult {
   hitStepCap: boolean;
   /** Token usage for cost tracking. */
   usage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number };
+  /** All tool calls made this turn. The orchestrator inspects these to apply
+   *  deterministic delivery-card overrides post-LLM. */
+  toolCalls: ToolCallRecord[];
 }
 
 const FALLBACK_BY_LANG: Record<Language, string> = {
@@ -69,6 +80,7 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
   let text = "";
   let finishReason: string | undefined;
   let usage: AgentTurnResult["usage"];
+  const toolCalls: ToolCallRecord[] = [];
 
   const { model } = resolveModel(MODEL_ID);
 
@@ -94,24 +106,30 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
       totalTokens: result.usage?.totalTokens,
     };
 
-    // Audit each step's tool calls AND any tool errors. Tool errors must
-    // be captured for incident investigations — silent failures are the
-    // worst-case audit gap on life-and-death systems.
+    // Capture tool calls + results for the orchestrator AND audit log.
     if (result.steps && Array.isArray(result.steps)) {
       for (const step of result.steps) {
         const s = step as {
           toolCalls?: { toolName: string; input: unknown }[];
           toolResults?: { toolName: string; output?: unknown; error?: unknown; type?: string }[];
         };
-        const toolCalls = s.toolCalls ?? [];
-        const toolResults = s.toolResults ?? [];
-        for (let i = 0; i < toolCalls.length; i++) {
-          const call = toolCalls[i];
-          const out = toolResults[i];
+        const stepToolCalls = s.toolCalls ?? [];
+        const stepToolResults = s.toolResults ?? [];
+        for (let i = 0; i < stepToolCalls.length; i++) {
+          const call = stepToolCalls[i];
+          const out = stepToolResults[i];
           if (call.toolName === "escalate_to_dispatcher") escalated = true;
           const isError =
             out !== undefined &&
             ((out.type && /error/i.test(out.type)) || out.error !== undefined);
+
+          toolCalls.push({
+            name: call.toolName,
+            input: call.input,
+            output: out?.output ?? null,
+            failed: isError,
+          });
+
           await audit({
             conversationId: input.conversationId,
             actionType: "tool_call",
@@ -130,19 +148,17 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
       }
     }
 
-    // Distinguish three end states:
-    //   1. text empty + escalated → legitimate; orchestrator handles ack
-    //      separately, do NOT send a fallback (would confuse reporter).
-    //   2. text empty + finishReason "tool-calls" + steps == cap → ran
-    //      out of steps; fall back gracefully.
-    //   3. text empty + finishReason "stop" → degraded; surface fallback.
+    // If text is empty and the agent didn't escalate, it usually means the
+    // orchestrator is about to deliver a deterministic card (single-row
+    // ambulance match, donation/volunteer card, etc.). The orchestrator
+    // will inject the card text. We do NOT fall back to a generic apology.
+    //
+    // The fallback path is reserved for: model error, step cap with no
+    // resolving tool call, neither escalation nor a deterministic card
+    // call. Those cases are detected by the orchestrator (no card-class
+    // tool call AND no text).
     if (!text || text.trim().length === 0) {
-      if (escalated) {
-        // Leave text empty — caller skips send.
-      } else {
-        hitStepCap = finishReason === "tool-calls";
-        text = FALLBACK_BY_LANG[input.language] ?? FALLBACK_BY_LANG.en;
-      }
+      hitStepCap = finishReason === "tool-calls";
     }
   } catch (e) {
     console.error("runAgentTurn failed:", e);
@@ -154,7 +170,7 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
     text = FALLBACK_BY_LANG[input.language] ?? FALLBACK_BY_LANG.en;
   }
 
-  return { text, escalated, hitStepCap, usage };
+  return { text, escalated, hitStepCap, usage, toolCalls };
 }
 
 /** Backwards compat — Phase 1 stub kept for old imports. Will be removed once webhook is fully wired. */

@@ -98,8 +98,8 @@ alter table conversations add column if not exists status text not null default 
 alter table conversations drop constraint if exists conversations_status_check;
 alter table conversations add constraint conversations_status_check
   check (status in (
-    'new', 'awaiting_location', 'number_delivered', 'awaiting_followup',
-    'escalated', 'out_of_coverage', 'closed'
+    'new', 'awaiting_intent', 'awaiting_location', 'number_delivered',
+    'awaiting_followup', 'escalated', 'out_of_coverage', 'closed'
   ));
 
 alter table conversations add column if not exists intent text;

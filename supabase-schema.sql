@@ -76,6 +76,7 @@ create table conversations (
   mode text not null default 'agent' check (mode in ('agent', 'human')),
   status text not null default 'new' check (status in (
     'new',                  -- never replied to
+    'awaiting_intent',      -- welcome sent, waiting for menu selection
     'awaiting_location',    -- agent has asked, no usable location yet
     'number_delivered',     -- agent gave the driver phone; awaiting reporter action
     'awaiting_followup',    -- 5-min followup sent, waiting on yes/no

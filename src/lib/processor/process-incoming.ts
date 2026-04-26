@@ -1,18 +1,21 @@
 /**
- * Background processor: runs the LLM tool loop after the webhook has
- * already sent the instant ack. Decoupled from the webhook so the LLM
- * latency cannot violate Interakt's 5-second contract.
+ * Background processor: runs after the webhook returns 200 to Interakt.
  *
- * Right now the webhook calls processIncoming directly via setImmediate /
- * Promise without await, which works on Vercel Fluid Compute (functions
- * keep running after the HTTP response is sent up to the function timeout).
- * If we later need durable retries, we can swap this to Vercel Queues
- * without changing call sites.
+ * Key responsibility (V1.1): the LLM contributes zero characters to
+ * delivery messages. The orchestrator inspects the LLM's tool calls and,
+ * if a card-class tool succeeded, replaces the LLM's text with the
+ * deterministic card. The LLM's job is reduced to deciding which tool to
+ * call and writing conversational glue when no tool resolved the turn.
  */
 import { supabase } from "../supabase";
 import { sendWhatsAppMessage } from "../whatsapp";
 import { audit } from "../audit";
-import { runAgentTurn } from "../ai";
+import { runAgentTurn, type ToolCallRecord } from "../ai";
+import { buildAmbulanceCard } from "../ambulance-card";
+import { buildDonationCard } from "../cards/donation";
+import { buildVolunteerCard } from "../cards/volunteer";
+import { buildClinicCard, type ClinicRow } from "../cards/clinic";
+import { menuMessage } from "../messages/welcome";
 import type { Language } from "../types";
 
 const FOLLOWUP_DELAY_MIN = Number(process.env.FOLLOWUP_DELAY_MIN ?? 5);
@@ -20,21 +23,36 @@ const FOLLOWUP_DELAY_MIN = Number(process.env.FOLLOWUP_DELAY_MIN ?? 5);
 export interface ProcessIncomingInput {
   conversationId: string;
   inboundMessageId: string;
-  /** The just-arrived inbound text — passed in so we don't depend on Supabase
-   *  read replicas catching up before we run the LLM turn. */
   inboundText: string;
   reporterPhone: string;
   reporterName: string | null;
   language: Language;
 }
 
-/**
- * Run one LLM turn for the conversation, send the response, and update status.
- * Safe to run after the HTTP response has been returned to Interakt.
- */
+interface ToolDerivedDelivery {
+  text: string;
+  /** Set when the agent should mark this conversation as having delivered a
+   *  specific ambulance, so the followup cron can find it. */
+  delivered_ambulance_id?: string;
+}
+
+const FALLBACK_CLARIFY: Record<Language, string> = {
+  en: "Sorry, could you tell me what you need help with? Reply 'menu' to see the options again.",
+  hi: "माफ़ कीजिए, कृपया बताएँ आपको किस चीज़ में मदद चाहिए? विकल्प देखने के लिए 'menu' लिखें।",
+  mr: "क्षमस्व, कृपया सांगा तुम्हाला कशासाठी मदत हवी आहे? पर्याय पाहण्यासाठी 'menu' लिहा.",
+  gu: "માફ કરશો, કૃપા કરીને જણાવો તમને કઈ બાબતમાં મદદ જોઈએ છે? વિકલ્પો જોવા માટે 'menu' લખો.",
+};
+
 export async function processIncoming(input: ProcessIncomingInput): Promise<void> {
-  // Pull the most recent ~20 messages as conversation history (excluding the
-  // instant ack — it's not useful context for the LLM).
+  // Quick-path rails before we even invoke the LLM. These don't need the model.
+  // 1. "menu" / "options" / numeric — re-display the menu.
+  if (isMenuRequest(input.inboundText)) {
+    const text = menuMessage(input.language);
+    await sendAndPersist(input, text, { kind: "menu_redisplay" });
+    return;
+  }
+
+  // Pull last 20 messages as conversation history (excluding old instant-acks).
   const { data: history } = await supabase
     .from("messages")
     .select("role, content, is_instant_ack, created_at")
@@ -47,15 +65,14 @@ export async function processIncoming(input: ProcessIncomingInput): Promise<void
     .slice(-20)
     .map((m) => ({ role: m.role as "user" | "assistant", content: m.content as string }));
 
-  // Read replicas can be ~hundreds of ms stale; if our just-arrived inbound
-  // didn't make it into the SELECT, append it so the LLM can see what it's
-  // supposed to be replying to.
+  // Read replicas can lag — append the just-arrived inbound if it didn't
+  // make it into the SELECT yet.
   const lastUser = [...filtered].reverse().find((m) => m.role === "user");
   if (!lastUser || lastUser.content !== input.inboundText) {
     filtered.push({ role: "user", content: input.inboundText });
   }
 
-  // Determine current conversation status + whether we have a usable location.
+  // Determine current conversation status.
   const { data: convo } = await supabase
     .from("conversations")
     .select("status, mode, delivered_ambulance_id")
@@ -63,7 +80,7 @@ export async function processIncoming(input: ProcessIncomingInput): Promise<void
     .single();
 
   if (!convo) return;
-  if (convo.mode === "human") return; // dispatcher took over while we were waiting
+  if (convo.mode === "human") return;
 
   const hasLocation = await hasUsableLocation(input.conversationId);
 
@@ -77,32 +94,130 @@ export async function processIncoming(input: ProcessIncomingInput): Promise<void
     hasLocation,
   });
 
-  if (!result.text) {
-    console.log(`[processor] no text from LLM (escalated=${result.escalated}); skipping send`);
+  // Escalation handler — runAgentTurn already flipped DB state via the tool.
+  if (result.escalated) {
+    if (result.text) {
+      await sendAndPersist(input, result.text, { escalated: true });
+    }
     return;
   }
 
-  console.log(
-    `[processor] sending to ${input.reporterPhone} (${result.text.length} chars, escalated=${result.escalated})`
-  );
+  // ── Post-LLM deterministic card override ─────────────────────────────────
+  // Inspect tool calls. If a card-class tool succeeded, the orchestrator
+  // builds the card and uses it as the outbound text — overriding any
+  // text the LLM generated.
+  const override = await deriveCardFromToolCalls(result.toolCalls, input.language);
 
-  // Send + persist outbound.
-  const send = await sendWhatsAppMessage(input.reporterPhone, result.text);
+  let outboundText = result.text;
+  let deliveredAmbulanceId: string | undefined;
+
+  if (override) {
+    outboundText = override.text;
+    deliveredAmbulanceId = override.delivered_ambulance_id;
+  } else if (!outboundText || outboundText.trim().length === 0) {
+    // No card to deliver, no LLM text → degraded path. Send a clarification.
+    outboundText = FALLBACK_CLARIFY[input.language] ?? FALLBACK_CLARIFY.en;
+  }
+
+  await sendAndPersist(input, outboundText, {
+    hit_step_cap: result.hitStepCap,
+    usage: result.usage ?? null,
+    overridden: !!override,
+  });
+
+  await updateStatusAfterTurn(input.conversationId, deliveredAmbulanceId, override !== null);
+}
+
+/**
+ * Look at the tool calls the LLM made this turn. If any of them produced a
+ * deterministic delivery card, build that card and return it. Single-row
+ * ambulance match is the most common case.
+ *
+ * Priority order — if multiple tools fired, ambulance dispatch wins (it's
+ * the highest-stakes path).
+ */
+async function deriveCardFromToolCalls(
+  toolCalls: ToolCallRecord[],
+  language: Language
+): Promise<ToolDerivedDelivery | null> {
+  // 1. find_ambulance_by_area returned EXACTLY 1 row → deliver card.
+  for (const tc of toolCalls) {
+    if (tc.name !== "find_ambulance_by_area") continue;
+    if (tc.failed) continue;
+    const rows = (tc.output as Array<unknown>) ?? [];
+    if (!Array.isArray(rows) || rows.length !== 1) continue;
+    const row = rows[0] as {
+      id: string;
+      city: string;
+      area: string | null;
+      phone: string;
+      operator_name: string;
+      operator_is_arham: boolean;
+    };
+    const card = buildAmbulanceCard(row, language);
+    return { text: card.full_message, delivered_ambulance_id: row.id };
+  }
+
+  // 2. get_nearest_ambulance returned a row → deliver card.
+  for (const tc of toolCalls) {
+    if (tc.name !== "get_nearest_ambulance") continue;
+    if (tc.failed) continue;
+    const row = tc.output as null | {
+      id: string;
+      city: string;
+      area: string | null;
+      phone: string;
+      operator_name: string;
+      operator_is_arham: boolean;
+    };
+    if (!row) continue;
+    const card = buildAmbulanceCard(row, language);
+    return { text: card.full_message, delivered_ambulance_id: row.id };
+  }
+
+  // 3. get_static_content('donate') → donation card.
+  for (const tc of toolCalls) {
+    if (tc.name !== "get_static_content") continue;
+    if (tc.failed) continue;
+    const inp = tc.input as { topic?: string };
+    if (inp?.topic === "donate") {
+      return { text: buildDonationCard(language) };
+    }
+    if (inp?.topic === "volunteer") {
+      return { text: buildVolunteerCard(language) };
+    }
+    if (inp?.topic === "clinics") {
+      const rows = Array.isArray(tc.output) ? (tc.output as ClinicRow[]) : [];
+      return { text: buildClinicCard(rows, language) };
+    }
+  }
+
+  return null;
+}
+
+async function sendAndPersist(
+  input: ProcessIncomingInput,
+  text: string,
+  metadata: Record<string, unknown> = {}
+): Promise<void> {
   console.log(
-    `[processor] send result ok=${send.ok} status=${send.status} ` +
-    `error=${send.error ?? "none"} body=${JSON.stringify(send.body ?? null).slice(0, 200)}`
+    `[processor] sending to ${input.reporterPhone} (${text.length} chars) meta=${JSON.stringify(metadata)}`
+  );
+  const send = await sendWhatsAppMessage(input.reporterPhone, text);
+  console.log(
+    `[processor] send result ok=${send.ok} status=${send.status} error=${send.error ?? "none"}`
   );
   const inserted = await supabase
     .from("messages")
     .insert({
       conversation_id: input.conversationId,
       role: "assistant",
-      content: result.text,
+      content: text,
       message_type: "text",
       delivery_status: send.ok ? "sent" : "failed",
       failed_reason: send.ok
         ? null
-        : `status=${send.status} body=${JSON.stringify(send.body).slice(0, 200)} error=${send.error ?? ""}`,
+        : `status=${send.status} body=${JSON.stringify(send.body).slice(0, 200)}`,
     })
     .select("id")
     .single();
@@ -111,37 +226,18 @@ export async function processIncoming(input: ProcessIncomingInput): Promise<void
     conversationId: input.conversationId,
     messageId: inserted.data?.id ?? null,
     actionType: "outbound",
-    messageText: result.text,
-    metadata: {
-      hit_step_cap: result.hitStepCap,
-      escalated: result.escalated,
-      usage: result.usage ?? null,
-    },
+    messageText: text,
+    metadata,
   });
-
-  // Status transitions based on what the LLM did this turn.
-  await updateStatusAfterTurn(input.conversationId, result.text, result.escalated);
-
-  // If the LLM escalated, ensure the orchestrator-level state matches.
-  if (result.escalated) {
-    await supabase
-      .from("conversations")
-      .update({
-        mode: "human",
-        status: "escalated",
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", input.conversationId);
-  }
 }
 
-/**
- * Returns true ONLY if the conversation has a real WhatsApp location pin
- * OR a user message that looks like an Indian city/area/landmark hint.
- * The previous heuristic ("any letters >8 chars") returned true for nearly
- * every message — including just "hello, please help" — and the LLM was
- * told `hasLocation=true` even when the reporter hadn't shared one.
- */
+function isMenuRequest(text: string): boolean {
+  if (!text) return false;
+  const t = text.trim().toLowerCase();
+  if (/^(menu|options?|help|sahaay|मेन्यू|पर्याय|मेनू|menyu)$/.test(t)) return true;
+  return false;
+}
+
 async function hasUsableLocation(conversationId: string): Promise<boolean> {
   const { data } = await supabase
     .from("messages")
@@ -152,65 +248,51 @@ async function hasUsableLocation(conversationId: string): Promise<boolean> {
     .limit(20);
   if (!data) return false;
   for (const m of data) {
-    // 1. Real WhatsApp location pin.
     if (m.location_lat !== null && m.location_lat !== undefined) return true;
-    // 2. Free-text mentioning at least one known city or landmark area.
     const txt = ((m.content as string) ?? "").toLowerCase();
     if (LOCATION_HINTS.some((h) => txt.includes(h))) return true;
   }
   return false;
 }
 
-// Lowercase city + area names from the directory we ingested. Conservative
-// hints — short ones (< 4 chars) are excluded to avoid false positives.
-// If your directory grows, regenerate this list from the DB at boot.
 const LOCATION_HINTS: string[] = [
-  // Cities
   "ahmedabad", "bhavnagar", "gondal", "junagadh", "mandvi", "palitana",
   "surat", "vadodara", "veraval", "gandhinagar", "morbi", "rajkot",
   "jamnagar", "vapi",
   "mumbai", "pune", "nagpur", "solapur", "amravati",
   "delhi", "chennai", "hyderabad", "indore", "kolkata", "bengaluru",
   "bangalore", "gurugram", "gurgaon",
-  // Mumbai areas
   "kandivali", "borivali", "dahisar", "malad", "mira road", "bhayandar",
   "andheri", "vile parle", "juhu", "santacruz", "jogeshwari", "lokhandwala",
   "ghatkopar", "vikhroli", "chembur", "mulund", "bhandup", "nahur",
   "dombivali", "tardeo", "dadar", "wadala",
-  // Pune areas
   "pcmc", "pimpri", "chinchwad", "dehu", "bhosari", "baner", "khadki",
   "hinjewadi", "swargate", "dhankawadi", "kondwa", "yewalewadi",
   "ambegaon", "handewadi", "ghorpadi",
-  // Other landmarks
   "phoenix", "marketcity", "vesu", "varachha", "nasik highway",
   "old delhi", "shalimar bagh", "ashok vihar", "rana pratap",
-  // Hindi/Marathi/Gujarati script transliterations of common cities
   "मुंबई", "पुणे", "दिल्ली", "अहमदाबाद", "घाटकोपर", "कांदिवली",
   "મુંબઈ", "અમદાવાદ", "સુરત", "વડોદરા",
 ];
 
 /**
- * Map LLM output to conversation status. We look for a delivered phone
- * number (any +91XXXXXXXXXX-shaped string in the outbound) and stamp
- * delivered_at + awaiting_followup_at if so.
+ * After the orchestrator overrides with a card, transition status:
+ *   - delivered an ambulance card → status=number_delivered, awaiting_followup_at=now+N
+ *   - any other override or LLM text → status=awaiting_intent if from 'new'
+ *     (one step further into the conversation)
  */
 async function updateStatusAfterTurn(
   conversationId: string,
-  outboundText: string,
-  escalated: boolean
+  deliveredAmbulanceId: string | undefined,
+  hadOverride: boolean
 ): Promise<void> {
-  if (escalated) return; // escalation path handles its own status
-
-  // Strip non-digit chars and look for 12-digit "91XXXXXXXXXX" anywhere — robust
-  // to LLM "humanizing" formats like "+91 7662 00 5402" or "+91-98765-43210".
-  const justDigits = outboundText.replace(/\D/g, "");
-  const phoneInOutput = /91\d{10}/.test(justDigits);
-  if (phoneInOutput) {
+  if (deliveredAmbulanceId) {
     const followupAt = new Date(Date.now() + FOLLOWUP_DELAY_MIN * 60_000).toISOString();
     await supabase
       .from("conversations")
       .update({
         status: "number_delivered",
+        delivered_ambulance_id: deliveredAmbulanceId,
         delivered_at: new Date().toISOString(),
         awaiting_followup_at: followupAt,
         updated_at: new Date().toISOString(),
@@ -219,16 +301,21 @@ async function updateStatusAfterTurn(
     return;
   }
 
-  // Otherwise we're still gathering context.
+  // No ambulance delivery — just nudge status one step further if we were 'new'.
   const { data: convo } = await supabase
     .from("conversations")
     .select("status")
     .eq("id", conversationId)
     .single();
-  if (convo?.status === "new") {
+  if (convo?.status === "new" || convo?.status === "awaiting_intent") {
+    // If the LLM is still chatting (no card delivered), and the inbound
+    // hinted at an ambulance, we've moved into awaiting_location.
     await supabase
       .from("conversations")
-      .update({ status: "awaiting_location", updated_at: new Date().toISOString() })
+      .update({
+        status: hadOverride ? convo.status : "awaiting_location",
+        updated_at: new Date().toISOString(),
+      })
       .eq("id", conversationId);
   }
 }

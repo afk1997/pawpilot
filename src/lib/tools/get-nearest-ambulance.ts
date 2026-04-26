@@ -1,18 +1,18 @@
 /**
  * Tool: get_nearest_ambulance
  *
- * Used as a tiebreaker when find_ambulance_by_area returns multiple
- * candidates AND the reporter has shared a WhatsApp location pin (or a
- * geocoded area).
+ * Tiebreaker when find_ambulance_by_area returns multiple candidates AND
+ * the reporter has shared a WhatsApp location pin. Calls GPS API, ranks by
+ * Haversine distance, returns one unit with deterministic card fields.
  *
- * Calls the GPS API to fetch each candidate's current position, ranks by
- * Haversine distance, returns the nearest unit. Falls back to the first
- * candidate if the GPS API is unavailable (degraded mode).
+ * Falls back gracefully when GPS API is unavailable (degraded:true).
  */
 import { z } from "zod";
 import { tool } from "ai";
 import { supabase } from "../supabase";
 import { getPositions, haversineKm } from "../clients/gps-api";
+import { buildAmbulanceCard, formatIndianPhone } from "../ambulance-card";
+import type { Language } from "../types";
 
 export const getNearestAmbulanceParams = z.object({
   lat: z.number().describe("Reporter's latitude (from WhatsApp location pin)."),
@@ -20,9 +20,11 @@ export const getNearestAmbulanceParams = z.object({
   candidate_ids: z
     .array(z.string())
     .optional()
-    .describe(
-      "Optional list of ambulance ids to rank among. If omitted, all active ambulances are considered."
-    ),
+    .describe("Optional list of ambulance ids to rank among. Omit to consider all active ambulances."),
+  language: z
+    .enum(["en", "hi", "mr", "gu"])
+    .optional()
+    .describe("Reporter's language; used to localize the operator suffix."),
 });
 
 export type GetNearestAmbulanceInput = z.infer<typeof getNearestAmbulanceParams>;
@@ -30,12 +32,15 @@ export type GetNearestAmbulanceInput = z.infer<typeof getNearestAmbulanceParams>
 export interface NearestAmbulanceResult {
   id: string;
   label: string;
-  driver_phone: string;
   city: string;
   state: string;
   area: string | null;
   operator_name: string;
   operator_is_arham: boolean;
+  phone: string;
+  phone_formatted: string;
+  display_name: string;
+  operator_suffix: string | null;
   distance_km: number | null;
   degraded: boolean;
 }
@@ -44,12 +49,11 @@ export async function getNearestAmbulance(
   input: GetNearestAmbulanceInput
 ): Promise<NearestAmbulanceResult | null> {
   const { lat, lng, candidate_ids } = input;
+  const lang: Language = (input.language as Language | undefined) ?? "en";
 
   let q = supabase
     .from("ambulances")
-    .select(
-      "id, label, phone, city, state, area, ngo_operators(name, is_arham)"
-    )
+    .select("id, label, phone, city, state, area, ngo_operators(name, is_arham)")
     .eq("active", true);
 
   if (candidate_ids && candidate_ids.length > 0) {
@@ -62,7 +66,6 @@ export async function getNearestAmbulance(
   const positions = await getPositions(ambulances.map((a) => a.id as string));
   const byId = new Map(positions.map((p) => [p.ambulance_id, p]));
 
-  // Filter to those we have positions for; rank by distance.
   const ranked = ambulances
     .map((a) => {
       const op = (a as unknown as { ngo_operators?: { name?: string; is_arham?: boolean } })
@@ -74,7 +77,7 @@ export async function getNearestAmbulance(
       return {
         id: a.id as string,
         label: a.label as string,
-        driver_phone: a.phone as string,
+        phone: a.phone as string,
         city: a.city as string,
         state: a.state as string,
         area: (a.area as string | null) ?? null,
@@ -84,7 +87,6 @@ export async function getNearestAmbulance(
         available: pos?.available ?? true,
       };
     })
-    // Prefer available units; among them, nearest first; ones without GPS fall to the bottom.
     .sort((a, b) => {
       if (a.available !== b.available) return a.available ? -1 : 1;
       if (a.distance_km === null && b.distance_km === null) return 0;
@@ -97,16 +99,29 @@ export async function getNearestAmbulance(
 
   const top = ranked[0];
   const degraded = positions.length === 0;
+  const card = buildAmbulanceCard(
+    {
+      city: top.city,
+      area: top.area,
+      phone: top.phone,
+      operator_name: top.operator_name,
+      operator_is_arham: top.operator_is_arham,
+    },
+    lang
+  );
 
   return {
     id: top.id,
     label: top.label,
-    driver_phone: top.driver_phone,
     city: top.city,
     state: top.state,
     area: top.area,
     operator_name: top.operator_name,
     operator_is_arham: top.operator_is_arham,
+    phone: top.phone,
+    phone_formatted: formatIndianPhone(top.phone),
+    display_name: card.display_name,
+    operator_suffix: card.operator_suffix,
     distance_km: top.distance_km,
     degraded,
   };
@@ -114,7 +129,7 @@ export async function getNearestAmbulance(
 
 export const getNearestAmbulanceTool = tool({
   description:
-    "Pick the nearest ambulance given a location pin. Use as a tiebreaker when find_ambulance_by_area returns multiple candidates and the reporter shared a WhatsApp pin. Returns one row or null. May be degraded if the GPS API is down (degraded:true).",
+    "Pick the nearest ambulance given a location pin. Use only when the reporter shared a WhatsApp location pin AND find_ambulance_by_area returned multiple candidates. Returns one row with `display_name` and `phone_formatted` ready to paste verbatim, or null. May be degraded if the GPS API is down (degraded:true).",
   inputSchema: getNearestAmbulanceParams,
   execute: async (input) => getNearestAmbulance(input),
 });

@@ -19,6 +19,8 @@
 import { z } from "zod";
 import { tool } from "ai";
 import { supabase } from "../supabase";
+import { buildAmbulanceCard, formatIndianPhone } from "../ambulance-card";
+import type { Language } from "../types";
 
 export const findAmbulanceByAreaParams = z.object({
   query: z
@@ -30,7 +32,7 @@ export const findAmbulanceByAreaParams = z.object({
   language: z
     .enum(["en", "hi", "mr", "gu"])
     .optional()
-    .describe("Reporter's language; helps with logging only, no behavior change."),
+    .describe("Reporter's language; used to localize the operator suffix."),
 });
 
 export type FindAmbulanceByAreaInput = z.infer<typeof findAmbulanceByAreaParams>;
@@ -38,7 +40,6 @@ export type FindAmbulanceByAreaInput = z.infer<typeof findAmbulanceByAreaParams>
 export interface AmbulanceRow {
   id: string;
   label: string;
-  driver_phone: string;
   city: string;
   area: string | null;
   state: string;
@@ -46,6 +47,14 @@ export interface AmbulanceRow {
   category: string;
   operator_name: string;
   operator_is_arham: boolean;
+  /** E.164 phone, e.g. "+917662005404". Source of truth from the directory. */
+  phone: string;
+  /** Pretty-printed phone, e.g. "+91 76620 05404". */
+  phone_formatted: string;
+  /** Pre-formatted line 1 of the dispatch card. The orchestrator pastes this verbatim. */
+  display_name: string;
+  /** Suffix for partner-NGO ambulances; null when Arham-operated. */
+  operator_suffix: string | null;
 }
 
 /** Normalize a string for fuzzy matching: lowercase, strip non-alphanum. */
@@ -76,20 +85,37 @@ export async function findAmbulanceByArea(
     return [];
   }
 
+  const lang: Language = (input.language as Language | undefined) ?? "en";
   const rows: AmbulanceRow[] = data.map((r) => {
     const op = (r as unknown as { ngo_operators?: { name?: string; is_arham?: boolean } })
       .ngo_operators;
+    const operator_name = op?.name ?? "Arham Yuva Seva Group";
+    const operator_is_arham = op?.is_arham ?? true;
+    const phone = r.phone as string;
+    const card = buildAmbulanceCard(
+      {
+        city: r.city as string,
+        area: (r.area as string | null) ?? null,
+        phone,
+        operator_name,
+        operator_is_arham,
+      },
+      lang
+    );
     return {
       id: r.id as string,
       label: r.label as string,
-      driver_phone: r.phone as string,
       city: r.city as string,
       area: (r.area as string | null) ?? null,
       state: r.state as string,
       areas_covered: (r.areas_covered as string[]) ?? [],
       category: r.category as string,
-      operator_name: op?.name ?? "Arham Yuva Seva Group",
-      operator_is_arham: op?.is_arham ?? true,
+      operator_name,
+      operator_is_arham,
+      phone,
+      phone_formatted: formatIndianPhone(phone),
+      display_name: card.display_name,
+      operator_suffix: card.operator_suffix,
     };
   });
 
@@ -145,7 +171,7 @@ export async function findAmbulanceByArea(
 
 export const findAmbulanceByAreaTool = tool({
   description:
-    "Find ambulance(s) covering the reporter's location. Returns 0+ rows with driver name, phone, areas covered, and operator. If multiple rows match, the orchestrator may follow up with get_nearest_ambulance.",
+    "Find ambulance(s) covering the reporter's location. Returns 0+ rows. Each row includes a `display_name` (e.g. \"Arham Animal Ambulance, Ghatkopar\") and `phone_formatted` (e.g. \"+91 76620 05404\") that the orchestrator pastes verbatim — DO NOT reformat them. If multiple rows match, ask the reporter for the area; if exactly one matches, the orchestrator will deliver it.",
   inputSchema: findAmbulanceByAreaParams,
   execute: async (input) => findAmbulanceByArea(input),
 });
