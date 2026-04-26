@@ -20,16 +20,39 @@ type InteraktResult = {
   error?: string;
 };
 
-/** Split internal E.164 (+91XXXXXXXXXX) into Interakt's separate fields. */
+/**
+ * Split internal E.164 (+91XXXXXXXXXX) into Interakt's separate fields.
+ *
+ * IMPORTANT: a naive `\d{1,3}` regex is greedy and would match "+919" as
+ * the country code for "+919096820338", leaving "096820338" — a 9-digit
+ * fragment Interakt accepts and silently drops. This is the bug that
+ * caused outbound messages to "succeed" with 201 yet never deliver.
+ *
+ * Use length-based logic instead. India is the dominant country code
+ * for this app, but we also handle other 1-3 digit country codes.
+ */
 function splitPhone(phone: string): { countryCode: string; phoneNumber: string } {
-  const cleaned = phone.replace(/[^0-9+]/g, "");
-  if (cleaned.startsWith("+")) {
-    // +91XXXXXXXXXX → countryCode=+91, phoneNumber=XXXXXXXXXX
-    const match = cleaned.match(/^(\+\d{1,3})(\d+)$/);
-    if (match) return { countryCode: match[1], phoneNumber: match[2] };
+  const digits = phone.replace(/\D/g, "");
+
+  // 10-digit Indian local number — assume +91.
+  if (digits.length === 10) {
+    return { countryCode: "+91", phoneNumber: digits };
   }
-  // Fallback: assume India.
-  return { countryCode: "+91", phoneNumber: cleaned.replace(/\D/g, "").slice(-10) };
+  // 12 digits starting with "91" → India.
+  if (digits.length === 12 && digits.startsWith("91")) {
+    return { countryCode: "+91", phoneNumber: digits.slice(2) };
+  }
+  // 11 digits with leading "0" → strip and assume India.
+  if (digits.length === 11 && digits.startsWith("0")) {
+    return { countryCode: "+91", phoneNumber: digits.slice(1) };
+  }
+  // International: assume the last 10 digits are the local number.
+  if (digits.length > 10) {
+    return { countryCode: `+${digits.slice(0, -10)}`, phoneNumber: digits.slice(-10) };
+  }
+  // Last-ditch: use the digits we have; Interakt may reject, but at least
+  // the failure will be visible in the logs.
+  return { countryCode: "+91", phoneNumber: digits };
 }
 
 function authHeader(): string {
@@ -40,6 +63,7 @@ function authHeader(): string {
 }
 
 async function postInterakt(payload: unknown): Promise<InteraktResult> {
+  const debug = process.env.INTERAKT_DEBUG_LOG !== "0";
   try {
     const res = await fetch(INTERAKT_BASE, {
       method: "POST",
@@ -50,9 +74,18 @@ async function postInterakt(payload: unknown): Promise<InteraktResult> {
       body: JSON.stringify(payload),
     });
     const body = await res.json().catch(() => null);
-    return { ok: res.ok, status: res.status, body };
+    const result = { ok: res.ok, status: res.status, body };
+    if (debug || !res.ok) {
+      const bodyStr = body ? JSON.stringify(body).slice(0, 400) : "(no body)";
+      console.log(
+        `[interakt-send] status=${res.status} ok=${res.ok} body=${bodyStr}`
+      );
+    }
+    return result;
   } catch (e) {
-    return { ok: false, status: 0, body: null, error: e instanceof Error ? e.message : String(e) };
+    const error = e instanceof Error ? e.message : String(e);
+    console.error("[interakt-send] threw:", error);
+    return { ok: false, status: 0, body: null, error };
   }
 }
 

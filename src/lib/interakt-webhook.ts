@@ -78,7 +78,19 @@ interface InteraktPayload {
   };
 }
 
-const INBOUND_MESSAGE_TYPE = "message_received";
+// Interakt's `type` casing varies (the test ping uses "Webhook Test" with
+// spaces, while the docs claim `message_received` snake_case). Match
+// case-insensitively against any of these forms to be safe.
+const INBOUND_TYPE_PATTERNS = [
+  /^message[_\s]received$/i,
+  /^messages[_\s]received$/i,
+  /^message[_\s]received[_\s]from[_\s]customers?$/i,
+];
+
+function isInboundMessageType(t: string | undefined): boolean {
+  if (!t) return false;
+  return INBOUND_TYPE_PATTERNS.some((re) => re.test(t.trim()));
+}
 
 /** Map Interakt's `message_content_type` to our internal MessageType. */
 function mapContentType(contentType: string | undefined): MessageType {
@@ -130,7 +142,7 @@ export function parseInteraktPayload(raw: unknown): IncomingMessage | null {
   const p = raw as InteraktPayload;
 
   // Skip non-incoming events.
-  if (p.type !== INBOUND_MESSAGE_TYPE) return null;
+  if (!isInboundMessageType(p.type)) return null;
 
   const customer = p.data?.customer;
   const message = p.data?.message;

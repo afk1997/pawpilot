@@ -77,10 +77,21 @@ export async function processIncoming(input: ProcessIncomingInput): Promise<void
     hasLocation,
   });
 
-  if (!result.text) return;
+  if (!result.text) {
+    console.log(`[processor] no text from LLM (escalated=${result.escalated}); skipping send`);
+    return;
+  }
+
+  console.log(
+    `[processor] sending to ${input.reporterPhone} (${result.text.length} chars, escalated=${result.escalated})`
+  );
 
   // Send + persist outbound.
   const send = await sendWhatsAppMessage(input.reporterPhone, result.text);
+  console.log(
+    `[processor] send result ok=${send.ok} status=${send.status} ` +
+    `error=${send.error ?? "none"} body=${JSON.stringify(send.body ?? null).slice(0, 200)}`
+  );
   const inserted = await supabase
     .from("messages")
     .insert({
@@ -89,7 +100,9 @@ export async function processIncoming(input: ProcessIncomingInput): Promise<void
       content: result.text,
       message_type: "text",
       delivery_status: send.ok ? "sent" : "failed",
-      failed_reason: send.ok ? null : (send.error ?? "send failed"),
+      failed_reason: send.ok
+        ? null
+        : `status=${send.status} body=${JSON.stringify(send.body).slice(0, 200)} error=${send.error ?? ""}`,
     })
     .select("id")
     .single();
