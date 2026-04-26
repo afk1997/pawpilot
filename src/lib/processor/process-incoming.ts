@@ -20,6 +20,9 @@ const FOLLOWUP_DELAY_MIN = Number(process.env.FOLLOWUP_DELAY_MIN ?? 5);
 export interface ProcessIncomingInput {
   conversationId: string;
   inboundMessageId: string;
+  /** The just-arrived inbound text — passed in so we don't depend on Supabase
+   *  read replicas catching up before we run the LLM turn. */
+  inboundText: string;
   reporterPhone: string;
   reporterName: string | null;
   language: Language;
@@ -43,6 +46,14 @@ export async function processIncoming(input: ProcessIncomingInput): Promise<void
     .filter((m) => !m.is_instant_ack)
     .slice(-20)
     .map((m) => ({ role: m.role as "user" | "assistant", content: m.content as string }));
+
+  // Read replicas can be ~hundreds of ms stale; if our just-arrived inbound
+  // didn't make it into the SELECT, append it so the LLM can see what it's
+  // supposed to be replying to.
+  const lastUser = [...filtered].reverse().find((m) => m.role === "user");
+  if (!lastUser || lastUser.content !== input.inboundText) {
+    filtered.push({ role: "user", content: input.inboundText });
+  }
 
   // Determine current conversation status + whether we have a usable location.
   const { data: convo } = await supabase
@@ -111,24 +122,59 @@ export async function processIncoming(input: ProcessIncomingInput): Promise<void
   }
 }
 
+/**
+ * Returns true ONLY if the conversation has a real WhatsApp location pin
+ * OR a user message that looks like an Indian city/area/landmark hint.
+ * The previous heuristic ("any letters >8 chars") returned true for nearly
+ * every message — including just "hello, please help" — and the LLM was
+ * told `hasLocation=true` even when the reporter hadn't shared one.
+ */
 async function hasUsableLocation(conversationId: string): Promise<boolean> {
   const { data } = await supabase
     .from("messages")
-    .select("message_type, content, location_lat")
+    .select("content, location_lat")
     .eq("conversation_id", conversationId)
     .eq("role", "user")
     .order("created_at", { ascending: false })
     .limit(20);
   if (!data) return false;
   for (const m of data) {
+    // 1. Real WhatsApp location pin.
     if (m.location_lat !== null && m.location_lat !== undefined) return true;
-    const txt = (m.content as string) ?? "";
-    // Naive heuristic: any message mentioning a likely city/area name is "maybe location";
-    // the LLM already handles this better. We just hint to the system prompt.
-    if (txt.length > 8 && /[a-zA-Zऀ-ॿ઀-૿]/.test(txt)) return true;
+    // 2. Free-text mentioning at least one known city or landmark area.
+    const txt = ((m.content as string) ?? "").toLowerCase();
+    if (LOCATION_HINTS.some((h) => txt.includes(h))) return true;
   }
   return false;
 }
+
+// Lowercase city + area names from the directory we ingested. Conservative
+// hints — short ones (< 4 chars) are excluded to avoid false positives.
+// If your directory grows, regenerate this list from the DB at boot.
+const LOCATION_HINTS: string[] = [
+  // Cities
+  "ahmedabad", "bhavnagar", "gondal", "junagadh", "mandvi", "palitana",
+  "surat", "vadodara", "veraval", "gandhinagar", "morbi", "rajkot",
+  "jamnagar", "vapi",
+  "mumbai", "pune", "nagpur", "solapur", "amravati",
+  "delhi", "chennai", "hyderabad", "indore", "kolkata", "bengaluru",
+  "bangalore", "gurugram", "gurgaon",
+  // Mumbai areas
+  "kandivali", "borivali", "dahisar", "malad", "mira road", "bhayandar",
+  "andheri", "vile parle", "juhu", "santacruz", "jogeshwari", "lokhandwala",
+  "ghatkopar", "vikhroli", "chembur", "mulund", "bhandup", "nahur",
+  "dombivali", "tardeo", "dadar", "wadala",
+  // Pune areas
+  "pcmc", "pimpri", "chinchwad", "dehu", "bhosari", "baner", "khadki",
+  "hinjewadi", "swargate", "dhankawadi", "kondwa", "yewalewadi",
+  "ambegaon", "handewadi", "ghorpadi",
+  // Other landmarks
+  "phoenix", "marketcity", "vesu", "varachha", "nasik highway",
+  "old delhi", "shalimar bagh", "ashok vihar", "rana pratap",
+  // Hindi/Marathi/Gujarati script transliterations of common cities
+  "मुंबई", "पुणे", "दिल्ली", "अहमदाबाद", "घाटकोपर", "कांदिवली",
+  "મુંબઈ", "અમદાવાદ", "સુરત", "વડોદરા",
+];
 
 /**
  * Map LLM output to conversation status. We look for a delivered phone
@@ -142,7 +188,10 @@ async function updateStatusAfterTurn(
 ): Promise<void> {
   if (escalated) return; // escalation path handles its own status
 
-  const phoneInOutput = /\+91[\s-]?\d{4}[\s-]?\d{3}[\s-]?\d{3,4}/.test(outboundText);
+  // Strip non-digit chars and look for 12-digit "91XXXXXXXXXX" anywhere — robust
+  // to LLM "humanizing" formats like "+91 7662 00 5402" or "+91-98765-43210".
+  const justDigits = outboundText.replace(/\D/g, "");
+  const phoneInOutput = /91\d{10}/.test(justDigits);
   if (phoneInOutput) {
     const followupAt = new Date(Date.now() + FOLLOWUP_DELAY_MIN * 60_000).toISOString();
     await supabase

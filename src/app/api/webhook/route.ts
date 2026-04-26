@@ -77,7 +77,11 @@ export async function POST(request: NextRequest) {
     return Response.json({ status: "duplicate" });
   }
 
-  // Find or create conversation by phone.
+  // Find or create conversation by phone. We use upsert with onConflict to
+  // close a race window where two webhooks for a brand-new reporter arrive
+  // in parallel — both would otherwise pass an empty `existing` check, both
+  // would INSERT, and the second would fail with a unique violation,
+  // returning 500 to Interakt and triggering its retry behaviour.
   type ConvoLite = {
     id: string;
     phone: string;
@@ -88,38 +92,44 @@ export async function POST(request: NextRequest) {
   };
 
   const conversation: ConvoLite | null = await (async (): Promise<ConvoLite | null> => {
+    const language = detectLanguage(incoming.text);
+
+    // Upsert by phone. ignoreDuplicates=false means returning the existing
+    // row instead of failing; we then update name if we just learned it.
+    const upserted = await supabase
+      .from("conversations")
+      .upsert(
+        {
+          phone: incoming.fromPhone,
+          name: incoming.fromName,
+          status: "new",
+          language,
+        },
+        { onConflict: "phone", ignoreDuplicates: true }
+      )
+      .select("id, phone, name, mode, status, language")
+      .maybeSingle();
+
+    if (upserted.data) {
+      if (incoming.fromName && incoming.fromName !== upserted.data.name) {
+        await supabase
+          .from("conversations")
+          .update({ name: incoming.fromName })
+          .eq("id", upserted.data.id);
+      }
+      return upserted.data as ConvoLite;
+    }
+
+    // ignoreDuplicates returned no row when a duplicate existed; fetch it.
     const existing = await supabase
       .from("conversations")
       .select("id, phone, name, mode, status, language")
       .eq("phone", incoming.fromPhone)
       .maybeSingle();
+    if (existing.data) return existing.data as ConvoLite;
 
-    if (existing.data) {
-      if (incoming.fromName && incoming.fromName !== existing.data.name) {
-        await supabase
-          .from("conversations")
-          .update({ name: incoming.fromName })
-          .eq("id", existing.data.id);
-      }
-      return existing.data as ConvoLite;
-    }
-
-    const language = detectLanguage(incoming.text);
-    const created = await supabase
-      .from("conversations")
-      .insert({
-        phone: incoming.fromPhone,
-        name: incoming.fromName,
-        status: "new",
-        language,
-      })
-      .select("id, phone, name, mode, status, language")
-      .single();
-    if (created.error || !created.data) {
-      console.error("Failed to create conversation:", created.error);
-      return null;
-    }
-    return created.data as ConvoLite;
+    console.error("Failed to upsert conversation:", upserted.error);
+    return null;
   })();
 
   if (!conversation) {
@@ -177,62 +187,79 @@ export async function POST(request: NextRequest) {
   const language: Language = (conversation.language ?? detectLanguage(incoming.text)) as Language;
   const isVoiceNote = incoming.type === "audio";
 
-  // Send the instant ack synchronously — must reach the reporter quickly.
-  // Phase 2 will move this into a background processor along with the LLM call.
-  const ackText = instantAck(language, isVoiceNote);
-  await sendWhatsAppMessage(incoming.fromPhone, ackText);
-
-  const ackInsert = await supabase
-    .from("messages")
-    .insert({
-      conversation_id: conversation.id,
-      role: "assistant",
-      content: ackText,
-      message_type: "text",
-      is_instant_ack: true,
-      delivery_status: "sent",
-    })
-    .select("id")
-    .single();
-
-  await audit({
-    conversationId: conversation.id,
-    messageId: ackInsert.data?.id ?? null,
-    actionType: "instant_ack",
-    messageText: ackText,
-  });
-
-  // Hardcoded rails — narrow auto-escalation paths.
+  // Decide which path we're on BEFORE sending anything outbound. The
+  // hardcoded escalation paths (cannot-reach, human-handoff) get a single
+  // localized "feedback registered" / handoff acknowledgement — NOT the
+  // generic instant ack. Sending both would mean the reporter gets two
+  // messages back-to-back, which is confusing.
   let escalatedThisTurn = false;
+  let escalationReason: string | null = null;
   if (
     conversation.status === "number_delivered" ||
     conversation.status === "awaiting_followup"
   ) {
     if (isCannotReachMessage(incoming.text)) {
-      await escalate(conversation.id, "cannot_reach_driver", incoming.text, language);
+      escalationReason = "cannot_reach_driver";
       escalatedThisTurn = true;
     }
   }
   if (!escalatedThisTurn && isHumanHandoffRequest(incoming.text)) {
-    await escalate(conversation.id, "manual_human_request", incoming.text, language);
+    escalationReason = "manual_human_request";
     escalatedThisTurn = true;
   }
 
-  // Kick off the LLM tool loop in the background. `after()` schedules work
-  // to run after this response has been sent to Interakt — keeps us inside
-  // the 5-second contract regardless of LLM latency.
-  if (!escalatedThisTurn) {
+  if (escalatedThisTurn && escalationReason) {
+    // Send single localized ack (synchronously, so it reaches the reporter
+    // immediately) then defer all DB / audit writes to after().
+    const reason = escalationReason;
+    const ackText =
+      reason === "cannot_reach_driver"
+        ? FEEDBACK_REGISTERED[language] ?? FEEDBACK_REGISTERED.en
+        : HANDOFF_ACK[language] ?? HANDOFF_ACK.en;
+    await sendWhatsAppMessage(incoming.fromPhone, ackText);
     after(async () => {
       try {
+        await escalate(conversation.id, reason, incoming.text, ackText);
+      } catch (e) {
+        console.error("background escalate failed:", e);
+      }
+    });
+  } else {
+    // Normal path — send the generic instant ack synchronously, then run
+    // the LLM tool loop in `after()`.
+    const ackText = instantAck(language, isVoiceNote);
+    await sendWhatsAppMessage(incoming.fromPhone, ackText);
+
+    after(async () => {
+      try {
+        const ackInsert = await supabase
+          .from("messages")
+          .insert({
+            conversation_id: conversation.id,
+            role: "assistant",
+            content: ackText,
+            message_type: "text",
+            is_instant_ack: true,
+            delivery_status: "sent",
+          })
+          .select("id")
+          .single();
+        await audit({
+          conversationId: conversation.id,
+          messageId: ackInsert.data?.id ?? null,
+          actionType: "instant_ack",
+          messageText: ackText,
+        });
         await processIncoming({
           conversationId: conversation.id,
           inboundMessageId,
+          inboundText: incoming.text,
           reporterPhone: incoming.fromPhone,
           reporterName: incoming.fromName,
           language,
         });
       } catch (e) {
-        console.error("background processIncoming failed:", e);
+        console.error("background work failed:", e);
       }
     });
   }
@@ -240,20 +267,32 @@ export async function POST(request: NextRequest) {
   return Response.json({ status: "ack_sent" });
 }
 
+// Localized escalation acknowledgements.
+const FEEDBACK_REGISTERED: Record<Language, string> = {
+  en: "Thanks, your feedback is registered. Our team will take action shortly.",
+  hi: "धन्यवाद, आपकी प्रतिक्रिया दर्ज हो गई है। हमारी टीम जल्द ही कार्रवाई करेगी।",
+  mr: "धन्यवाद, तुमचा अभिप्राय नोंदवला आहे. आमची टीम लवकरच कारवाई करेल.",
+  gu: "આભાર, તમારો પ્રતિસાદ નોંધવામાં આવ્યો છે. અમારી ટીમ ટૂંક સમયમાં કાર્યવાહી કરશે.",
+};
+
+const HANDOFF_ACK: Record<Language, string> = {
+  en: "Got it — connecting you with a team member. They'll reply here shortly.",
+  hi: "ठीक है — आपको हमारी टीम के सदस्य से जोड़ रहे हैं। वे जल्द ही यहाँ जवाब देंगे।",
+  mr: "ठीक आहे — तुम्हाला आमच्या टीममधील एका सदस्याशी जोडत आहोत. ते लवकरच इथे उत्तर देतील.",
+  gu: "ઠીક છે — તમને અમારી ટીમના સભ્ય સાથે જોડી રહ્યા છીએ. તેઓ ટૂંક સમયમાં અહીં જવાબ આપશે.",
+};
+
+/**
+ * Background-only: persist the escalation state + audit. The user-visible
+ * ack message has already been sent synchronously by the caller. Keep this
+ * out of the 3-second webhook critical path.
+ */
 async function escalate(
   conversationId: string,
   reason: string,
   inboundText: string,
-  language: Language
+  ackTextSent: string
 ) {
-  const FEEDBACK_REGISTERED: Record<Language, string> = {
-    en: "Thanks, your feedback is registered. Our team will take action shortly.",
-    hi: "धन्यवाद, आपकी प्रतिक्रिया दर्ज हो गई है। हमारी टीम जल्द ही कार्रवाई करेगी।",
-    mr: "धन्यवाद, तुमचा अभिप्राय नोंदवला आहे. आमची टीम लवकरच कारवाई करेल.",
-    gu: "આભાર, તમારો પ્રતિસાદ નોંધવામાં આવ્યો છે. અમારી ટીમ ટૂંક સમયમાં કાર્યવાહી કરશે.",
-  };
-
-  // Switch conversation to human mode + escalated status.
   await supabase
     .from("conversations")
     .update({
@@ -264,41 +303,31 @@ async function escalate(
     })
     .eq("id", conversationId);
 
-  // Send acknowledgment if reason is cannot_reach (per design rule).
-  if (reason === "cannot_reach_driver") {
-    const { data: convo } = await supabase
-      .from("conversations")
-      .select("phone")
-      .eq("id", conversationId)
-      .single();
-    if (convo) {
-      const ackText = FEEDBACK_REGISTERED[language] ?? FEEDBACK_REGISTERED.en;
-      await sendWhatsAppMessage(convo.phone, ackText);
-      const inserted = await supabase
-        .from("messages")
-        .insert({
-          conversation_id: conversationId,
-          role: "assistant",
-          content: ackText,
-          message_type: "text",
-          delivery_status: "sent",
-        })
-        .select("id")
-        .single();
-      await audit({
-        conversationId,
-        messageId: inserted.data?.id ?? null,
-        actionType: "outbound",
-        messageText: ackText,
-        metadata: { triggered_by: "cannot_reach_acknowledgment" },
-      });
-    }
-  }
+  // Persist the ack we sent synchronously, so it's in the conversation history.
+  const inserted = await supabase
+    .from("messages")
+    .insert({
+      conversation_id: conversationId,
+      role: "assistant",
+      content: ackTextSent,
+      message_type: "text",
+      delivery_status: "sent",
+    })
+    .select("id")
+    .single();
+
+  await audit({
+    conversationId,
+    messageId: inserted.data?.id ?? null,
+    actionType: "outbound",
+    messageText: ackTextSent,
+    metadata: { triggered_by: reason },
+  });
 
   await audit({
     conversationId,
     actionType: "escalation",
     messageText: inboundText,
-    metadata: { reason },
+    metadata: { reason, source: "rail" },
   });
 }

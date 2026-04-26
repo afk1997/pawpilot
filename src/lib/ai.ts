@@ -67,6 +67,7 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
   let escalated = false;
   let hitStepCap = false;
   let text = "";
+  let finishReason: string | undefined;
   let usage: AgentTurnResult["usage"];
 
   const { model } = resolveModel(MODEL_ID);
@@ -81,6 +82,7 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
     });
 
     text = result.text ?? "";
+    finishReason = (result as { finishReason?: string }).finishReason;
 
     usage = {
       promptTokens: result.usage?.inputTokens,
@@ -88,34 +90,55 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
       totalTokens: result.usage?.totalTokens,
     };
 
-    // Audit each step's tool calls.
+    // Audit each step's tool calls AND any tool errors. Tool errors must
+    // be captured for incident investigations — silent failures are the
+    // worst-case audit gap on life-and-death systems.
     if (result.steps && Array.isArray(result.steps)) {
       for (const step of result.steps) {
-        const toolCalls = (step as { toolCalls?: { toolName: string; input: unknown }[] })
-          .toolCalls;
-        const toolResults = (step as { toolResults?: { toolName: string; output: unknown }[] })
-          .toolResults;
-        if (!toolCalls) continue;
+        const s = step as {
+          toolCalls?: { toolName: string; input: unknown }[];
+          toolResults?: { toolName: string; output?: unknown; error?: unknown; type?: string }[];
+        };
+        const toolCalls = s.toolCalls ?? [];
+        const toolResults = s.toolResults ?? [];
         for (let i = 0; i < toolCalls.length; i++) {
           const call = toolCalls[i];
-          const out = toolResults?.[i];
+          const out = toolResults[i];
           if (call.toolName === "escalate_to_dispatcher") escalated = true;
+          const isError =
+            out !== undefined &&
+            ((out.type && /error/i.test(out.type)) || out.error !== undefined);
           await audit({
             conversationId: input.conversationId,
             actionType: "tool_call",
             toolName: call.toolName,
             toolInput: call.input,
             toolOutput: out?.output ?? null,
+            metadata: isError ? { error: out?.error ?? out?.type, failed: true } : null,
           });
+          if (isError) {
+            console.warn(
+              `[agent] tool ${call.toolName} errored:`,
+              JSON.stringify(out?.error ?? out?.type)
+            );
+          }
         }
       }
     }
 
-    // If the agent ran out of steps without producing a final answer, fall
-    // back gracefully and mark for orchestrator-side escalation.
+    // Distinguish three end states:
+    //   1. text empty + escalated → legitimate; orchestrator handles ack
+    //      separately, do NOT send a fallback (would confuse reporter).
+    //   2. text empty + finishReason "tool-calls" + steps == cap → ran
+    //      out of steps; fall back gracefully.
+    //   3. text empty + finishReason "stop" → degraded; surface fallback.
     if (!text || text.trim().length === 0) {
-      hitStepCap = true;
-      text = FALLBACK_BY_LANG[input.language] ?? FALLBACK_BY_LANG.en;
+      if (escalated) {
+        // Leave text empty — caller skips send.
+      } else {
+        hitStepCap = finishReason === "tool-calls";
+        text = FALLBACK_BY_LANG[input.language] ?? FALLBACK_BY_LANG.en;
+      }
     }
   } catch (e) {
     console.error("runAgentTurn failed:", e);
