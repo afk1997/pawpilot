@@ -7,8 +7,14 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "ingest:ambulances": "tsx scripts/ingest-ambulances.ts"
+    "ingest:ambulances": "tsx scripts/ingest-ambulances.ts",
+    "kb:validate": "tsx scripts/kb/validate-workbook.ts",
+    "kb:import": "tsx scripts/kb/import-staging.ts",
+    "kb:publish": "tsx scripts/kb/publish.ts",
+    "kb:embed": "tsx scripts/kb/generate-embeddings.ts",
+    "kb:eval": "tsx scripts/kb/run-evals.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^2.0.0",
@@ -20,6 +26,7 @@
     "next": "16.2.1",
     "react": "19.2.4",
     "react-dom": "19.2.4",
+    "xlsx": "^0.18.5",
     "zod": "^3.23.8"
   },
   "devDependencies": {
@@ -33,6 +40,7 @@
     "eslint-config-next": "16.2.1",
     "tailwindcss": "^4",
     "tsx": "^4.19.0",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^4.1.5"
   }
 }
