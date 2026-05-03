@@ -9,7 +9,12 @@ import { findAmbulanceByAreaTool } from "./find-ambulance-by-area";
 import { getNearestAmbulanceTool } from "./get-nearest-ambulance";
 import { getCaseByReporterTool } from "./get-case-by-reporter";
 import { buildEscalateTool } from "./escalate-to-dispatcher";
-import { getStaticContentTool } from "./get-static-content";
+import { searchKnowledgeBaseTool } from "./search-knowledge-base";
+import { getOfficialLinkTool } from "./get-official-link";
+import { getDonationInfoTool } from "./get-donation-info";
+import { getVolunteerInfoTool } from "./get-volunteer-info";
+import { getCoverageStatusTool } from "./get-coverage-status";
+import { getResponseTemplateTool } from "./get-response-template";
 
 export function buildAgentTools(conversationId: string) {
   return {
@@ -17,7 +22,12 @@ export function buildAgentTools(conversationId: string) {
     get_nearest_ambulance: getNearestAmbulanceTool,
     get_case_by_reporter: getCaseByReporterTool,
     escalate_to_dispatcher: buildEscalateTool(conversationId),
-    get_static_content: getStaticContentTool,
+    search_knowledge_base: searchKnowledgeBaseTool,
+    get_official_link: getOfficialLinkTool,
+    get_donation_info: getDonationInfoTool,
+    get_volunteer_info: getVolunteerInfoTool,
+    get_coverage_status: getCoverageStatusTool,
+    get_response_template: getResponseTemplateTool,
   };
 }
 
