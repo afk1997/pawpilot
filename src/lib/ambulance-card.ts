@@ -25,6 +25,7 @@ import type { Language } from "./types";
 export interface AmbulanceRowMinimal {
   city: string;
   area: string | null;
+  category?: string | null;
   phone: string; // E.164 form: +91XXXXXXXXXX
   operator_name: string;
   operator_is_arham: boolean;
@@ -78,16 +79,17 @@ export function buildAmbulanceCard(
   language: Language = "en"
 ): AmbulanceCard {
   const place = row.area && row.area.trim().length > 0 ? row.area : row.city;
+  const category = row.category?.trim() || "Animal Ambulance";
   const phone_formatted = formatIndianPhone(row.phone);
 
   let display_name: string;
   let operator_suffix: string | null;
 
   if (row.operator_is_arham) {
-    display_name = `Arham Animal Ambulance, ${place}`;
+    display_name = `Arham ${category}, ${place}`;
     operator_suffix = null;
   } else {
-    display_name = `Animal Ambulance, ${place}`;
+    display_name = `${category}, ${place}`;
     operator_suffix = OPERATED_BY_BY_LANG[language](row.operator_name);
   }
 

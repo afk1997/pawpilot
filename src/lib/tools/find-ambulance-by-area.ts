@@ -60,6 +60,8 @@ export interface AmbulanceRow {
   operator_suffix: string | null;
 }
 
+export type AmbulanceMatchRow = Pick<AmbulanceRow, "label" | "city" | "area" | "areas_covered">;
+
 /**
  * Normalize a string for fuzzy matching: lowercase, strip non-alphanum,
  * then map colloquial city names (Bangalore, Bombay, …) to canonical
@@ -105,6 +107,7 @@ export async function findAmbulanceByArea(
       {
         city: r.city as string,
         area: (r.area as string | null) ?? null,
+        category: r.category as string,
         phone,
         operator_name,
         operator_is_arham,
@@ -162,12 +165,22 @@ export async function findAmbulanceByArea(
  * Run the four-tier match (area-exact, city-exact, substring, token) and
  * return the most specific non-empty tier.
  */
-function matchInRows(
+export function matchInRows<T extends AmbulanceMatchRow>(
   q: string,
   tokens: string[],
-  rows: AmbulanceRow[]
-): AmbulanceRow[] {
-  // Tier 1 — area exact match.
+  rows: T[]
+): T[] {
+  // Tier 1 — city exact match. A city-only query must return every active
+  // row in that city, including city-wide and area-specific ambulances.
+  const cityMatches = rows.filter((r) => {
+    const c = norm(r.city);
+    if (c === q) return true;
+    if (tokens.length === 1 && tokens[0] === c) return true;
+    return false;
+  });
+  if (cityMatches.length > 0) return cityMatches;
+
+  // Tier 2 — area exact match.
   const areaExact = rows.filter((r) => {
     if (r.area && norm(r.area) === q) return true;
     if (r.areas_covered.some((a) => norm(a) === q)) return true;
@@ -177,15 +190,6 @@ function matchInRows(
     });
   });
   if (areaExact.length > 0) return areaExact;
-
-  // Tier 2 — city exact match.
-  const cityMatches = rows.filter((r) => {
-    const c = norm(r.city);
-    if (c === q) return true;
-    if (tokens.length === 1 && tokens[0] === c) return true;
-    return false;
-  });
-  if (cityMatches.length > 0) return cityMatches;
 
   // Tier 3 — substring (query inside haystack).
   const substring = rows.filter((r) => {
