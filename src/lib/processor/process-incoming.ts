@@ -1,33 +1,22 @@
 /**
  * Background processor: runs after the webhook returns 200 to Interakt.
  *
- * V1.2 architecture — LLM-driven:
- *   - The LLM owns the conversation. Greetings, intent recognition,
- *     dispatch, donate, volunteer, clinic, suggestions — all driven by
- *     the model and its tools.
- *   - The orchestrator's only jobs are:
- *       1. Concurrency control (advisory lock per conversation, so two
- *          inbounds 1ms apart don't produce contradictory replies).
- *       2. Post-LLM card override — if a card-class tool returned data,
- *          replace the LLM's text with the deterministic card. This is
- *          the SAFETY NET against phone-digit hallucination.
- *       3. Fallback when the LLM literally throws (with retry).
- *       4. "menu" keyword shortcut (cheap, harmless).
- *   - The deterministic intent rails introduced in V1.1.1 have been
- *     removed — they made the agent feel like a chatbot and the user
- *     explicitly rejected that pattern.
+ * Answer Engine architecture:
+ *   - Keep the webhook/dashboard shell: conversation lock, persistence,
+ *     Interakt send abstraction, status updates, and audit trail.
+ *   - Replace the inner turn with workbook-backed evidence retrieval,
+ *     deterministic high-stakes responses, and outbound validation.
+ *   - LLM composition is intentionally no longer the production source of
+ *     factual answers; Supabase KB rows and directory rows are.
  */
 import { supabase } from "../supabase";
 import { sendWhatsAppMessage } from "../whatsapp";
 import { audit } from "../audit";
-import { runAgentTurn, type ToolCallRecord } from "../ai";
-import { buildAmbulanceCard, buildMultiAmbulanceCard } from "../ambulance-card";
-import { buildDonationCard } from "../cards/donation";
-import { buildVolunteerCard } from "../cards/volunteer";
-import { buildClinicCard, type ClinicRow } from "../cards/clinic";
 import { menuMessage } from "../messages/welcome";
 import { withConversationLock } from "../conversation-lock";
 import type { Language } from "../types";
+import { runAnswerEngineTurn, type AnswerEngineTurnResult } from "../answer-engine/run-answer-engine";
+import { logAnswerEvent } from "../answer-engine/answer-events";
 
 const FOLLOWUP_DELAY_MIN = Number(process.env.FOLLOWUP_DELAY_MIN ?? 5);
 
@@ -45,25 +34,6 @@ export interface ProcessIncomingInput {
    *  conversations). Bound to conversations.is_test by the caller. */
   isTest?: boolean;
 }
-
-interface ToolDerivedDelivery {
-  text: string;
-  delivered_ambulance_id?: string;
-}
-
-const FALLBACK_TRANSIENT: Record<Language, string> = {
-  en: "One moment — let me check that for you.",
-  hi: "एक पल — मैं आपके लिए देख रहा हूँ।",
-  mr: "एक क्षण — मी तुमच्यासाठी तपासतो.",
-  gu: "એક ક્ષણ — હું તમારા માટે તપાસું છું.",
-};
-
-const FALLBACK_EXHAUSTED: Record<Language, string> = {
-  en: "Sorry, I'm having trouble right now. A team member will reach out shortly.",
-  hi: "क्षमा करें, मुझे अभी कुछ समस्या आ रही है। हमारी टीम का सदस्य जल्द ही आपसे संपर्क करेगा।",
-  mr: "क्षमस्व, मला आत्ता थोडी अडचण येत आहे. आमच्या टीममधील कोणीतरी लवकरच तुमच्याशी संपर्क करेल.",
-  gu: "માફ કરશો, મને હાલ થોડી તકલીફ છે. અમારી ટીમનો કોઈ સભ્ય ટૂંક સમયમાં તમારો સંપર્ક કરશે.",
-};
 
 export async function processIncoming(input: ProcessIncomingInput): Promise<void> {
   // Per-conversation lock: serialize parallel inbounds so two messages
@@ -91,150 +61,43 @@ async function processIncomingLocked(input: ProcessIncomingInput): Promise<void>
     return;
   }
 
-  // ── Everything else: LLM owns the turn ───────────────────────────────
-
-  // Pull last 20 messages as conversation history (excluding old instant-acks).
-  const { data: history } = await supabase
-    .from("messages")
-    .select("role, content, is_instant_ack, created_at")
-    .eq("conversation_id", input.conversationId)
-    .order("created_at", { ascending: true })
-    .limit(40);
-
-  const filtered = (history ?? [])
-    .filter((m) => !m.is_instant_ack)
-    .slice(-20)
-    .map((m) => ({ role: m.role as "user" | "assistant", content: m.content as string }));
-
-  // Read replicas can lag — append the just-arrived inbound if it didn't
-  // make it into the SELECT yet.
-  const lastUser = [...filtered].reverse().find((m) => m.role === "user");
-  if (!lastUser || lastUser.content !== input.inboundText) {
-    filtered.push({ role: "user", content: input.inboundText });
-  }
-
-  const hasLocation = await hasUsableLocation(input.conversationId);
-
-  const result = await runAgentTurn({
+  const result = await runAnswerEngineTurn({
     conversationId: input.conversationId,
+    inboundMessageId: input.inboundMessageId,
+    inboundText: input.inboundText,
     reporterPhone: input.reporterPhone,
     reporterName: input.reporterName,
-    history: filtered,
     language: input.language,
-    conversationStatus: convo.status as string,
-    hasLocation,
   });
 
-  if (result.escalated) {
-    if (result.text) await sendAndPersist(input, result.text, { escalated: true });
-    return;
-  }
-
-  // ── Post-LLM deterministic card override (the safety net) ────────────
-  // If the LLM called a card-class tool, replace its text with the canonical
-  // card. This is critical: even if the model hallucinates phone digits or
-  // formats the response wrong, the orchestrator wins.
-  const override = await deriveCardFromToolCalls(result.toolCalls, input.language);
-
-  let outboundText = result.text;
-  let deliveredAmbulanceId: string | undefined;
-
-  if (override) {
-    outboundText = override.text;
-    deliveredAmbulanceId = override.delivered_ambulance_id;
-  } else if (!outboundText || outboundText.trim().length === 0) {
-    outboundText =
-      result.error === "transient"
-        ? FALLBACK_TRANSIENT[input.language] ?? FALLBACK_TRANSIENT.en
-        : FALLBACK_EXHAUSTED[input.language] ?? FALLBACK_EXHAUSTED.en;
-  }
-
-  await sendAndPersist(input, outboundText, {
-    hit_step_cap: result.hitStepCap,
-    usage: result.usage ?? null,
-    overridden: !!override,
-    error: result.error,
+  const persisted = await sendAndPersist(input, result.text, {
+    answer_engine: true,
+    intent: result.intent,
+    confidence: result.confidence,
+    validation: result.validation,
+    escalated: result.escalated ?? false,
+    ...result.metadata,
   });
-
-  await updateStatusAfterTurn(input.conversationId, deliveredAmbulanceId, override !== null);
+  await logAnswerEvent({
+    conversationId: input.conversationId,
+    inboundMessageId: input.inboundMessageId,
+    outboundMessageId: persisted.messageId,
+    result,
+    deliveryStatus: persisted.deliveryStatus,
+  });
+  await updateStatusAfterAnswer(input.conversationId, result);
 }
 
-/**
- * Look at the tool calls the LLM made this turn. If any of them produced a
- * deterministic delivery card, build that card and return it.
- */
-async function deriveCardFromToolCalls(
-  toolCalls: ToolCallRecord[],
-  language: Language
-): Promise<ToolDerivedDelivery | null> {
-  // 1. find_ambulance_by_area: 1 → single card; 2-3 → multi-card; 4+ defer to LLM.
-  for (const tc of toolCalls) {
-    if (tc.name !== "find_ambulance_by_area") continue;
-    if (tc.failed) continue;
-    const rows = (tc.output as Array<unknown>) ?? [];
-    if (!Array.isArray(rows) || rows.length === 0) continue;
-
-    type Row = {
-      id: string;
-      city: string;
-      area: string | null;
-      phone: string;
-      operator_name: string;
-      operator_is_arham: boolean;
-    };
-
-    if (rows.length === 1) {
-      const row = rows[0] as Row;
-      const card = buildAmbulanceCard(row, language);
-      return { text: card.full_message, delivered_ambulance_id: row.id };
-    }
-
-    if (rows.length <= 3) {
-      const typed = rows as Row[];
-      const text = buildMultiAmbulanceCard(typed, language);
-      return { text };
-    }
-    continue;
-  }
-
-  // 2. get_nearest_ambulance returns a single row → deliver card.
-  for (const tc of toolCalls) {
-    if (tc.name !== "get_nearest_ambulance") continue;
-    if (tc.failed) continue;
-    const row = tc.output as null | {
-      id: string;
-      city: string;
-      area: string | null;
-      phone: string;
-      operator_name: string;
-      operator_is_arham: boolean;
-    };
-    if (!row) continue;
-    const card = buildAmbulanceCard(row, language);
-    return { text: card.full_message, delivered_ambulance_id: row.id };
-  }
-
-  // 3. get_static_content topic → deterministic card.
-  for (const tc of toolCalls) {
-    if (tc.name !== "get_static_content") continue;
-    if (tc.failed) continue;
-    const inp = tc.input as { topic?: string };
-    if (inp?.topic === "donate") return { text: buildDonationCard(language) };
-    if (inp?.topic === "volunteer") return { text: buildVolunteerCard(language) };
-    if (inp?.topic === "clinics") {
-      const rows = Array.isArray(tc.output) ? (tc.output as ClinicRow[]) : [];
-      return { text: buildClinicCard(rows, language) };
-    }
-  }
-
-  return null;
+interface PersistedOutbound {
+  messageId: string | null;
+  deliveryStatus: string | null;
 }
 
 async function sendAndPersist(
   input: ProcessIncomingInput,
   text: string,
   metadata: Record<string, unknown> = {}
-): Promise<void> {
+): Promise<PersistedOutbound> {
   if (process.env.INTERAKT_DEBUG_LOG !== "0") {
     console.log(
       `[processor] ${input.isTest ? "(test) skipping send to" : "sending to"} ${input.reporterPhone} (${text.length} chars) meta=${JSON.stringify(metadata)}`
@@ -270,6 +133,10 @@ async function sendAndPersist(
     messageText: text,
     metadata,
   });
+  return {
+    messageId: inserted.data?.id ?? null,
+    deliveryStatus: input.isTest ? "test_skipped" : (send.ok ? "sent" : "failed"),
+  };
 }
 
 function isMenuRequest(text: string): boolean {
@@ -278,55 +145,17 @@ function isMenuRequest(text: string): boolean {
   return /^(menu|options?|help|sahaay|मेन्यू|पर्याय|मेनू|menyu|મેનુ)$/.test(t);
 }
 
-async function hasUsableLocation(conversationId: string): Promise<boolean> {
-  const { data } = await supabase
-    .from("messages")
-    .select("content, location_lat")
-    .eq("conversation_id", conversationId)
-    .eq("role", "user")
-    .order("created_at", { ascending: false })
-    .limit(20);
-  if (!data) return false;
-  for (const m of data) {
-    if (m.location_lat !== null && m.location_lat !== undefined) return true;
-    const txt = ((m.content as string) ?? "").toLowerCase();
-    if (LOCATION_HINTS.some((h) => txt.includes(h))) return true;
-  }
-  return false;
-}
-
-const LOCATION_HINTS: string[] = [
-  "ahmedabad", "bhavnagar", "gondal", "junagadh", "mandvi", "palitana",
-  "surat", "vadodara", "veraval", "gandhinagar", "morbi", "rajkot",
-  "jamnagar", "vapi",
-  "mumbai", "pune", "nagpur", "solapur", "amravati",
-  "delhi", "chennai", "hyderabad", "indore", "kolkata", "bengaluru",
-  "bangalore", "gurugram", "gurgaon",
-  "kandivali", "borivali", "dahisar", "malad", "mira road", "bhayandar",
-  "andheri", "vile parle", "juhu", "santacruz", "jogeshwari", "lokhandwala",
-  "ghatkopar", "vikhroli", "chembur", "mulund", "bhandup", "nahur",
-  "dombivali", "tardeo", "dadar", "wadala", "goregaon",
-  "pcmc", "pimpri", "chinchwad", "dehu", "bhosari", "baner", "khadki",
-  "hinjewadi", "swargate", "dhankawadi", "kondwa", "yewalewadi",
-  "ambegaon", "handewadi", "ghorpadi",
-  "phoenix", "marketcity", "vesu", "varachha", "nasik highway",
-  "old delhi", "shalimar bagh", "ashok vihar", "rana pratap",
-  "मुंबई", "पुणे", "दिल्ली", "अहमदाबाद", "घाटकोपर", "कांदिवली",
-  "મુંબઈ", "અમદાવાદ", "સુરત", "વડોદરા",
-];
-
-async function updateStatusAfterTurn(
+async function updateStatusAfterAnswer(
   conversationId: string,
-  deliveredAmbulanceId: string | undefined,
-  hadOverride: boolean
+  result: AnswerEngineTurnResult
 ): Promise<void> {
-  if (deliveredAmbulanceId) {
+  if (result.deliveredAmbulanceId) {
     const followupAt = new Date(Date.now() + FOLLOWUP_DELAY_MIN * 60_000).toISOString();
     await supabase
       .from("conversations")
       .update({
         status: "number_delivered",
-        delivered_ambulance_id: deliveredAmbulanceId,
+        delivered_ambulance_id: result.deliveredAmbulanceId,
         delivered_at: new Date().toISOString(),
         awaiting_followup_at: followupAt,
         updated_at: new Date().toISOString(),
@@ -335,18 +164,26 @@ async function updateStatusAfterTurn(
     return;
   }
 
+  if (result.escalated) return;
+
   const { data: convo } = await supabase
     .from("conversations")
     .select("status")
     .eq("id", conversationId)
     .single();
-  if (convo?.status === "new" || convo?.status === "awaiting_intent") {
-    await supabase
-      .from("conversations")
-      .update({
-        status: hadOverride ? convo.status : "awaiting_location",
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", conversationId);
-  }
+  if (convo?.status !== "new" && convo?.status !== "awaiting_intent") return;
+
+  const nextStatus =
+    result.intent === "emergency"
+      ? result.metadata?.matchCount === 0
+        ? "out_of_coverage"
+        : "awaiting_location"
+      : convo.status;
+  await supabase
+    .from("conversations")
+    .update({
+      status: nextStatus,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", conversationId);
 }

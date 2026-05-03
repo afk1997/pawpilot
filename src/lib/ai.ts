@@ -56,13 +56,6 @@ export interface AgentTurnResult {
   error?: "transient" | "exhausted";
 }
 
-const FALLBACK_BY_LANG: Record<Language, string> = {
-  en: "I'm having trouble right now. A team member will be with you shortly.",
-  hi: "मुझे अभी कुछ समस्या आ रही है। हमारी टीम का कोई सदस्य जल्द ही आपसे संपर्क करेगा।",
-  mr: "मला आत्ता थोडी अडचण येत आहे. आमच्या टीममधील कोणीतरी लवकरच तुमच्याशी संपर्क करेल.",
-  gu: "મને હાલ થોડી તકલીફ થઈ રહી છે. અમારી ટીમનો કોઈ સભ્ય ટૂંક સમયમાં તમારો સંપર્ક કરશે.",
-};
-
 export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResult> {
   const tools = buildAgentTools(input.conversationId);
 
@@ -231,5 +224,6 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
 export async function getAIResponse(
   _messages: { role: "user" | "assistant"; content: string }[]
 ): Promise<string> {
+  void _messages;
   return "[Phase 1 stub — use runAgentTurn instead]";
 }
