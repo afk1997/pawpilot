@@ -34,12 +34,36 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
-    fetchConversations();
-  }, [fetchConversations]);
+    let active = true;
+    void (async () => {
+      const res = await fetch("/api/conversations");
+      const data = await res.json();
+      if (active) setConversations(data);
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
-    if (selectedId) fetchMessages(selectedId);
-  }, [selectedId, fetchMessages]);
+    let active = true;
+    if (!selectedId) {
+      void Promise.resolve().then(() => {
+        if (active) setMessages([]);
+      });
+      return () => {
+        active = false;
+      };
+    }
+    void (async () => {
+      const res = await fetch(`/api/conversations/${selectedId}/messages`);
+      const data = await res.json();
+      if (active) setMessages(data);
+    })();
+    return () => {
+      active = false;
+    };
+  }, [selectedId]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
