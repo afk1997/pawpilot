@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { resetDb, createConversation } from "../helpers/db";
 import { getDb } from "@/server/db/client";
@@ -8,10 +8,14 @@ import { gatherPending, loadHistory } from "@/server/worker/gather";
 import { deliverText, deliverList } from "@/server/worker/deliver";
 import { createTurn, finishTurn, markAnswered, loadConversationHandles } from "@/server/worker/persist";
 import { setFetchForTests } from "@/server/interakt/client";
+import { log } from "@/server/log";
 
 describe("worker helpers", () => {
   beforeEach(resetDb);
-  afterEach(() => setFetchForTests(null));
+  afterEach(() => {
+    setFetchForTests(null);
+    vi.restoreAllMocks();
+  });
 
   it("gathers only unanswered reporter messages in order", async () => {
     const c = await createConversation();
@@ -92,5 +96,25 @@ describe("worker helpers", () => {
     expect(JSON.parse(String(cap.init!.body)).data.message.action).toEqual({ button: "विकल्प", sections: [{ title: "सेवाएं", rows: list.rows }] });
     expect(r.usedList).toBe(true);
     expect(r.message).toMatchObject({ kind: "interactive", deliveryStatus: "sent", providerMessageId: "out:wa-list" });
+  });
+
+  it("keeps Interakt response bodies out of warn logs while the row keeps the error text", async () => {
+    const c = await createConversation({ phone: "+919876543211" });
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
+    setFetchForTests((async () => new Response(JSON.stringify({ message: "invalid number +919876543211" }), { status: 400 })) as typeof fetch);
+    const m = await deliverText(c, { text: "hi", origin: "agent" });
+    const r = await deliverList(c, { list: { body: "b", buttonLabel: "Options", rows: [{ id: "menu:ambulance", title: "A" }] }, fallbackText: "plain", origin: "system" });
+    expect(warn).toHaveBeenCalledWith({ conversationId: c.id, status: 400 }, "outbound failed");
+    expect(warn).toHaveBeenCalledWith({ conversationId: c.id, status: 400 }, "list send failed, falling back to text");
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("9876543211");
+    expect(m.error).toContain("+919876543211");
+    expect(r.message.error).toContain("+919876543211");
+  });
+
+  it("strips U+0000, which Postgres text rejects, from the stored content and template", async () => {
+    const c = await createConversation({ isTest: true, phone: "+91TEST_nul" });
+    const m = await deliverText(c, { text: "call\u0000 now", template: "call\u0000 {{AMB:amb_1}}", origin: "agent" });
+    const [row] = await getDb().select().from(messages).where(eq(messages.id, m.id));
+    expect([row.content, row.contentTemplate]).toEqual(["call now", "call {{AMB:amb_1}}"]);
   });
 });

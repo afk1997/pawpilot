@@ -4,11 +4,11 @@ import { conversations, events, messages, type Conversation } from "../db/schema
 import type { MessageKind } from "../types";
 
 /** Postgres `text` rejects U+0000 (SQLSTATE 22021), so a payload carrying one would fail on every retry. */
-function stripNul(value: string): string {
+export function stripNul(value: string): string {
   return value.replaceAll("\u0000", "");
 }
 
-function stripNulOrNull(value: string | null | undefined): string | null {
+export function stripNulOrNull(value: string | null | undefined): string | null {
   return value == null ? null : stripNul(value);
 }
 

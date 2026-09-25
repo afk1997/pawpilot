@@ -1,6 +1,7 @@
 import { getDb } from "../db/client";
 import { messages, type Conversation, type Message } from "../db/schema";
 import { sendInteractiveList, sendText, type InteractiveListSpec, type InteraktResult } from "../interakt/client";
+import { stripNul, stripNulOrNull } from "../inbound/store";
 import { updateConversation } from "./persist";
 import type { MessageOrigin } from "../types";
 import { log } from "../log";
@@ -17,8 +18,8 @@ async function persistOutbound(
       role: "assistant",
       origin: input.origin,
       kind: input.kind ?? "text",
-      content: input.text,
-      contentTemplate: input.template ?? null,
+      content: stripNul(input.text),
+      contentTemplate: stripNulOrNull(input.template),
       providerMessageId: send?.messageId ? `out:${send.messageId}` : null,
       deliveryStatus: send === null ? "test_skipped" : send.ok ? "sent" : "failed",
       error: send && !send.ok ? send.error ?? `status=${send.status}` : null,
@@ -35,7 +36,8 @@ export async function deliverText(
   input: { text: string; template?: string | null; origin: MessageOrigin; turnId?: string | null }
 ): Promise<Message> {
   const send = conversation.isTest ? null : await sendText(conversation.phone, input.text);
-  if (send && !send.ok) log.warn({ conversationId: conversation.id, error: send.error }, "outbound failed");
+  // Status only: send.error can carry Interakt's response body (a phone number, say); it is kept on messages.error.
+  if (send && !send.ok) log.warn({ conversationId: conversation.id, status: send.status }, "outbound failed");
   return persistOutbound(conversation, input, send);
 }
 
@@ -53,7 +55,7 @@ export async function deliverList(
     const message = await persistOutbound(conversation, { text: input.fallbackText, origin: input.origin, kind: "interactive" }, listSend);
     return { message, usedList: true };
   }
-  log.warn({ conversationId: conversation.id, error: listSend.error }, "list send failed, falling back to text");
+  log.warn({ conversationId: conversation.id, status: listSend.status }, "list send failed, falling back to text");
   const textSend = await sendText(conversation.phone, input.fallbackText);
   const message = await persistOutbound(conversation, { text: input.fallbackText, origin: input.origin }, textSend);
   return { message, usedList: false };
