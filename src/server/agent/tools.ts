@@ -3,9 +3,9 @@ import { z } from "zod";
 import type { Language } from "../types";
 import { HandleRegistry } from "./handles";
 import { loadActiveAmbulances, loadActiveClinics } from "../directory/repo";
-import { matchAmbulances, normalize, type DirectoryAmbulance, type MatchType } from "../directory/matcher";
+import { matchAmbulances, normalize, type DirectoryAmbulance, type MatchResult, type MatchType } from "../directory/matcher";
 import { ambulanceDisplayName } from "../messages/cards";
-import { foldDigits, getStaticInfo, type InfoContent, type InfoTopic } from "../content/static";
+import { getStaticInfo, PHONE_RUN_RE, type InfoContent, type InfoTopic } from "../content/static";
 import { log, safeErrorFields } from "../log";
 
 export interface ToolCallRecord {
@@ -32,6 +32,16 @@ export interface ToolContext {
 export const SERVER_NAME = "arham";
 export const TOOL_NAMES = [`mcp__${SERVER_NAME}__find_ambulances`, `mcp__${SERVER_NAME}__find_clinics`, `mcp__${SERVER_NAME}__get_info`];
 
+/** The SDK's hard per-call limit for this server. */
+const SERVER_TIMEOUT_MS = 10_000;
+/** Below SERVER_TIMEOUT_MS, so a stalled lookup is recorded and answered here rather than cut off by the SDK. */
+export const LOOKUP_DEADLINE_MS = 8_000;
+
+/** A lookup that missed LOOKUP_DEADLINE_MS; the call record keeps this class name. */
+class TimeoutError extends Error {
+  name = "TimeoutError";
+}
+
 export interface FindAmbulancesOutput {
   candidates: {
     handle: string; display_name: string; city: string; area: string | null; areas_covered: string[];
@@ -48,16 +58,41 @@ export interface FindClinicsOutput {
   city_matched: boolean;
 }
 
-/** A phone number's shape: 7+ digits, at most one space or hyphen between two digits. */
-const PHONE_RUN_RE = /\+?\d(?:[ -]?\d){6,}/g;
+const DECIMAL_DIGIT = /\p{Nd}/u;
 
 /**
- * The digit guard on tool output: folds Devanagari/Gujarati numerals, removes phone-shaped runs and collapses
- * double spaces. `removed` says whether a run was taken out.
+ * The value of a decimal digit in any script. Unicode encodes every decimal digit set as a contiguous 0–9 run, so
+ * the value is the distance from the start of the run (mod 10 where sets sit back to back, as the math digits do).
+ */
+function digitValue(ch: string): number {
+  const cp = ch.codePointAt(0) as number;
+  let start = cp;
+  while (start > 0 && DECIMAL_DIGIT.test(String.fromCodePoint(start - 1))) start--;
+  return (cp - start) % 10;
+}
+
+/**
+ * The form a phone number cannot hide from: every decimal digit as ASCII (Devanagari, Gujarati, Bengali, Tamil,
+ * Telugu, Kannada, fullwidth, …); invisible characters dropped (soft hyphen, zero-width space, word joiner, and
+ * zero-width (non-)joiners next to a digit, which elsewhere shape Indic text); every whitespace run as one space;
+ * every dash variant as "-".
+ */
+function normalizeForScrub(s: string): string {
+  return s
+    .replace(/\p{Nd}/gu, (ch) => (ch <= "9" ? ch : String(digitValue(ch))))
+    .replace(/[\u00AD\u200B\u2060]/g, "")
+    .replace(/(?<=\d)[\u200C\u200D]+|[\u200C\u200D]+(?=\d)/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/[\u2010-\u2015\u2212\uFE63\uFF0D]/g, "-");
+}
+
+/**
+ * The digit guard on tool output: normalizes (normalizeForScrub), then removes phone-shaped runs (the shared
+ * PHONE_RUN_RE), then collapses the double spaces a removal leaves. `removed` says whether a run was taken out.
  */
 export function scrubToolText(s: string): { text: string; removed: boolean } {
   let removed = false;
-  const text = foldDigits(s)
+  const text = normalizeForScrub(s)
     .replace(PHONE_RUN_RE, () => {
       removed = true;
       return "";
@@ -98,13 +133,23 @@ function recordFailure(ctx: ToolContext, name: string, input: unknown, started: 
   ctx.calls.push({ name, input, output: null, durationMs: Date.now() - started, error: safeErrorFields(e) });
 }
 
+/**
+ * Runs a lookup against LOOKUP_DEADLINE_MS and records the call once: its scrubbed output, or its failure (a
+ * TimeoutError when the deadline wins). A lookup that settles after its deadline is ignored.
+ */
 async function timed<T>(ctx: ToolContext, name: string, input: unknown, fn: () => Promise<T>): Promise<T> {
   const started = Date.now();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new TimeoutError(`${name} missed its ${LOOKUP_DEADLINE_MS} ms deadline`)), LOOKUP_DEADLINE_MS);
+  });
   try {
-    return succeed(ctx, name, input, started, await fn());
+    return succeed(ctx, name, input, started, await Promise.race([fn(), deadline]));
   } catch (e) {
     recordFailure(ctx, name, input, started, e);
     throw e;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -126,28 +171,32 @@ export async function findAmbulancesImpl(
   // Cleared first, so a failed search never leaves an earlier search's units for the card fallback.
   ctx.lastAmbulanceCandidates = null;
   ctx.lastAmbulanceMatch = null;
-  return timed(ctx, "find_ambulances", input, async () => {
+  // Filled by the lookup but copied to ctx only once timed() resolves, so a lookup that settles after its
+  // deadline cannot write the state.
+  const found: { result?: MatchResult } = {};
+  const output = await timed(ctx, "find_ambulances", input, async () => {
     const rows = await loadActiveAmbulances();
     const result = matchAmbulances(rows, { city: input.city ?? null, area: input.area ?? null, query: input.query });
-    const candidates = result.candidates.map((r) => ({
-      handle: ctx.registry.ambulance(r.id),
-      display_name: ambulanceDisplayName(r),
-      city: r.city,
-      area: r.area,
-      areas_covered: r.areasCovered,
-      category: r.category,
-      operator_name: r.operatorName,
-      operator_is_arham: r.operatorIsArham,
-    }));
-    ctx.lastAmbulanceCandidates = result.candidates;
-    ctx.lastAmbulanceMatch = result.match;
+    found.result = result;
     return {
-      candidates,
+      candidates: result.candidates.map((r) => ({
+        handle: ctx.registry.ambulance(r.id),
+        display_name: ambulanceDisplayName(r),
+        city: r.city,
+        area: r.area,
+        areas_covered: r.areasCovered,
+        category: r.category,
+        operator_name: r.operatorName,
+        operator_is_arham: r.operatorIsArham,
+      })),
       match: result.match,
       city_areas: result.cityAreas,
       out_of_coverage: result.outOfCoverage,
     };
   });
+  ctx.lastAmbulanceCandidates = found.result?.candidates ?? null;
+  ctx.lastAmbulanceMatch = found.result?.match ?? null;
+  return output;
 }
 
 export async function findClinicsImpl(ctx: ToolContext, input: { city?: string | null }): Promise<FindClinicsOutput> {
@@ -172,7 +221,7 @@ export function getInfoImpl(ctx: ToolContext, input: { topic: InfoTopic }): Info
 }
 
 const text = (o: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(o) }] });
-/** What the model gets when a lookup throws; the call record keeps the error's class and code (see timed). */
+/** What the model gets when a lookup throws or misses its deadline; the call record keeps the error's class and code (see timed). */
 const lookupFailed = () => ({ content: [{ type: "text" as const, text: JSON.stringify({ error: "lookup_failed" }) }], isError: true });
 
 export function createArhamTools(ctx: ToolContext): {
@@ -184,8 +233,7 @@ export function createArhamTools(ctx: ToolContext): {
   const server = createSdkMcpServer({
     name: SERVER_NAME,
     version: "2.0.0",
-    // A stalled lookup fails the call after 10 s instead of holding the turn.
-    timeout: 10_000,
+    timeout: SERVER_TIMEOUT_MS,
     tools: [
       tool(
         "find_ambulances",
@@ -205,7 +253,7 @@ export function createArhamTools(ctx: ToolContext): {
       ),
       tool(
         "find_clinics",
-        "List Arham clinics, optionally filtered by city. Returns handles; write {{CLINIC:<handle>}} to give a clinic's number. city_matched false means no clinic is in that city and the full list is returned.",
+        "List Arham clinics, optionally filtered by city. Returns handles; write {{CLINIC:<handle>}} to give a clinic's number. city_matched false: no clinic is in the city you passed and every clinic is listed; tell the reporter that, and name each clinic's city before giving its number.",
         { city: z.string().nullable().optional().describe("City as spelled in the coverage list, or null") },
         async (args) => {
           try {

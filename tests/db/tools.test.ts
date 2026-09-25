@@ -7,16 +7,30 @@ import { getDb } from "@/server/db/client";
 import { ambulances, clinics } from "@/server/db/schema";
 import * as repo from "@/server/directory/repo";
 import * as staticContent from "@/server/content/static";
-import { foldDigits } from "@/server/content/static";
+import { PHONE_RUN_RE } from "@/server/content/static";
 import { log } from "@/server/log";
 import { LANGUAGES } from "@/server/types";
 import { HandleRegistry } from "@/server/agent/handles";
-import { createArhamTools, findAmbulancesImpl, findClinicsImpl, getInfoImpl, scrubToolText, SERVER_NAME, TOOL_NAMES, type ToolContext } from "@/server/agent/tools";
+import {
+  createArhamTools, findAmbulancesImpl, findClinicsImpl, getInfoImpl, scrubToolText,
+  LOOKUP_DEADLINE_MS, SERVER_NAME, TOOL_NAMES, type ToolContext,
+} from "@/server/agent/tools";
 
-/** The tool-boundary guard's phone shape, checked after folding Devanagari/Gujarati numerals. */
-const PHONE_SHAPED = /\+?\d(?:[ -]?\d){6,}/;
-const hasPhoneRun = (o: unknown) => PHONE_SHAPED.test(foldDigits(JSON.stringify(o)));
+/** A decimal digit outside ASCII, in any script: the scrub folds them all, so none may reach the model. */
+const NATIVE_DIGIT = /(?![0-9])\p{Nd}/u;
+/** What the model must never get from a tool: a phone-shaped run (the shared pattern) or an unfolded numeral. */
+const leaksDigits = (o: unknown) => {
+  const json = JSON.stringify(o);
+  return json.search(PHONE_RUN_RE) !== -1 || NATIVE_DIGIT.test(json);
+};
+/**
+ * Independent of the scrub: 7+ digits of any script with at most three non-letter, non-digit characters between
+ * neighbours, so a number kept apart by a separator the phone pattern does not know still shows up.
+ */
+const VISIBLE_PHONE = /\p{Nd}(?:[^\p{L}\p{Nd}]{0,3}\p{Nd}){6,}/u;
 const LOOKUP_FAILED = [{ type: "text", text: JSON.stringify({ error: "lookup_failed" }) }];
+const CITY_MATCHED_HELP =
+  "city_matched false: no clinic is in the city you passed and every clinic is listed; tell the reporter that, and name each clinic's city before giving its number.";
 
 function ctx(): ToolContext {
   return { conversationId: "conv-1", language: "en", registry: new HandleRegistry("conv-1"), calls: [], lastAmbulanceCandidates: null, lastAmbulanceMatch: null };
@@ -38,10 +52,21 @@ async function connect(c: ToolContext): Promise<Client> {
 /** The text of a tool result's first content block (callTool's result type also has a content-less variant). */
 const textOf = (res: unknown) => (res as { content: { type: string; text: string }[] }).content[0].text;
 
+/** Phone numbers hidden behind spacing, dashes, invisible characters or other scripts' numerals. */
+const TRICKY_PHONES = [
+  "98765  43210", "98765\t43210", "98765\n43210", "98765\u00A043210", "98765\u202F43210", "98765 \u2009 43210",
+  "98765\u201043210", "98765\u201143210", "98765\u201243210", "98765\u201343210", "98765\u201443210", "98765\u201543210",
+  "98765\u221243210", "98765\uFF0D43210", "98765\u200B43210", "98765\u00AD43210", "98765\u206043210", "98765\u200D43210",
+  "+91 98765 43210", "+91-98765-43210", "(+91) 98765 43210", "9 8 7 6 5 4 3 2 1 0", "9  8  7  6  5  4  3  2  1  0",
+  "९८७६५  ४३२१०", "૯૮૭૬૫ ૪૩૨૧૦", "৯৮৭৬৫৪৩২১০", "௯௮௭௬௫௪௩௨௧௦", "౯౮౭౬౫౪౩౨౧౦", "೯೮೭೬೫೪೩೨೧೦", "９８７６５４３２１０", "98765 ४३२१०",
+  "Call 98765 43210 or 70000\u00A000001 today",
+];
+
 describe("tools", () => {
   let ids: DirectoryIds;
   beforeEach(async () => { await resetDb(); ids = await seedDirectory(); });
   afterEach(async () => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
     await Promise.all(clients.splice(0).map((client) => client.close()));
   });
@@ -107,10 +132,23 @@ describe("tools", () => {
     expect(JSON.stringify(getInfoImpl(ctx(), { topic: "donate" }))).not.toMatch(/\d{7,}/);
   });
 
-  it("scrubToolText folds native numerals and removes only phone-shaped runs", () => {
+  it("scrubToolText normalises spacing, dashes and numerals before removing phone-shaped runs", () => {
+    expect(scrubToolText("98765  43210")).toEqual({ text: "", removed: true });
+    expect(scrubToolText("९८७६५  ४३२१०")).toEqual({ text: "", removed: true });
+    expect(scrubToolText("call\u00A098765\u00A043210 now")).toEqual({ text: "call now", removed: true });
+    expect(scrubToolText("98765\u201343210")).toEqual({ text: "", removed: true });
     expect(scrubToolText("call +91 98765-43210 now")).toEqual({ text: "call now", removed: true });
     expect(scrubToolText("फोन ९८७६५४३२१० करें")).toEqual({ text: "फोन करें", removed: true });
-    expect(scrubToolText("Open 9am-7pm since 2019, gate 12")).toEqual({ text: "Open 9am-7pm since 2019, gate 12", removed: false });
+    expect(scrubToolText("Open 9am-7pm since 2019, gate 12, PIN 400077")).toEqual({ text: "Open 9am-7pm since 2019, gate 12, PIN 400077", removed: false });
+    expect(scrubToolText("सन २०१९ से")).toEqual({ text: "सन 2019 से", removed: false });
+  });
+
+  it.each(TRICKY_PHONES)("scrubToolText leaves no phone-shaped run in %j", (input) => {
+    const { text, removed } = scrubToolText(input);
+    expect(removed).toBe(true);
+    expect(text).not.toMatch(PHONE_RUN_RE);
+    expect(text).not.toMatch(NATIVE_DIGIT);
+    expect(text).not.toMatch(VISIBLE_PHONE);
   });
 
   it("removes phone-shaped runs from what the tools return, flags the call and warns", async () => {
@@ -126,8 +164,8 @@ describe("tools", () => {
     await findClinicsImpl(c, { city: "Surat" });
     expect(amb.candidates.map((x) => x.areas_covered)).toEqual([["Thane", ""]]);
     expect(cli.clinics.map((x) => x.address)).toEqual(["Gokhale Road, call first"]);
-    expect(hasPhoneRun(amb)).toBe(false);
-    expect(hasPhoneRun(cli)).toBe(false);
+    expect(leaksDigits(amb)).toBe(false);
+    expect(leaksDigits(cli)).toBe(false);
     expect(c.calls.map((r) => r.scrubbed)).toEqual([true, true, undefined]);
     expect(c.calls[1].output).toEqual(cli);
     expect(warn.mock.calls).toEqual([
@@ -141,6 +179,7 @@ describe("tools", () => {
     const { server, mcpServers, allowedToolNames } = createArhamTools(c);
     expect(server.instance).toBeTruthy();
     expect(server.timeout).toBe(10_000);
+    expect(LOOKUP_DEADLINE_MS).toBe(8_000);
     expect(Object.keys(mcpServers)).toEqual([SERVER_NAME]);
     expect(mcpServers[SERVER_NAME]).toBe(server);
     expect(allowedToolNames).toEqual(TOOL_NAMES);
@@ -158,6 +197,7 @@ describe("tools", () => {
       expect(schema.find_ambulances.required).toEqual(["query"]);
       expect(schema.find_clinics.properties).toMatchObject({ city: { description: "City as spelled in the coverage list, or null" } });
       expect(schema.find_clinics.required).toBeUndefined();
+      expect(tools[1].description).toContain(CITY_MATCHED_HELP);
       expect(schema.get_info.properties).toEqual({ topic: { type: "string", enum: ["donate", "volunteer", "about", "faq", "human_emergency", "helpline"] } });
       expect(schema.get_info.required).toEqual(["topic"]);
     });
@@ -193,6 +233,44 @@ describe("tools", () => {
       expect(c.lastAmbulanceMatch).toBeNull();
     });
 
+    it("gives up on a stalled lookup at the deadline, and its late result changes nothing", async () => {
+      const c = ctx();
+      const client = await connect(c);
+      const rows = await repo.loadActiveAmbulances();
+      let release!: (value: typeof rows) => void;
+      let lookupStarted!: () => void;
+      const started = new Promise<void>((resolve) => (lookupStarted = resolve));
+      vi.spyOn(repo, "loadActiveAmbulances").mockImplementation(() => {
+        lookupStarted();
+        return new Promise((resolve) => (release = resolve));
+      });
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      let answered = false;
+      const pending = client
+        .callTool({ name: "find_ambulances", arguments: { city: "Mumbai", area: "Ghatkopar", query: "ghatkopar" } })
+        .finally(() => (answered = true));
+      await started;
+      await vi.advanceTimersByTimeAsync(LOOKUP_DEADLINE_MS - 1);
+      expect(answered).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      const res = await pending;
+      expect(res.isError).toBe(true);
+      expect(res.content).toEqual(LOOKUP_FAILED);
+      const timedOut = {
+        name: "find_ambulances", input: { city: "Mumbai", area: "Ghatkopar", query: "ghatkopar" }, output: null,
+        durationMs: expect.any(Number), error: { errorClass: "TimeoutError" },
+      };
+      expect(c.calls).toEqual([timedOut]);
+      expect(c.lastAmbulanceCandidates).toBeNull();
+      expect(c.lastAmbulanceMatch).toBeNull();
+      vi.useRealTimers();
+      release(rows);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(c.calls).toEqual([timedOut]);
+      expect(c.lastAmbulanceCandidates).toBeNull();
+      expect(c.lastAmbulanceMatch).toBeNull();
+    });
+
     it("records a failed get_info by class only and answers with the fixed error", async () => {
       const c = ctx();
       const client = await connect(c);
@@ -216,7 +294,7 @@ describe("tools", () => {
         for (const topic of topics) {
           const res = await client.callTool({ name: "get_info", arguments: { topic } });
           expect(res.isError, `${topic}/${lang}`).toBeFalsy();
-          expect(foldDigits(textOf(res)), `${topic}/${lang}`).not.toMatch(PHONE_SHAPED);
+          expect(leaksDigits(JSON.parse(textOf(res))), `${topic}/${lang}`).toBe(false);
         }
       }
       expect(c.calls).toHaveLength(LANGUAGES.length * topics.length);
