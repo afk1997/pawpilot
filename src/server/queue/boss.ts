@@ -13,7 +13,9 @@ let starting: Promise<PgBoss> | null = null;
 
 /**
  * One pg-boss per process. The app only sends; the worker also supervises
- * (maintenance, expiration). Both create the queue idempotently.
+ * (maintenance, expiration). Both create the queue idempotently. A failed
+ * start is never memoized: the half-started instance is stopped and the next
+ * call starts afresh.
  */
 export function getBoss(role: "app" | "worker" = "app"): Promise<PgBoss> {
   if (instance) return Promise.resolve(instance);
@@ -27,21 +29,28 @@ export function getBoss(role: "app" | "worker" = "app"): Promise<PgBoss> {
       max: role === "worker" ? 4 : 2,
     });
     boss.on("error", (err) => log.error({ err }, "pg-boss error"));
-    await boss.start();
-    const existing = await boss.getQueue(TURN_QUEUE);
-    if (!existing) {
-      await boss.createQueue(TURN_QUEUE, {
-        policy: "singleton",
-        retryLimit: 2,
-        retryBackoff: true,
-        retryDelay: 5,
-        expireInSeconds: 120,
-      });
+    boss.on("warning", (warning) => log.warn({ warning }, "pg-boss warning"));
+    try {
+      await boss.start();
+      const existing = await boss.getQueue(TURN_QUEUE);
+      if (!existing) {
+        await boss.createQueue(TURN_QUEUE, {
+          policy: "singleton",
+          retryLimit: 2,
+          retryBackoff: true,
+          retryDelay: 5,
+          expireInSeconds: 120,
+        });
+      }
+    } catch (err) {
+      await boss.stop().catch(() => undefined);
+      throw err;
     }
     instance = boss;
-    starting = null;
     return boss;
-  })();
+  })().finally(() => {
+    starting = null;
+  });
   return starting;
 }
 
@@ -54,8 +63,11 @@ export async function stopBoss(): Promise<void> {
 }
 
 /**
- * Debounced per conversation: a burst of messages produces one turn that
- * starts 2 s after the first. Returns null when pg-boss deduplicated it.
+ * Debounced per conversation on 3 s slots. The first enqueue in a slot makes
+ * a turn that starts 2 s later (now with `immediate`). While that slot is
+ * taken, even by a turn that has already finished, the next enqueue goes into
+ * the following slot; any more return null, because that deferred turn has
+ * not started yet and will gather their messages.
  */
 export async function enqueueTurn(conversationId: string, opts: { immediate?: boolean } = {}): Promise<string | null> {
   const boss = await getBoss();
@@ -65,6 +77,7 @@ export async function enqueueTurn(conversationId: string, opts: { immediate?: bo
     {
       singletonKey: conversationId,
       singletonSeconds: 3,
+      singletonNextSlot: true,
       startAfter: opts.immediate ? 0 : 2,
     }
   );
