@@ -1,4 +1,5 @@
 import { desc, eq, inArray, sql } from "drizzle-orm";
+import type { HandleMap } from "../agent/handles";
 import { getDb } from "../db/client";
 import { conversations, messages, turns, type Conversation, type NewTurn, type Turn } from "../db/schema";
 import type { TurnStatus } from "../types";
@@ -43,7 +44,7 @@ export async function flagConversation(id: string, reason: string): Promise<void
     .where(eq(conversations.id, id));
 }
 
-export type HandleMap = Record<string, { kind: "ambulance" | "clinic"; id: string }>;
+export type { HandleMap };
 
 /** Union of the handle maps stored on the last 20 turns, newest winning. */
 export async function loadConversationHandles(conversationId: string): Promise<HandleMap> {
