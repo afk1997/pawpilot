@@ -35,4 +35,18 @@ describe("inbound store", () => {
     const r2 = await storeReporterMessage(c.id, { kind: "text", content: "b" });
     expect(r1.inserted && r2.inserted).toBe(true);
   });
+
+  it("strips U+0000, which Postgres text rejects, from every free-text field", async () => {
+    const c = await upsertConversationByPhone({ phone: "+919876543210", name: "As\u0000ha" });
+    expect(c.name).toBe("Asha");
+    await storeReporterMessage(c.id, {
+      providerMessageId: "m1",
+      kind: "location",
+      content: "near\u0000 the gate",
+      mediaUrl: "https://example.test/a\u0000.jpg",
+      placeLabel: "Gate\u0000 2",
+    });
+    const [row] = await getDb().select().from(messages).where(eq(messages.conversationId, c.id));
+    expect([row.content, row.mediaUrl, row.placeLabel]).toEqual(["near the gate", "https://example.test/a.jpg", "Gate 2"]);
+  });
 });

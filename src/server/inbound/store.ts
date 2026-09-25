@@ -3,11 +3,20 @@ import { getDb } from "../db/client";
 import { conversations, events, messages, type Conversation } from "../db/schema";
 import type { MessageKind } from "../types";
 
+/** Postgres `text` rejects U+0000 (SQLSTATE 22021), so a payload carrying one would fail on every retry. */
+function stripNul(value: string): string {
+  return value.replaceAll("\u0000", "");
+}
+
+function stripNulOrNull(value: string | null | undefined): string | null {
+  return value == null ? null : stripNul(value);
+}
+
 export async function upsertConversationByPhone(input: { phone: string; name: string | null }): Promise<Conversation> {
   const now = new Date();
   const [row] = await getDb()
     .insert(conversations)
-    .values({ phone: input.phone, name: input.name, lastInboundAt: now, updatedAt: now })
+    .values({ phone: input.phone, name: stripNulOrNull(input.name), lastInboundAt: now, updatedAt: now })
     .onConflictDoUpdate({
       target: conversations.phone,
       set: {
@@ -43,11 +52,11 @@ export async function storeReporterMessage(
       role: "user",
       origin: "reporter",
       kind: m.kind,
-      content: m.content ?? "",
-      mediaUrl: m.mediaUrl ?? null,
+      content: stripNul(m.content ?? ""),
+      mediaUrl: stripNulOrNull(m.mediaUrl),
       lat: m.lat ?? null,
       lng: m.lng ?? null,
-      placeLabel: m.placeLabel ?? null,
+      placeLabel: stripNulOrNull(m.placeLabel),
       providerMessageId: m.providerMessageId ?? null,
       interactiveId: m.interactiveId ?? null,
     })
