@@ -29,6 +29,13 @@ describe("normalize", () => {
   it("ignores inherited object keys when looking up aliases", () => {
     expect(normalize("constructor")).toBe("constructor");
   });
+
+  it("NFC-normalizes input so a precomposed nukta spelling still aliases", () => {
+    expect(normalize("गुड़गांव".normalize("NFD"))).toBe("gurugram");
+    // U+095C is a composition exclusion: NFD and NFC both give ड + ़, so only an
+    // explicit escape produces the precomposed letter a keyboard may send.
+    expect(normalize("\u0917\u0941\u095C\u0917\u093E\u0902\u0935")).toBe("gurugram");
+  });
 });
 
 describe("matchAmbulances", () => {
@@ -96,5 +103,15 @@ describe("matchAmbulances", () => {
     const r = matchAmbulances(rows, { city: "Mumbai", area: "Nowhere", query: "Nowhere, Mumbai" });
     expect(r.match).toBe("city");
     expect(ids(r)).toEqual(["andheri", "bandra", "ghatkopar", "malad"]);
+  });
+
+  it("Station Road, Ghatkopar: an exact area wins and generic street words match nothing", () => {
+    const withMira = [...rows, row({ id: "mira", city: "Mumbai", area: "Mira Road", areasCovered: ["Mira Road", "Bhayandar"] })];
+    expect(ids(matchAmbulances(withMira, { city: "Mumbai", area: "Station Road", query: "Station Road, Ghatkopar" }))).toEqual(["ghatkopar"]);
+    expect(ids(matchAmbulances(withMira, { query: "Station Road" }))).toEqual([]);
+  });
+
+  it("a direction word does not stop an exact area match (andheri east)", () => {
+    expect(ids(matchAmbulances(rows, { query: "andheri east" }))).toEqual(["andheri"]);
   });
 });

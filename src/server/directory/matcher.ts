@@ -47,6 +47,14 @@ export function normalize(s: string): string {
 
 const tokensOf = (q: string) => q.split(" ").filter((t) => t.length >= 4);
 
+/**
+ * Street and direction words too generic to drive the token-based loose tiers
+ * (4 and 5; tier 3 compares the whole needle): "Station Road" must not match "Mira Road".
+ */
+const GENERIC_TOKENS: ReadonlySet<string> = new Set([
+  "road", "east", "west", "north", "south", "near", "station", "main", "area", "city", "marg", "lane", "cross",
+]);
+
 function cityMatches(rowCity: string, wanted: string): boolean {
   const c = normalize(rowCity);
   if (c === wanted) return true;
@@ -63,20 +71,23 @@ function finish(candidates: DirectoryAmbulance[], match: MatchType): MatchResult
   return { candidates: sorted, match, cityAreas, outOfCoverage: false };
 }
 
-/**
- * Tiered lookup for one needle: area exact → city exact → substring → token →
- * fuzzy → neighbour. The first non-empty tier wins; null when all six are empty.
- */
-function matchNeedle(pool: DirectoryAmbulance[], needle: string): MatchResult | null {
+/** Tier 1 — area exact: row.area or any areas_covered equals the needle or one of its tokens. */
+function areaExact(pool: DirectoryAmbulance[], needle: string): DirectoryAmbulance[] {
   const toks = tokensOf(needle);
-  let hit: DirectoryAmbulance[];
-
-  // Tier 1 — area exact (row.area or any areas_covered equals the needle or one of its tokens).
-  hit = pool.filter((r) => {
+  return pool.filter((r) => {
     const areas = [r.area ?? "", ...r.areasCovered].map(normalize).filter(Boolean);
     return areas.some((a) => a === needle || toks.includes(a));
   });
-  if (hit.length > 0) return finish(hit, "area");
+}
+
+/**
+ * Tiers 2–6 for one needle: city exact → substring → token → fuzzy →
+ * neighbour. The first non-empty tier wins; null when all five are empty.
+ */
+function broaderMatch(pool: DirectoryAmbulance[], needle: string): MatchResult | null {
+  const toks = tokensOf(needle);
+  const looseToks = toks.filter((t) => !GENERIC_TOKENS.has(t));
+  let hit: DirectoryAmbulance[];
 
   // Tier 2 — city exact (whole needle or a single token equals the city).
   hit = pool.filter((r) => {
@@ -85,7 +96,7 @@ function matchNeedle(pool: DirectoryAmbulance[], needle: string): MatchResult | 
   });
   if (hit.length > 0) return finish(hit, "city");
 
-  // Tier 3 — substring (needle inside label/city/area/areas_covered).
+  // Tier 3 — substring (whole needle inside label/city/area/areas_covered).
   if (needle.length >= 4) {
     hit = pool.filter((r) =>
       [r.label, r.city, r.area ?? "", ...r.areasCovered].map(normalize).some((h) => h.length >= 4 && h.includes(needle))
@@ -93,16 +104,16 @@ function matchNeedle(pool: DirectoryAmbulance[], needle: string): MatchResult | 
     if (hit.length > 0) return finish(hit, "substring");
   }
 
-  // Tier 4 — token containment.
+  // Tier 4 — token containment, generic words dropped.
   hit = pool.filter((r) =>
-    [r.label, r.city, r.area ?? "", ...r.areasCovered].map(normalize).some((h) => toks.some((t) => h === t || h.includes(t)))
+    [r.label, r.city, r.area ?? "", ...r.areasCovered].map(normalize).some((h) => looseToks.some((t) => h === t || h.includes(t)))
   );
   if (hit.length > 0) return finish(hit, "token");
 
-  // Tier 5 — fuzzy token vs city/area.
+  // Tier 5 — fuzzy token vs city/area, generic words dropped.
   hit = pool.filter((r) => {
     const hay = [r.city, r.area ?? "", ...r.areasCovered].map(normalize).filter((h) => h.length >= 4);
-    return toks.some((t) => hay.some((h) => fuzzyEqual(t, h)));
+    return looseToks.some((t) => hay.some((h) => fuzzyEqual(t, h)));
   });
   if (hit.length > 0) return finish(hit, "fuzzy");
 
@@ -120,10 +131,11 @@ function matchNeedle(pool: DirectoryAmbulance[], needle: string): MatchResult | 
 }
 
 /**
- * `city` restricts the row set first. The `area` needle then runs through all
- * six tiers before the free-text `query` does, so a city named in the
- * reporter's words cannot pre-empt the area's own fuzzy or neighbour match
- * ("Goregaon, Mumbai" → Malad/Andheri, not every Mumbai unit).
+ * `city` restricts the row set first. Tier 1 (exact area) then runs for the
+ * `area` needle and then the free-text `query`, so an exact area named in
+ * either beats any looser match. Only then do tiers 2–6 run, area needle
+ * first, so a city named in the reporter's words cannot pre-empt the area's
+ * own fuzzy or neighbour match ("Goregaon, Mumbai" → Malad/Andheri).
  */
 export function matchAmbulances(rows: DirectoryAmbulance[], input: MatchInput): MatchResult {
   const q = normalize(input.query);
@@ -138,7 +150,11 @@ export function matchAmbulances(rows: DirectoryAmbulance[], input: MatchInput): 
 
   const needles = [wantedArea, q].filter((n) => n.length > 0);
   for (const needle of needles) {
-    const result = matchNeedle(pool, needle);
+    const hit = areaExact(pool, needle);
+    if (hit.length > 0) return finish(hit, "area");
+  }
+  for (const needle of needles) {
+    const result = broaderMatch(pool, needle);
     if (result) return result;
   }
 
