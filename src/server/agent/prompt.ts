@@ -59,6 +59,7 @@ Fill every field of the JSON schema. "reply" is the exact message to send.
 "language" is the language and script the system should use for its own lines to this reporter: English or Latin-script Hinglish → "en"; Devanagari Hindi → "hi"; Marathi → "mr"; Gujarati → "gu".
 "intent": "ambulance" when the reporter needs a unit's number; otherwise "clinic", "donate", "volunteer", "faq" (questions about us), "suggestion", "smalltalk" (greetings, thanks) or "other".
 "location" is {"city": …, "area": …}, each null if unknown: where you now believe the reporter is.
+Set needs_human to true only when the reporter asks for a person, cannot reach a driver, complains, or you cannot help them. Severe or urgent wording alone is normal on this line and never sets needs_human.
 "notes" is one internal line for the admin page.`;
 }
 

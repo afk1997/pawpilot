@@ -55,6 +55,11 @@ describe("prompts", () => {
     expect(p).toContain('"ambulance" when the reporter needs a unit\'s number');
     expect(p).not.toMatch(/\d(?:[ -]?\d){6,}/);
   });
+  it("system prompt limits needs_human to real escalation triggers", () => {
+    const p = systemPrompt();
+    expect(p).toContain("Set needs_human to true only when the reporter asks for a person, cannot reach a driver, complains, or you cannot help them");
+    expect(p).toContain("Severe or urgent wording alone is normal on this line and never sets needs_human");
+  });
   it("turn prompt includes context lines and the transcript", () => {
     const t = buildTurnPrompt({
       nowIst: "Thu 25 Sep 2026, 10:03 IST", language: "hi", knownLocation: { city: "Mumbai", area: null },
