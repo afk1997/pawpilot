@@ -1,10 +1,10 @@
-import { and, eq, isNull, lt, sql } from "drizzle-orm";
+import { and, eq, gt, isNull, lt, sql } from "drizzle-orm";
 import { getConfig } from "../config";
 import { log } from "../log";
 import { enqueueTurn, getBoss, stopBoss, TURN_QUEUE, type TurnJobData } from "../queue/boss";
 import { setWebsiteUrl } from "../messages/welcome";
 import { heartbeat } from "./pause";
-import { runTurn } from "./turn-runner";
+import { runTurn, type TurnOutcome } from "./turn-runner";
 import { closeDb, getDb } from "../db/client";
 import { conversations, messages } from "../db/schema";
 
@@ -12,7 +12,9 @@ import { conversations, messages } from "../db/schema";
  * Backstop for turns the queue never ran: a message that landed on a debounce-slot
  * boundary, or an enqueue that failed after the webhook stored the message. Enqueues an
  * immediate turn for every agent-mode conversation with a reporter message unanswered for
- * over 15 s. Returns how many jobs it created (enqueueTurn's null means one already exists).
+ * over 15 s. Messages older than 6 h are left to the dispatcher's unanswered list, so a
+ * burst that keeps failing is not retried forever. Returns how many jobs it created
+ * (enqueueTurn's null means one already exists).
  */
 export async function sweepUnanswered(): Promise<number> {
   const rows = await getDb()
@@ -24,6 +26,7 @@ export async function sweepUnanswered(): Promise<number> {
         eq(messages.role, "user"),
         isNull(messages.answeredTurnId),
         lt(messages.createdAt, sql`now() - interval '15 seconds'`),
+        gt(messages.createdAt, sql`now() - interval '6 hours'`),
         eq(conversations.mode, "agent")
       )
     );
@@ -35,7 +38,7 @@ export async function sweepUnanswered(): Promise<number> {
   return enqueued;
 }
 
-/** Code and class name only: a DB error's message, detail and params can quote reporter data. */
+/** Code and class name only: an error's message, detail and params can quote reporter data. */
 function errorKind(err: unknown): { code?: string; errorClass: string } {
   const e = (err ?? {}) as { code?: unknown; cause?: { code?: unknown } | null };
   const str = (v: unknown) => (typeof v === "string" ? v : undefined);
@@ -55,9 +58,17 @@ export async function startWorker(opts: { concurrency?: number; heartbeatMs?: nu
     TURN_QUEUE,
     { batchSize: 1, localConcurrency: concurrency, pollingIntervalSeconds: 1 },
     async ([job]) => {
+      const { conversationId } = job.data;
       const started = Date.now();
-      const outcome = await runTurn(job.data.conversationId);
-      log.info({ conversationId: job.data.conversationId, outcome: outcome.kind, ms: Date.now() - started }, "turn done");
+      let outcome: TurnOutcome;
+      try {
+        outcome = await runTurn(conversationId);
+      } catch (err) {
+        log.error({ conversationId, ...errorKind(err) }, "turn failed");
+        throw err; // pg-boss records the failure and retries the job
+      }
+      if (outcome.kind === "locked") log.warn({ conversationId }, "conversation lock busy; turn requeued");
+      log.info({ conversationId, outcome: outcome.kind, ms: Date.now() - started }, "turn done");
     }
   );
 
@@ -94,9 +105,14 @@ export async function startWorker(opts: { concurrency?: number; heartbeatMs?: nu
   };
 }
 
+let shuttingDown = false;
+
 export async function runWorkerProcess(): Promise<void> {
   const worker = await startWorker();
   const shutdown = async (signal: string) => {
+    // A Ctrl-C through npm or tsx reaches the worker twice (the terminal's signal plus the forwarded one).
+    if (shuttingDown) return;
+    shuttingDown = true;
     log.info({ signal }, "worker shutting down");
     await worker.stop();
     await closeDb();
