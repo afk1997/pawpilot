@@ -24,8 +24,9 @@ export class HandleRegistry {
     this.map[h] = { kind: "clinic", id };
     return h;
   }
+  /** Own keys only, so names like "constructor" or "__proto__" never resolve to inherited members. */
   resolve(handle: string): { kind: HandleKind; id: string } | undefined {
-    return this.map[handle];
+    return Object.hasOwn(this.map, handle) ? this.map[handle] : undefined;
   }
   handles(): string[] {
     return Object.keys(this.map);
@@ -37,8 +38,9 @@ export class HandleRegistry {
 
 export const TOKEN_RE = /\{\{(AMB|CLINIC|PHONE):([A-Za-z0-9_-]+)\}\}/g;
 
+/** Scans a fresh copy of TOKEN_RE: matchAll resumes from a regex's lastIndex, which a caller's TOKEN_RE.test/exec leaves advanced. */
 export function extractTokens(text: string): { kind: "AMB" | "CLINIC" | "PHONE"; value: string; raw: string }[] {
   const out: { kind: "AMB" | "CLINIC" | "PHONE"; value: string; raw: string }[] = [];
-  for (const m of text.matchAll(TOKEN_RE)) out.push({ kind: m[1] as "AMB" | "CLINIC" | "PHONE", value: m[2], raw: m[0] });
+  for (const m of text.matchAll(new RegExp(TOKEN_RE.source, TOKEN_RE.flags))) out.push({ kind: m[1] as "AMB" | "CLINIC" | "PHONE", value: m[2], raw: m[0] });
   return out;
 }
