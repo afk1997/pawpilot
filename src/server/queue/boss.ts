@@ -54,10 +54,11 @@ export function getBoss(role: "app" | "worker" = "app"): Promise<PgBoss> {
   return starting;
 }
 
-export async function stopBoss(): Promise<void> {
+/** Graceful: jobs still running get `timeoutMs` (default 5 s) to finish before pg-boss fails them for a retry. */
+export async function stopBoss(opts: { timeoutMs?: number } = {}): Promise<void> {
   if (starting) await starting.catch(() => undefined);
   if (instance) {
-    await instance.stop({ graceful: true, timeout: 5000 });
+    await instance.stop({ graceful: true, timeout: opts.timeoutMs ?? 5000 });
     instance = null;
   }
 }
