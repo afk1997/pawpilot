@@ -3,7 +3,7 @@
 Object.assign(process.env, { NODE_ENV: "test" });
 process.env.LLM_BACKEND = "fake";
 process.env.DATABASE_URL =
-  process.env.TEST_DATABASE_URL ?? "postgres://arham:arham@localhost:5432/arham_test";
+  process.env.TEST_DATABASE_URL ?? "postgres://arham:arham@localhost:5439/arham_test";
 process.env.INTERAKT_API_KEY = "test-interakt-key";
 process.env.INTERAKT_WEBHOOK_SECRET ??= "test-webhook-secret";
 process.env.INTERAKT_WEBHOOK_VERIFY_MODE ??= "hmac";
