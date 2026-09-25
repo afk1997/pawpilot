@@ -4,16 +4,19 @@ import type { Language } from "../types";
 import { HandleRegistry } from "./handles";
 import { loadActiveAmbulances, loadActiveClinics } from "../directory/repo";
 import { matchAmbulances, normalize, type DirectoryAmbulance, type MatchType } from "../directory/matcher";
-import { fuzzyEqual } from "../directory/fuzzy";
 import { ambulanceDisplayName } from "../messages/cards";
-import { getStaticInfo, type InfoContent, type InfoTopic } from "../content/static";
+import { foldDigits, getStaticInfo, type InfoContent, type InfoTopic } from "../content/static";
+import { log, safeErrorFields } from "../log";
 
 export interface ToolCallRecord {
   name: string;
   input: unknown;
   output: unknown;
   durationMs: number;
-  error?: string;
+  /** Class and code of the thrown error, never its message (which can quote data). */
+  error?: ReturnType<typeof safeErrorFields>;
+  /** True when the digit guard removed a phone-shaped run from the output. */
+  scrubbed?: boolean;
 }
 
 export interface ToolContext {
@@ -39,15 +42,79 @@ export interface FindAmbulancesOutput {
   out_of_coverage: boolean;
 }
 
+export interface FindClinicsOutput {
+  clinics: { handle: string; label: string; city: string; area: string | null; address: string | null; hours: string | null }[];
+  /** False when a city was given and no clinic is in it; `clinics` is then the full list. */
+  city_matched: boolean;
+}
+
+/** A phone number's shape: 7+ digits, at most one space or hyphen between two digits. */
+const PHONE_RUN_RE = /\+?\d(?:[ -]?\d){6,}/g;
+
+/**
+ * The digit guard on tool output: folds Devanagari/Gujarati numerals, removes phone-shaped runs and collapses
+ * double spaces. `removed` says whether a run was taken out.
+ */
+export function scrubToolText(s: string): { text: string; removed: boolean } {
+  let removed = false;
+  const text = foldDigits(s)
+    .replace(PHONE_RUN_RE, () => {
+      removed = true;
+      return "";
+    })
+    .replace(/ {2,}/g, " ");
+  return { text, removed };
+}
+
+/** scrubToolText on every string in a JSON-like value, recursively. */
+function scrubDeep<T>(value: T): { value: T; removed: boolean } {
+  let removed = false;
+  const walk = (v: unknown): unknown => {
+    if (typeof v === "string") {
+      const r = scrubToolText(v);
+      if (r.removed) removed = true;
+      return r.text;
+    }
+    if (Array.isArray(v)) return v.map(walk);
+    if (v !== null && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]));
+    return v;
+  };
+  const out = walk(value) as T;
+  return { value: out, removed };
+}
+
+/**
+ * Records a successful call with its scrubbed output, the only version the model sees, and returns that output.
+ * The push comes last, so a throw here leaves only the failure record.
+ */
+function succeed<T>(ctx: ToolContext, name: string, input: unknown, started: number, raw: T): T {
+  const { value: output, removed } = scrubDeep(raw);
+  if (removed) log.warn({ conversationId: ctx.conversationId, tool: name }, "digits removed from tool output");
+  ctx.calls.push({ name, input, output, durationMs: Date.now() - started, ...(removed && { scrubbed: true }) });
+  return output;
+}
+
+function recordFailure(ctx: ToolContext, name: string, input: unknown, started: number, e: unknown): void {
+  ctx.calls.push({ name, input, output: null, durationMs: Date.now() - started, error: safeErrorFields(e) });
+}
+
 async function timed<T>(ctx: ToolContext, name: string, input: unknown, fn: () => Promise<T>): Promise<T> {
   const started = Date.now();
   try {
-    const output = await fn();
-    ctx.calls.push({ name, input, output, durationMs: Date.now() - started });
-    return output;
+    return succeed(ctx, name, input, started, await fn());
   } catch (e) {
-    const error = e instanceof Error ? e.message : String(e);
-    ctx.calls.push({ name, input, output: null, durationMs: Date.now() - started, error });
+    recordFailure(ctx, name, input, started, e);
+    throw e;
+  }
+}
+
+/** timed for synchronous tools, so their failures are recorded the same way. */
+function timedSync<T>(ctx: ToolContext, name: string, input: unknown, fn: () => T): T {
+  const started = Date.now();
+  try {
+    return succeed(ctx, name, input, started, fn());
+  } catch (e) {
+    recordFailure(ctx, name, input, started, e);
     throw e;
   }
 }
@@ -56,22 +123,26 @@ export async function findAmbulancesImpl(
   ctx: ToolContext,
   input: { city?: string | null; area?: string | null; query: string }
 ): Promise<FindAmbulancesOutput> {
+  // Cleared first, so a failed search never leaves an earlier search's units for the card fallback.
+  ctx.lastAmbulanceCandidates = null;
+  ctx.lastAmbulanceMatch = null;
   return timed(ctx, "find_ambulances", input, async () => {
     const rows = await loadActiveAmbulances();
     const result = matchAmbulances(rows, { city: input.city ?? null, area: input.area ?? null, query: input.query });
+    const candidates = result.candidates.map((r) => ({
+      handle: ctx.registry.ambulance(r.id),
+      display_name: ambulanceDisplayName(r),
+      city: r.city,
+      area: r.area,
+      areas_covered: r.areasCovered,
+      category: r.category,
+      operator_name: r.operatorName,
+      operator_is_arham: r.operatorIsArham,
+    }));
     ctx.lastAmbulanceCandidates = result.candidates;
     ctx.lastAmbulanceMatch = result.match;
     return {
-      candidates: result.candidates.map((r) => ({
-        handle: ctx.registry.ambulance(r.id),
-        display_name: ambulanceDisplayName(r),
-        city: r.city,
-        area: r.area,
-        areas_covered: r.areasCovered,
-        category: r.category,
-        operator_name: r.operatorName,
-        operator_is_arham: r.operatorIsArham,
-      })),
+      candidates,
       match: result.match,
       city_areas: result.cityAreas,
       out_of_coverage: result.outOfCoverage,
@@ -79,34 +150,42 @@ export async function findAmbulancesImpl(
   });
 }
 
-export async function findClinicsImpl(ctx: ToolContext, input: { city?: string | null }) {
+export async function findClinicsImpl(ctx: ToolContext, input: { city?: string | null }): Promise<FindClinicsOutput> {
   return timed(ctx, "find_clinics", input, async () => {
     const rows = await loadActiveClinics();
+    // Exact after normalize, which applies the Latin/Indic city aliases; a city that normalizes to "" counts as none.
     const wanted = input.city ? normalize(input.city) : "";
-    const filtered = wanted ? rows.filter((c) => normalize(c.city) === wanted || fuzzyEqual(normalize(c.city), wanted)) : rows;
+    const inCity = wanted ? rows.filter((c) => normalize(c.city) === wanted) : rows;
+    const cityMatched = !wanted || inCity.length > 0;
     return {
-      clinics: filtered.map((c) => ({
+      clinics: (cityMatched ? inCity : rows).map((c) => ({
         handle: ctx.registry.clinic(c.id),
         label: c.label, city: c.city, area: c.area, address: c.address, hours: c.hours,
       })),
+      city_matched: cityMatched,
     };
   });
 }
 
 export function getInfoImpl(ctx: ToolContext, input: { topic: InfoTopic }): InfoContent {
-  const started = Date.now();
-  const output = getStaticInfo(input.topic, ctx.language);
-  ctx.calls.push({ name: "get_info", input, output, durationMs: Date.now() - started });
-  return output;
+  return timedSync(ctx, "get_info", input, () => getStaticInfo(input.topic, ctx.language));
 }
 
 const text = (o: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(o) }] });
-const errorResult = (e: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify({ error: e instanceof Error ? e.message : String(e) }) }], isError: true });
+/** What the model gets when a lookup throws; the call record keeps the error's class and code (see timed). */
+const lookupFailed = () => ({ content: [{ type: "text" as const, text: JSON.stringify({ error: "lookup_failed" }) }], isError: true });
 
-export function createArhamTools(ctx: ToolContext): { server: McpSdkServerConfigWithInstance; allowedToolNames: string[] } {
+export function createArhamTools(ctx: ToolContext): {
+  server: McpSdkServerConfigWithInstance;
+  /** Keyed by SERVER_NAME, which the mcp__arham__ prefix of TOOL_NAMES depends on. */
+  mcpServers: Record<string, McpSdkServerConfigWithInstance>;
+  allowedToolNames: string[];
+} {
   const server = createSdkMcpServer({
     name: SERVER_NAME,
     version: "2.0.0",
+    // A stalled lookup fails the call after 10 s instead of holding the turn.
+    timeout: 10_000,
     tools: [
       tool(
         "find_ambulances",
@@ -119,20 +198,20 @@ export function createArhamTools(ctx: ToolContext): { server: McpSdkServerConfig
         async (args) => {
           try {
             return text(await findAmbulancesImpl(ctx, { city: args.city ?? null, area: args.area ?? null, query: args.query }));
-          } catch (e) {
-            return errorResult(e);
+          } catch {
+            return lookupFailed();
           }
         }
       ),
       tool(
         "find_clinics",
-        "List Arham clinics, optionally filtered by city. Returns handles; write {{CLINIC:<handle>}} to give a clinic's number.",
-        { city: z.string().nullable().optional() },
+        "List Arham clinics, optionally filtered by city. Returns handles; write {{CLINIC:<handle>}} to give a clinic's number. city_matched false means no clinic is in that city and the full list is returned.",
+        { city: z.string().nullable().optional().describe("City as spelled in the coverage list, or null") },
         async (args) => {
           try {
             return text(await findClinicsImpl(ctx, { city: args.city ?? null }));
-          } catch (e) {
-            return errorResult(e);
+          } catch {
+            return lookupFailed();
           }
         }
       ),
@@ -143,12 +222,12 @@ export function createArhamTools(ctx: ToolContext): { server: McpSdkServerConfig
         async (args) => {
           try {
             return text(getInfoImpl(ctx, { topic: args.topic }));
-          } catch (e) {
-            return errorResult(e);
+          } catch {
+            return lookupFailed();
           }
         }
       ),
     ],
   });
-  return { server, allowedToolNames: TOOL_NAMES };
+  return { server, mcpServers: { [SERVER_NAME]: server }, allowedToolNames: TOOL_NAMES };
 }
