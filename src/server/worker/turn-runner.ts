@@ -1,4 +1,4 @@
-import { getSql } from "../db/client";
+import { openLockConnection } from "../db/client";
 import { detectLanguage } from "../lang";
 import { audioNotSupported } from "../messages/system-replies";
 import { enqueueTurn } from "../queue/boss";
@@ -20,25 +20,33 @@ export type TurnOutcome = {
   requeued?: boolean;
 };
 
-/** Session-level advisory lock on a reserved connection; released in `finally`. */
+/**
+ * Session-level advisory lock on a connection opened for this turn alone and closed after it. If that
+ * connection's backend dies mid-turn, the lock dies with it and the unlock reconnects instead of crashing.
+ */
 async function withConversationLock<T>(conversationId: string, fn: () => Promise<T>): Promise<T | "locked"> {
-  const reserved = await getSql().reserve();
+  const lockConn = openLockConnection();
   try {
-    const [{ locked }] = await reserved<{ locked: boolean }[]>`select pg_try_advisory_lock(hashtext(${conversationId})::bigint) as locked`;
+    const [{ locked }] = await lockConn<{ locked: boolean }[]>`select pg_try_advisory_lock(hashtext(${conversationId})::bigint) as locked`;
     if (!locked) return "locked";
     try {
       return await fn();
     } finally {
+      // Never mask fn's result or error.
       try {
-        await reserved`select pg_advisory_unlock(hashtext(${conversationId})::bigint)`;
+        const [{ unlocked }] = await lockConn<{ unlocked: boolean }[]>`select pg_advisory_unlock(hashtext(${conversationId})::bigint) as unlocked`;
+        // false: the lock's backend died mid-turn, taking the lock with it, and this ran on a new session.
+        if (!unlocked) log.warn({ conversationId }, "advisory lock lost mid-turn");
       } catch {
-        // Never mask fn's result or error. The usual cause is a lost connection, and Postgres drops a
-        // session lock together with its session.
         log.warn({ conversationId }, "advisory unlock failed");
       }
     }
   } finally {
-    reserved.release();
+    try {
+      await lockConn.end({ timeout: 5 });
+    } catch {
+      log.warn({ conversationId }, "lock connection close failed");
+    }
   }
 }
 

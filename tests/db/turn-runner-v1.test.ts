@@ -3,6 +3,7 @@ import { eq, asc } from "drizzle-orm";
 import { resetDb, createConversation } from "../helpers/db";
 import { seedDirectory } from "../helpers/fixtures";
 import { closeDb, getDb, getSql } from "@/server/db/client";
+import * as dbClient from "@/server/db/client";
 import { getConfig, resetConfigForTests } from "@/server/config";
 import { conversations, messages, turns } from "@/server/db/schema";
 import { storeReporterMessage } from "@/server/inbound/store";
@@ -18,6 +19,19 @@ async function conv(language: "en" | "hi" | "mr" | "gu" | null = null) {
 }
 const assistant = async (id: string) =>
   (await getDb().select().from(messages).where(eq(messages.conversationId, id)).orderBy(asc(messages.createdAt))).filter((m) => m.role === "assistant");
+const byContent = async (content: string) => (await getDb().select().from(messages).where(eq(messages.content, content)))[0];
+
+/** Stubs Interakt so that `during` runs once, while the turn's first send is in flight. */
+function duringFirstSend(during: () => Promise<void>) {
+  let ran = false;
+  setFetchForTests((async () => {
+    if (!ran) {
+      ran = true;
+      await during();
+    }
+    return new Response(JSON.stringify({ id: `wa-${Math.random().toString(36).slice(2, 9)}` }), { status: 201 });
+  }) as typeof fetch);
+}
 
 describe("runTurn v1", () => {
   beforeEach(async () => { await stopBoss(); await resetDb(); await seedDirectory(); });
@@ -158,17 +172,16 @@ describe("runTurn v1", () => {
     const c = await conv();
     await getDb().update(conversations).set({ welcomedAt: new Date() }).where(eq(conversations.id, c.id));
     await storeReporterMessage(c.id, { kind: "text", content: "Surat" });
-    const sql = getSql();
-    const reserve = sql.reserve.bind(sql);
-    vi.spyOn(sql, "reserve").mockImplementationOnce(async () => {
-      const conn = await reserve();
+    const open = dbClient.openLockConnection;
+    vi.spyOn(dbClient, "openLockConnection").mockImplementationOnce(() => {
+      const conn = open();
       // Runs the real unlock, then fails the way a connection lost mid-query does.
       const unlockFails = async (strings: TemplateStringsArray, ...values: never[]) => {
         const rows = await conn(strings, ...values);
         if (strings.join("").includes("pg_advisory_unlock")) throw new Error("connection lost while unlocking");
         return rows;
       };
-      return Object.assign(unlockFails, { release: conn.release }) as unknown as typeof conn;
+      return Object.assign(unlockFails, { end: conn.end }) as unknown as typeof conn;
     });
     const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
     try {
@@ -181,18 +194,43 @@ describe("runTurn v1", () => {
     expect((await runTurn(c.id)).kind).toBe("fallback"); // not "locked"
   });
 
-  /** Stubs Interakt so that `during` runs once, while the turn's first send is in flight. */
-  function duringFirstSend(during: () => Promise<void>) {
-    let ran = false;
-    setFetchForTests((async () => {
-      if (!ran) {
-        ran = true;
-        await during();
-      }
-      return new Response(JSON.stringify({ id: `wa-${Math.random().toString(36).slice(2, 9)}` }), { status: 201 });
-    }) as typeof fetch);
-  }
-  const byContent = async (content: string) => (await getDb().select().from(messages).where(eq(messages.content, content)))[0];
+  it("returns the turn's outcome, without crashing, when the lock connection's backend dies mid-turn", async () => {
+    const c = await createConversation({ phone: "+919876500996", welcomedAt: new Date() });
+    await storeReporterMessage(c.id, { kind: "text", content: "Surat" });
+    let terminated = false;
+    duringFirstSend(async () => {
+      // pg_locks keeps a bigint advisory key as classid (high 32 bits) and objid (low 32 bits).
+      const [lock] = await getSql()<{ pid: number }[]>`
+        select pid from pg_locks
+        where locktype = 'advisory' and granted and objsubid = 1
+          and ((classid::bigint << 32) | objid::bigint) = hashtext(${c.id})::bigint`;
+      const [row] = await getSql()<{ terminated: boolean }[]>`select pg_terminate_backend(${lock.pid}) as terminated`;
+      terminated = row.terminated;
+      await new Promise((r) => setTimeout(r, 200)); // the lock connection sees its socket close before the turn ends
+    });
+    const uncaught: unknown[] = [];
+    const onUncaught = (err: unknown) => void uncaught.push(err);
+    process.on("uncaughtException", onUncaught);
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const stuck = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`the turn did not return within 10 s; uncaught: ${uncaught.map(String).join(" | ") || "none"}`)), 10_000);
+      });
+      const r = await Promise.race([runTurn(c.id), stuck]);
+      expect(r.kind).toBe("fallback");
+      expect((await byContent("Surat")).answeredTurnId).toBe(r.turnId);
+      expect(warn).toHaveBeenCalledWith({ conversationId: c.id }, "advisory lock lost mid-turn");
+    } finally {
+      clearTimeout(timer);
+      process.off("uncaughtException", onUncaught);
+      setFetchForTests(null);
+      vi.restoreAllMocks();
+    }
+    expect(terminated).toBe(true);
+    expect(uncaught).toEqual([]);
+    expect((await runTurn(c.id)).kind).toBe("noop"); // not "locked": the lock went with the dead session
+  }, 30_000);
 
   it("requeues at once for a message that arrives mid-turn and leaves it pending for that turn", async () => {
     const c = await createConversation({ phone: "+919876500998", welcomedAt: new Date() });
@@ -230,8 +268,9 @@ describe("runTurn v1", () => {
   });
 
   it("finishes a full worker's worth of concurrent turns without exhausting the connection pool", async () => {
-    // Each turn keeps one pooled connection reserved for its advisory lock. At the highest allowed
-    // concurrency a fixed pool of 8 left none for the turns' own queries and every turn hung.
+    // Turns once held a pooled connection each for their advisory lock, and at the highest allowed
+    // concurrency a fixed pool of 8 hung every turn. The lock now has a connection of its own; this
+    // keeps a full worker's worth of concurrent turns finishing.
     const configured = process.env.WORKER_CONCURRENCY;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
