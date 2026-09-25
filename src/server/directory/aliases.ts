@@ -42,16 +42,17 @@ function stripIndicSuffix(token: string): string {
 
 /**
  * Replace aliased tokens in an already lowercased, punctuation-free string.
- * Indic tokens are tried raw, then with a case suffix stripped.
+ * Indic tokens are tried raw, then with a case suffix stripped. Lookups use
+ * Object.hasOwn so a token like "constructor" never hits Object.prototype.
  */
 export function applyCityAliases(s: string): string {
   return s
     .split(" ")
     .map((token) => {
-      if (LATIN_ALIASES[token]) return LATIN_ALIASES[token];
-      if (INDIC_ALIASES[token]) return INDIC_ALIASES[token];
+      if (Object.hasOwn(LATIN_ALIASES, token)) return LATIN_ALIASES[token];
+      if (Object.hasOwn(INDIC_ALIASES, token)) return INDIC_ALIASES[token];
       const stripped = stripIndicSuffix(token);
-      if (INDIC_ALIASES[stripped]) return INDIC_ALIASES[stripped];
+      if (Object.hasOwn(INDIC_ALIASES, stripped)) return INDIC_ALIASES[stripped];
       // Marathi locative "पुण्यात" → "पुणे" is irregular; handle the covered cities explicitly.
       if (token === "पुण्यात") return "pune";
       if (token === "मुंबईत" || token === "मुंबईला") return "mumbai";

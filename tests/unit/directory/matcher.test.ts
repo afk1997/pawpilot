@@ -25,6 +25,10 @@ describe("normalize", () => {
     expect(normalize("मुंबई घाटकोपर")).toBe("mumbai ghatkopar");
     expect(normalize("સુરત")).toBe("surat");
   });
+
+  it("ignores inherited object keys when looking up aliases", () => {
+    expect(normalize("constructor")).toBe("constructor");
+  });
 });
 
 describe("matchAmbulances", () => {
@@ -80,5 +84,17 @@ describe("matchAmbulances", () => {
   it("city restricts area search to that city", () => {
     const r = matchAmbulances(rows, { city: "Rajkot", area: "Ghatkopar", query: "ghatkopar rajkot" });
     expect(ids(r)).toEqual(["rajkotA", "rajkotB"]);
+  });
+
+  it("area first: a city in the free text does not pre-empt the area's neighbours", () => {
+    const r = matchAmbulances(rows, { city: "Mumbai", area: "Goregaon", query: "Goregaon, Mumbai" });
+    expect(r.match).toBe("neighbour");
+    expect(ids(r)).toEqual(["andheri", "malad"]);
+  });
+
+  it("area first: an unknown area falls through to the city", () => {
+    const r = matchAmbulances(rows, { city: "Mumbai", area: "Nowhere", query: "Nowhere, Mumbai" });
+    expect(r.match).toBe("city");
+    expect(ids(r)).toEqual(["andheri", "bandra", "ghatkopar", "malad"]);
   });
 });
