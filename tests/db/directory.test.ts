@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
-import { ambulances } from "@/server/db/schema";
+import { ambulances, clinics, operators } from "@/server/db/schema";
 import { resetDb } from "../helpers/db";
 import { seedDirectory } from "../helpers/fixtures";
 import { loadActiveAmbulances, loadActiveClinics, getAmbulancesByIds, getClinicsByIds } from "@/server/directory/repo";
@@ -48,6 +48,7 @@ Clinic,Arham Clinic Surat,"Surat, Gujarat",Vesu,Gujarat,02612345678,,Clinic,Arha
     expect(first).toMatchObject({ operators: 2, ambulancesInserted: 2, ambulancesUpdated: 0, clinicsInserted: 1 });
     const second = await ingestDirectory(parseDirectoryCsv(csv));
     expect(second).toMatchObject({ ambulancesInserted: 0, ambulancesUpdated: 2, clinicsUpdated: 1 });
+    expect(second).toMatchObject({ ambulancesDeactivated: 0, clinicsDeactivated: 0 });
     const rows = await loadActiveAmbulances();
     const alai = rows.find((r) => r.label === "Rajkot - ALAI")!;
     expect(alai.area).toBeNull();
@@ -56,5 +57,102 @@ Clinic,Arham Clinic Surat,"Surat, Gujarat",Vesu,Gujarat,02612345678,,Clinic,Arha
     const ghatkopar = rows.find((r) => r.label === "Mumbai - Ghatkopar")!;
     expect(ghatkopar).toMatchObject({ area: "Ghatkopar", areasCovered: ["Ghatkopar", "Vikhroli"], phone: "+917000000001", operatorIsArham: true });
     expect(await loadActiveClinics()).toMatchObject([{ label: "Arham Clinic Surat", city: "Surat", area: "Vesu", phone: "+912612345678" }]);
+  });
+});
+
+const HEADER = "Type,Name,City,Area,State,Phone,Area of Operation,Category,Operated By";
+const GHATKOPAR = 'Ambulance,Mumbai - Ghatkopar,Mumbai,Ghatkopar,Maharashtra,7000000001,"Ghatkopar, Vikhroli",Animal Ambulance,Arham Yuva Seva Group';
+const MALAD = "Ambulance,Mumbai - Malad,Mumbai,Malad,Maharashtra,7000000002,Malad,Animal Ambulance,Arham Yuva Seva Group";
+const SURAT_CLINIC = 'Clinic,Arham Clinic Surat,"Surat, Gujarat",Vesu,Gujarat,02612345678,,Clinic,Arham Yuva Seva Group';
+const rowsOf = (...lines: string[]) => parseDirectoryCsv([HEADER, ...lines].join("\n"));
+
+/** Everything an ingest can write, including updated_at, so a stray write shows up. */
+async function snapshot() {
+  const db = getDb();
+  return {
+    operators: await db.select({ name: operators.name, isArham: operators.isArham }).from(operators).orderBy(operators.name),
+    ambulances: await db
+      .select({ label: ambulances.label, phone: ambulances.phone, active: ambulances.active, updatedAt: ambulances.updatedAt })
+      .from(ambulances)
+      .orderBy(ambulances.label),
+    clinics: await db.select({ label: clinics.label, phone: clinics.phone, active: clinics.active }).from(clinics).orderBy(clinics.label),
+  };
+}
+
+describe("directory ingest safeguards", () => {
+  beforeEach(async () => { await resetDb(); resetCoverageCache(); });
+
+  it("deactivates what the CSV no longer lists and reactivates it when it returns", async () => {
+    expect(await ingestDirectory(rowsOf(GHATKOPAR, MALAD, SURAT_CLINIC))).toMatchObject({
+      ambulancesInserted: 2, ambulancesDeactivated: 0, clinicsInserted: 1, clinicsDeactivated: 0,
+    });
+
+    const beforeSecondRun = new Date();
+    expect(await ingestDirectory(rowsOf(GHATKOPAR))).toMatchObject({ ambulancesUpdated: 1, ambulancesDeactivated: 1, clinicsDeactivated: 1 });
+    expect((await loadActiveAmbulances()).map((r) => r.label)).toEqual(["Mumbai - Ghatkopar"]);
+    expect(await loadActiveClinics()).toEqual([]);
+    const [malad] = await getDb().select().from(ambulances).where(eq(ambulances.label, "Mumbai - Malad"));
+    expect(malad.active).toBe(false);
+    expect(malad.updatedAt.getTime()).toBeGreaterThanOrEqual(beforeSecondRun.getTime());
+    // Rows that are already inactive are not counted again.
+    expect(await ingestDirectory(rowsOf(GHATKOPAR))).toMatchObject({ ambulancesDeactivated: 0, clinicsDeactivated: 0 });
+
+    expect(await ingestDirectory(rowsOf(GHATKOPAR, MALAD, SURAT_CLINIC))).toMatchObject({
+      ambulancesInserted: 0, ambulancesUpdated: 2, ambulancesDeactivated: 0, clinicsInserted: 0, clinicsUpdated: 1,
+    });
+    expect((await loadActiveAmbulances()).map((r) => r.label).sort()).toEqual(["Mumbai - Ghatkopar", "Mumbai - Malad"]);
+    expect((await loadActiveClinics()).map((c) => c.label)).toEqual(["Arham Clinic Surat"]);
+  });
+
+  it.each([
+    ["an empty phone cell", MALAD.replace("7000000002", ""), 'Ambulance "Mumbai - Malad": Phone is empty'],
+    ["a cell with two numbers", MALAD.replace("7000000002", "7000000002 / 7000000003"), 'Ambulance "Mumbai - Malad": Phone must be an Indian mobile number'],
+    ["two rows with the same Name", MALAD.replace("Mumbai - Malad", "MUMBAI - GHATKOPAR"), 'Ambulance "MUMBAI - GHATKOPAR": Name is already used by Ambulance "Mumbai - Ghatkopar"'],
+  ])("aborts on %s, naming the row, and writes nothing", async (_case, badLine, problem) => {
+    await ingestDirectory(rowsOf(GHATKOPAR, MALAD, SURAT_CLINIC));
+    const before = await snapshot();
+    // Also changes a phone and drops the clinic, so a partial write would show.
+    const error = await ingestDirectory(rowsOf(GHATKOPAR.replace("7000000001", "7000000009"), badLine)).then(
+      () => null,
+      (e: unknown) => e
+    );
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/^CSV validation failed:\n/);
+    expect((error as Error).message).toContain(problem);
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it("refuses a CSV with no ambulance rows instead of deactivating the whole directory", async () => {
+    await ingestDirectory(rowsOf(GHATKOPAR, MALAD, SURAT_CLINIC));
+    const before = await snapshot();
+    await expect(ingestDirectory(rowsOf(SURAT_CLINIC))).rejects.toThrow("no ambulance rows");
+    await expect(ingestDirectory(parseDirectoryCsv(""))).rejects.toThrow("no ambulance rows");
+    await expect(ingestDirectory(parseDirectoryCsv([HEADER.replace("Type", "Kind"), GHATKOPAR].join("\n")))).rejects.toThrow("no ambulance rows");
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it("rolls the whole ingest back when it fails before commit", async () => {
+    await ingestDirectory(rowsOf(GHATKOPAR, MALAD, SURAT_CLINIC));
+    const before = await snapshot();
+    const db = getDb();
+    // Throws after every statement of the ingest has run, so anything not written through
+    // the transaction would survive the rollback and show up in the snapshot.
+    const failsBeforeCommit = new Proxy(db, {
+      get: (target, prop, receiver) =>
+        prop === "transaction"
+          ? (work: (tx: unknown) => Promise<unknown>) =>
+              target.transaction(async (tx) => {
+                await work(tx);
+                throw new Error("simulated failure before commit");
+              })
+          : Reflect.get(target, prop, receiver),
+    });
+    // Changes a phone, adds an operator and a unit, and would deactivate Malad and the clinic.
+    const changed = rowsOf(
+      GHATKOPAR.replace("7000000001", "7000000009"),
+      "Ambulance,Pune - Aundh,Pune,Aundh,Maharashtra,7000000008,Aundh,Animal Ambulance,New Partner Trust"
+    );
+    await expect(ingestDirectory(changed, failsBeforeCommit)).rejects.toThrow("simulated failure before commit");
+    expect(await snapshot()).toEqual(before);
   });
 });
