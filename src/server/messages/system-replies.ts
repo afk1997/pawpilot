@@ -11,8 +11,16 @@ export function audioNotSupported(lang: Language): string {
   }, lang);
 }
 
-/** First line of a fallback reply when the directory matched. */
-export function fallbackFoundIntro(lang: Language): string {
+/** First line of a fallback reply when the directory matched; `count > 1` gives the plural form for the multi-card. */
+export function fallbackFoundIntro(lang: Language, count = 1): string {
+  if (count > 1) {
+    return pick({
+      en: "Here are the animal ambulances for your area:",
+      hi: "आपके इलाके की एनिमल एम्बुलेंस ये रहीं:",
+      mr: "तुमच्या भागातील एनिमल एम्बुलन्स या आहेत:",
+      gu: "તમારા વિસ્તારની એનિમલ એમ્બ્યુલન્સ આ રહી:",
+    }, lang);
+  }
   return pick({
     en: "Here is the animal ambulance for your area:",
     hi: "आपके इलाके की एनिमल एम्बुलेंस यह रही:",
