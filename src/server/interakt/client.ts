@@ -25,9 +25,29 @@ export function isTestPhone(phone: string): boolean {
   return phone.startsWith("+91TEST_");
 }
 
-/** Length-based split; a greedy regex once produced "+919" + 9 digits and silently dropped messages. */
+/** ITU-T E.164 two-digit country codes. Codes are prefix-free: 1 and 7 are the only one-digit codes, all others have three digits. */
+const TWO_DIGIT_COUNTRY_CODES = new Set([
+  "20", "27", "30", "31", "32", "33", "34", "36", "39", "40", "41", "43", "44", "45", "46", "47", "48", "49",
+  "51", "52", "53", "54", "55", "56", "57", "58", "60", "61", "62", "63", "64", "65", "66",
+  "81", "82", "84", "86", "90", "91", "92", "93", "94", "95", "98",
+]);
+
+function countryCodeLength(digits: string): number {
+  if (digits.startsWith("1") || digits.startsWith("7")) return 1;
+  return TWO_DIGIT_COUNTRY_CODES.has(digits.slice(0, 2)) ? 2 : 3;
+}
+
+/**
+ * An explicit "+" is E.164, so the country code comes from the ITU length table ("+6581234567" is Singapore,
+ * not +91 6581234567). Bare numbers keep the India heuristics, split by length: a greedy regex once produced
+ * "+919" + 9 digits and silently dropped messages.
+ */
 export function splitPhone(phone: string): { countryCode: string; phoneNumber: string } {
   const digits = phone.replace(/\D/g, "");
+  if (phone.startsWith("+")) {
+    const ccLength = countryCodeLength(digits);
+    return { countryCode: `+${digits.slice(0, ccLength)}`, phoneNumber: digits.slice(ccLength) };
+  }
   if (digits.length === 10) return { countryCode: "+91", phoneNumber: digits };
   if (digits.length === 12 && digits.startsWith("91")) return { countryCode: "+91", phoneNumber: digits.slice(2) };
   if (digits.length === 11 && digits.startsWith("0")) return { countryCode: "+91", phoneNumber: digits.slice(1) };
@@ -35,17 +55,21 @@ export function splitPhone(phone: string): { countryCode: string; phoneNumber: s
   return { countryCode: "+91", phoneNumber: digits };
 }
 
+/** Caps a stalled Interakt call; Node's fetch would otherwise wait minutes, past the turn job's expiry. */
+const SEND_TIMEOUT_MS = 15_000;
+
 async function post(payload: Record<string, unknown>, to: string): Promise<InteraktResult> {
   if (isTestPhone(to)) {
     return { ok: false, status: 0, body: null, error: "refusing to send to a test phone" };
   }
-  const cfg = getConfig();
   const doFetch = fetchImpl ?? fetch;
   try {
+    const cfg = getConfig();
     const res = await doFetch(cfg.interakt.apiBase, {
       method: "POST",
       headers: { Authorization: `Basic ${cfg.interakt.apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
     });
     const body = await res.json().catch(() => null);
     const messageId = body && typeof body === "object" && typeof (body as { id?: unknown }).id === "string" ? (body as { id: string }).id : undefined;

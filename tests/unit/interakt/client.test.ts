@@ -1,4 +1,5 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
+import { resetConfigForTests } from "@/server/config";
 import { splitPhone, isTestPhone, sendText, sendInteractiveList, setFetchForTests } from "@/server/interakt/client";
 
 const okFetch = (captured: { url?: string; init?: RequestInit }) =>
@@ -15,6 +16,13 @@ describe("splitPhone", () => {
     expect(splitPhone("09096820338")).toEqual({ countryCode: "+91", phoneNumber: "9096820338" });
     expect(splitPhone("+447911123456")).toEqual({ countryCode: "+44", phoneNumber: "7911123456" });
   });
+  it("honours an explicit country code instead of assuming India", () => {
+    expect(splitPhone("+6581234567")).toEqual({ countryCode: "+65", phoneNumber: "81234567" });
+    expect(splitPhone("+971501234567")).toEqual({ countryCode: "+971", phoneNumber: "501234567" });
+    expect(splitPhone("+14155552671")).toEqual({ countryCode: "+1", phoneNumber: "4155552671" });
+    expect(splitPhone("+79161234567")).toEqual({ countryCode: "+7", phoneNumber: "9161234567" });
+    expect(splitPhone("+93701234567")).toEqual({ countryCode: "+93", phoneNumber: "701234567" });
+  });
   it("recognises test phones", () => {
     expect(isTestPhone("+91TEST_abc123")).toBe(true);
     expect(isTestPhone("+919096820338")).toBe(false);
@@ -22,7 +30,12 @@ describe("splitPhone", () => {
 });
 
 describe("send functions", () => {
-  afterEach(() => setFetchForTests(null));
+  afterEach(() => {
+    setFetchForTests(null);
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    resetConfigForTests();
+  });
 
   it("posts a Text payload with Basic auth and returns the message id", async () => {
     const cap: { url?: string; init?: RequestInit } = {};
@@ -67,5 +80,30 @@ describe("send functions", () => {
     const r2 = await sendText("+919096820338", "hello");
     expect(r2.ok).toBe(false);
     expect(r2.error).toMatch(/ECONNRESET/);
+  });
+
+  it("times sends out after 15 s and reports the abort without throwing", async () => {
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    let signal: AbortSignal | null | undefined;
+    setFetchForTests((async (_url: string | URL | Request, init?: RequestInit) => {
+      signal = init?.signal;
+      throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+    }) as typeof fetch);
+    const r = await sendText("+919096820338", "hello");
+    expect(timeout).toHaveBeenCalledWith(15_000);
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(r).toMatchObject({ ok: false, status: 0 });
+    expect(r.error).toMatch(/timeout|abort/i);
+  });
+
+  it("returns a failure instead of throwing when the environment is invalid", async () => {
+    vi.stubEnv("INTERAKT_API_KEY", "");
+    resetConfigForTests();
+    let called = false;
+    setFetchForTests((async () => { called = true; return new Response("{}", { status: 201 }); }) as typeof fetch);
+    const r = await sendText("+919096820338", "hello");
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/INTERAKT_API_KEY/);
+    expect(called).toBe(false);
   });
 });
