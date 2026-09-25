@@ -42,7 +42,7 @@ export function callDirectlyLine(lang: Language): string {
 }
 
 export const TOKEN_CORRECTION_NOTE =
-  "SYSTEM CORRECTION: your previous draft typed a phone number as digits. Phone numbers may only appear as tokens: {{AMB:<handle>}}, {{CLINIC:<handle>}} or {{PHONE:helpline}}. Rewrite the reply using tokens only.";
+  "SYSTEM CORRECTION: your previous draft typed a phone number as digits. Phone numbers may only appear as tokens: {{AMB:<handle>}}, {{CLINIC:<handle>}}, or any {{PHONE:<key>}} token exactly as a tool returned it (including {{PHONE:helpline}}). Rewrite the reply using tokens only.";
 
 export const DISPATCH_CORRECTION_NOTE =
   "SYSTEM CORRECTION: your previous draft implied that Arham sends or dispatches the ambulance. We never dispatch; the reporter calls the driver directly. Rewrite the reply without any sending/dispatching/on-the-way language.";

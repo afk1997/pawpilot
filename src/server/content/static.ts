@@ -7,36 +7,56 @@ export type InfoContent = Record<string, string | { question: string; answer: st
 type Localized = Record<string, Record<string, string> | string>;
 
 const isFilled = (v: unknown): v is string => typeof v === "string" && v.trim().length > 0 && !v.trim().toUpperCase().startsWith("TODO");
-/** A field whose whole value is one phone number. */
-const PHONE_RE = /^\+?\d[\d\s-]{6,}\d$/;
-/** A phone-like run anywhere inside a string. */
-const PHONE_RUN_RE = /\+?\d[\d\s-]{6,}\d/g;
+/** A field whose whole value is one phone number: 7+ digits, at most one space or hyphen between two digits. */
+const PHONE_RE = /^\+?\d(?:[ -]?\d){6,}$/;
+/** A phone number inside a string; it never runs across a line break or a spaced hyphen. */
+const PHONE_RUN_RE = /\+?\d(?:[ -]?\d){6,}/g;
+
+/**
+ * Maps Devanagari (U+0966–096F) and Gujarati (U+0AE6–0AEF) numerals to ASCII 0–9. Each numeral is one
+ * UTF-16 unit, like its replacement, so every index in the result matches the input.
+ */
+export function foldDigits(s: string): string {
+  return s.replace(/[\u0966-\u096F\u0AE6-\u0AEF]/g, (c) => {
+    const code = c.charCodeAt(0);
+    return String(code - (code >= 0x0ae6 ? 0x0ae6 : 0x0966));
+  });
+}
 
 /** "1800-419-5860" → "18004195860", "+91 70000 00009" → "+917000000009". */
 const compactPhone = (phone: string): string => phone.replace(/[\s-]/g, "");
 
 /**
- * Swaps the phone numbers in one topic's strings for {{PHONE:<key>}} tokens and records them in `phones`.
- * A field whose whole value is a number is keyed `<topic>_<field>` (`<topic>_<field>_<lang>` when a
+ * Swaps the phone numbers in one topic's strings for {{PHONE:<key>}} tokens and records them, as ASCII
+ * digits, in `phones`. Native numerals are folded before matching; the text around a number is kept as
+ * written. A field whose whole value is a number is keyed `<topic>_<field>` (`<topic>_<field>_<lang>` when a
  * translation holds a different number). The n-th distinct number embedded in the topic's text is keyed
  * `<topic>_<n>`; the same number in another language reuses its key.
  */
 function phoneTokenizer(topic: string, phones: Record<string, string>) {
   const embedded = new Map<string, string>();
-  const text = (value: string): string =>
-    value.replace(PHONE_RUN_RE, (run) => {
-      const phone = compactPhone(run);
-      let key = embedded.get(phone);
-      if (key === undefined) {
-        key = `${topic}_${embedded.size + 1}`;
-        embedded.set(phone, key);
-        phones[key] = phone;
-      }
-      return `{{PHONE:${key}}}`;
-    });
+  const embeddedKey = (phone: string): string => {
+    let key = embedded.get(phone);
+    if (key === undefined) {
+      key = `${topic}_${embedded.size + 1}`;
+      embedded.set(phone, key);
+      phones[key] = phone;
+    }
+    return key;
+  };
+  const text = (value: string): string => {
+    let out = "";
+    let last = 0;
+    for (const m of foldDigits(value).matchAll(PHONE_RUN_RE)) {
+      out += `${value.slice(last, m.index)}{{PHONE:${embeddedKey(compactPhone(m[0]))}}}`;
+      last = m.index + m[0].length;
+    }
+    return out + value.slice(last);
+  };
   const field = (value: string, name: string, lang: Language): string => {
-    if (!PHONE_RE.test(value.trim())) return text(value);
-    const phone = compactPhone(value);
+    const folded = foldDigits(value).trim();
+    if (!PHONE_RE.test(folded)) return text(value);
+    const phone = compactPhone(folded);
     const shared = `${topic}_${name}`;
     const key = phones[shared] === undefined || phones[shared] === phone ? shared : `${shared}_${lang}`;
     phones[key] = phone;
@@ -102,22 +122,30 @@ export function getStaticPhones(): Record<string, string> {
   return { ...phoneRegistry };
 }
 
+/** The value in the requested language when filled, else the English one when filled, else nothing. */
+function pick(localized: unknown, english: unknown): string | undefined {
+  return isFilled(localized) ? localized : isFilled(english) ? english : undefined;
+}
+
 function localizedObject(topic: string, lang: Language): Record<string, string> {
   const node = (content[topic] ?? {}) as Localized;
   const en = (typeof node.en === "object" ? node.en : {}) as Record<string, string>;
   const target = (typeof node[lang] === "object" ? node[lang] : {}) as Record<string, string>;
   const out: Record<string, string> = {};
   for (const key of new Set([...Object.keys(en), ...Object.keys(target)])) {
-    const v = isFilled(target[key]) ? target[key] : isFilled(en[key]) ? en[key] : undefined;
+    const v = pick(target[key], en[key]);
     if (v !== undefined) out[key] = v;
   }
   return out;
 }
 
-function localizedString(topic: string, lang: Language): string {
+function localizedString(topic: string, lang: Language): string | undefined {
   const node = (content[topic] ?? {}) as Record<string, string>;
-  return isFilled(node[lang]) ? node[lang] : isFilled(node.en) ? node.en : "";
+  return pick(node[lang], node.en);
 }
+
+/** `{ [name]: value }`, or `{}` when nothing is filled. */
+const optionalField = (name: string, value: string | undefined): Record<string, string> => (value === undefined ? {} : { [name]: value });
 
 export function getStaticInfo(topic: InfoTopic, lang: Language): InfoContent {
   switch (topic) {
@@ -125,22 +153,19 @@ export function getStaticInfo(topic: InfoTopic, lang: Language): InfoContent {
     case "volunteer":
       return localizedObject(topic, lang);
     case "about":
-      return { text: localizedString("about", lang) };
     case "human_emergency":
-      return { text: localizedString("human_emergency", lang) };
+      return optionalField("text", localizedString(topic, lang));
     case "faq": {
       const list = (content.faq ?? []) as Record<string, string>[];
-      return {
-        faq: list.map((e) => ({
-          question: isFilled(e[`q_${lang}`]) ? e[`q_${lang}`] : e.q_en,
-          answer: isFilled(e[`a_${lang}`]) ? e[`a_${lang}`] : e.a_en,
-        })),
-      };
+      const faq: { question: string; answer: string }[] = [];
+      for (const e of list) {
+        const question = pick(e[`q_${lang}`], e.q_en);
+        const answer = pick(e[`a_${lang}`], e.a_en);
+        if (question !== undefined && answer !== undefined) faq.push({ question, answer });
+      }
+      return { faq };
     }
     case "helpline":
-      return {
-        phone: "{{PHONE:helpline}}",
-        note: localizedString("about", lang),
-      };
+      return { phone: "{{PHONE:helpline}}", ...optionalField("note", localizedString("about", lang)) };
   }
 }
