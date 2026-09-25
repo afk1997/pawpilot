@@ -16,11 +16,15 @@ export async function GET() {
 
 export async function POST(request: Request) {
   const cfg = getConfig();
+  // A declared oversized body is refused unread; a chunked one has no content-length and is measured after reading.
+  if (Number(request.headers.get("content-length")) > MAX_BODY_BYTES) {
+    return Response.json({ status: "too_large" }, { status: 413 });
+  }
   const rawBody = await request.text();
   if (Buffer.byteLength(rawBody, "utf8") > MAX_BODY_BYTES) {
     return Response.json({ status: "too_large" }, { status: 413 });
   }
-  if (cfg.logRawWebhooks) log.debug({ body: rawBody.slice(0, 4096) }, "raw webhook");
+  if (cfg.logRawWebhooks && !cfg.isProduction) log.debug({ body: rawBody.slice(0, 4096) }, "raw webhook");
 
   const sigHeader = request.headers.get("interakt-signature") ?? request.headers.get("x-interakt-signature");
   const verified = await verifyInteraktSignature(rawBody, sigHeader, { secret: cfg.interakt.webhookSecret, mode: cfg.interakt.verifyMode });

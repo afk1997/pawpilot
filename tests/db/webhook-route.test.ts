@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { resetDb, createConversation } from "../helpers/db";
 import { getDb } from "@/server/db/client";
 import { conversations, messages } from "@/server/db/schema";
+import { resetConfigForTests } from "@/server/config";
 import { log } from "@/server/log";
 import * as queue from "@/server/queue/boss";
 import { getBoss, stopBoss, TURN_QUEUE } from "@/server/queue/boss";
@@ -78,6 +79,17 @@ describe("POST /api/webhook", () => {
     expect(res.status).toBe(413);
   });
 
+  it("refuses a declared oversized body without reading it", async () => {
+    const req = new Request("http://localhost/api/webhook", {
+      method: "POST",
+      headers: { "content-type": "application/json", "content-length": String(300_000) },
+      body: JSON.stringify(inbound("m6", "hi")),
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(413);
+    expect(req.bodyUsed).toBe(false);
+  });
+
   it("answers bad_json for malformed bodies", async () => {
     const raw = "{not json";
     const req = new Request("http://localhost/api/webhook", {
@@ -99,6 +111,27 @@ describe("POST /api/webhook", () => {
     } finally {
       enqueue.mockRestore();
       info.mockRestore();
+    }
+  });
+
+  it("logs raw bodies only outside production", async () => {
+    const debug = vi.spyOn(log, "debug").mockImplementation(() => undefined);
+    const bodyLogs = () =>
+      (debug.mock.calls as unknown[][]).filter(([fields]) => typeof fields === "object" && fields !== null && "body" in fields);
+    vi.stubEnv("LOG_RAW_WEBHOOKS", "1");
+    try {
+      resetConfigForTests();
+      await POST(signed(inbound("m4", "hi")));
+      expect(bodyLogs()).toHaveLength(1); // control: outside production the spy does see the raw body
+      debug.mockClear();
+      vi.stubEnv("NODE_ENV", "production");
+      resetConfigForTests();
+      expect((await POST(signed(inbound("m5", "hi")))).status).toBe(200);
+      expect(bodyLogs()).toHaveLength(0);
+    } finally {
+      debug.mockRestore();
+      vi.unstubAllEnvs();
+      resetConfigForTests();
     }
   });
 });
