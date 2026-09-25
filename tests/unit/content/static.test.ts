@@ -1,5 +1,6 @@
-import { describe, it, expect, vi } from "vitest";
-import { getStaticInfo, getStaticPhones } from "@/server/content/static";
+import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
+import { getStaticInfo, getStaticPhones, type InfoTopic } from "@/server/content/static";
+import { LANGUAGES } from "@/server/types";
 
 describe("getStaticInfo", () => {
   it("returns English donate content without TODO fields", () => {
@@ -33,30 +34,70 @@ describe("getStaticInfo", () => {
   });
 });
 
-// The shipped volunteer phone is still TODO, so the test above cannot reach the
-// tokenizing branch. A fresh module over a filled copy of the content does.
-describe("phone tokenization with a filled contact phone", () => {
-  it("registers the real number without a prior lookup and hands out only the token", async () => {
+const TOPICS: InfoTopic[] = ["donate", "volunteer", "about", "faq", "human_emergency", "helpline"];
+
+describe("phone tokens in the shipped content", () => {
+  it("returns no phone-like digit run for any topic in any language", () => {
+    for (const topic of TOPICS) {
+      for (const lang of LANGUAGES) {
+        const json = JSON.stringify(getStaticInfo(topic, lang));
+        expect(json, `${topic}/${lang}`).not.toMatch(/\d{7,}/);
+        expect(json, `${topic}/${lang}`).not.toMatch(/\d[\d\s-]{6,}\d/);
+      }
+    }
+  });
+  it("tokenizes the Animal Helpline India number embedded in the FAQ", () => {
+    const faq = getStaticInfo("faq", "en").faq as { question: string; answer: string }[];
+    const uncovered = faq.find((e) => /city you cover/i.test(e.question));
+    expect(uncovered?.answer).toContain("Animal Helpline India at {{PHONE:faq_1}}.");
+    expect(getStaticPhones().faq_1).toBe("18004195860");
+  });
+});
+
+// The shipped content has no filled phone field and no translated number, so whole-field
+// keys, cross-language key reuse and the load-time registry run over a filled copy.
+describe("phone tokenization over filled content", () => {
+  let fresh: typeof import("@/server/content/static");
+
+  beforeAll(async () => {
     vi.resetModules();
     vi.doMock("@/content/static.json", () => ({
       default: {
         volunteer: {
-          en: { summary: "Volunteer with us.", contact_phone: "+91 70000 00009" },
-          hi: { summary: "TODO", contact_phone: "TODO" },
+          en: { summary: "Ride along with an ambulance: call +91 70000 00008.", contact_phone: "+91 70000 00009" },
+          hi: { summary: "एम्बुलेंस के साथ चलने के लिए +91 70000 00008 पर कॉल करें।", contact_phone: "TODO" },
+          mr: { summary: "TODO", contact_phone: "+91 70000 00010" },
         },
       },
     }));
-    try {
-      const fresh = await import("@/server/content/static");
-      expect(fresh.getStaticPhones()).toEqual({ volunteer: "+917000000009" });
-      for (const lang of ["en", "hi"] as const) {
-        const c = fresh.getStaticInfo("volunteer", lang);
-        expect(c.contact_phone).toBe("{{PHONE:volunteer}}");
-        expect(JSON.stringify(c)).not.toMatch(/\+?\d(?:[\s-]?\d){6,}/);
-      }
-    } finally {
-      vi.doUnmock("@/content/static.json");
-      vi.resetModules();
+    fresh = await import("@/server/content/static");
+  });
+
+  afterAll(() => {
+    vi.doUnmock("@/content/static.json");
+    vi.resetModules();
+  });
+
+  it("registers every number at load, before any lookup", () => {
+    expect(fresh.getStaticPhones()).toEqual({
+      volunteer_1: "+917000000008",
+      volunteer_contact_phone: "+917000000009",
+      volunteer_contact_phone_mr: "+917000000010",
+    });
+  });
+
+  it("hands out only tokens and keeps one key per number across languages", () => {
+    expect(fresh.getStaticInfo("volunteer", "en")).toEqual({
+      summary: "Ride along with an ambulance: call {{PHONE:volunteer_1}}.",
+      contact_phone: "{{PHONE:volunteer_contact_phone}}",
+    });
+    expect(fresh.getStaticInfo("volunteer", "hi")).toEqual({
+      summary: "एम्बुलेंस के साथ चलने के लिए {{PHONE:volunteer_1}} पर कॉल करें।",
+      contact_phone: "{{PHONE:volunteer_contact_phone}}",
+    });
+    expect(fresh.getStaticInfo("volunteer", "mr").contact_phone).toBe("{{PHONE:volunteer_contact_phone_mr}}");
+    for (const lang of LANGUAGES) {
+      expect(JSON.stringify(fresh.getStaticInfo("volunteer", lang))).not.toMatch(/\+?\d(?:[\s-]?\d){6,}/);
     }
   });
 });

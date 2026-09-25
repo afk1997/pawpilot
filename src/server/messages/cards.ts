@@ -17,7 +17,10 @@ export interface CardClinic {
   hours?: string | null;
 }
 
-/** "+917000000001" → "+91 70000 00001". Non-Indian numbers are returned as-is with a "+". */
+/**
+ * "+917000000001" → "+91 70000 00001"; toll-free "18004195860" → "1800-419-5860" (no country code).
+ * Non-Indian numbers are returned as-is with a "+".
+ */
 export function formatIndianPhone(e164: string): string {
   if (!e164) return e164;
   const digits = e164.replace(/\D/g, "");
@@ -26,6 +29,7 @@ export function formatIndianPhone(e164: string): string {
     return `+91 ${local.slice(0, 5)} ${local.slice(5)}`;
   }
   if (digits.length === 10) return `+91 ${digits.slice(0, 5)} ${digits.slice(5)}`;
+  if (digits.length === 11 && digits.startsWith("1800")) return `1800-${digits.slice(4, 7)}-${digits.slice(7)}`;
   return e164.startsWith("+") ? e164 : `+${e164}`;
 }
 

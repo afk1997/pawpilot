@@ -14,6 +14,11 @@ describe("cards", () => {
     expect(formatIndianPhone("+441234567890")).toBe("+441234567890");
   });
 
+  it("formats Indian toll-free numbers without a country code", () => {
+    expect(formatIndianPhone("18004195860")).toBe("1800-419-5860");
+    expect(formatIndianPhone("1800-419-5860")).toBe("1800-419-5860");
+  });
+
   it("builds an Arham card without operator suffix", () => {
     expect(buildAmbulanceCard(arham, "en")).toBe("Arham Animal Ambulance, Ghatkopar\n+91 70000 00001\nPlease call them right away.");
   });
