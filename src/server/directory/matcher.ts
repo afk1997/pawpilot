@@ -48,11 +48,13 @@ export function normalize(s: string): string {
 const tokensOf = (q: string) => q.split(" ").filter((t) => t.length >= 4);
 
 /**
- * Street and direction words too generic to drive the token-based loose tiers
- * (4 and 5; tier 3 compares the whole needle): "Station Road" must not match "Mira Road".
+ * Street, direction and locality words too generic to drive the token-based loose
+ * tiers (4 and 5; tier 3 compares the whole needle): "Station Road" must not match
+ * "Mira Road", nor "Pant Nagar" match "Tilak Nagar".
  */
 const GENERIC_TOKENS: ReadonlySet<string> = new Set([
   "road", "east", "west", "north", "south", "near", "station", "main", "area", "city", "marg", "lane", "cross",
+  "nagar", "colony", "park", "market", "village", "chowk", "circle",
 ]);
 
 function cityMatches(rowCity: string, wanted: string): boolean {
@@ -135,18 +137,17 @@ function broaderMatch(pool: DirectoryAmbulance[], needle: string): MatchResult |
  * `area` needle and then the free-text `query`, so an exact area named in
  * either beats any looser match. Only then do tiers 2–6 run, area needle
  * first, so a city named in the reporter's words cannot pre-empt the area's
- * own fuzzy or neighbour match ("Goregaon, Mumbai" → Malad/Andheri).
+ * own fuzzy or neighbour match ("Goregaon, Mumbai" → Malad/Andheri). If `city`
+ * matched rows but no tier matched either needle, the whole city is returned
+ * as a `city` match; out of coverage only when no city narrowed the search.
  */
 export function matchAmbulances(rows: DirectoryAmbulance[], input: MatchInput): MatchResult {
   const q = normalize(input.query);
   const wantedCity = input.city ? normalize(input.city) : "";
   const wantedArea = input.area ? normalize(input.area) : "";
 
-  let pool = rows;
-  if (wantedCity) {
-    const restricted = rows.filter((r) => cityMatches(r.city, wantedCity));
-    if (restricted.length > 0) pool = restricted;
-  }
+  const cityRows = wantedCity ? rows.filter((r) => cityMatches(r.city, wantedCity)) : [];
+  const pool = cityRows.length > 0 ? cityRows : rows;
 
   const needles = [wantedArea, q].filter((n) => n.length > 0);
   for (const needle of needles) {
@@ -157,6 +158,10 @@ export function matchAmbulances(rows: DirectoryAmbulance[], input: MatchInput): 
     const result = broaderMatch(pool, needle);
     if (result) return result;
   }
+
+  // A covered city with no place we recognise: offer the whole city (city_areas
+  // lets the model ask for the area) instead of calling it out of coverage.
+  if (cityRows.length > 0) return finish(cityRows, "city");
 
   return { candidates: [], match: null, cityAreas: null, outOfCoverage: true };
 }

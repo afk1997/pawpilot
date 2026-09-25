@@ -114,4 +114,26 @@ describe("matchAmbulances", () => {
   it("a direction word does not stop an exact area match (andheri east)", () => {
     expect(ids(matchAmbulances(rows, { query: "andheri east" }))).toEqual(["andheri"]);
   });
+
+  it("covered city with no recognisable place falls back to the whole city", () => {
+    const r = matchAmbulances(rows, { city: "Mumbai", area: null, query: "near the station" });
+    expect(r.match).toBe("city");
+    expect(ids(r)).toEqual(["andheri", "bandra", "ghatkopar", "malad"]);
+    expect(r.cityAreas).toEqual(["Andheri", "Bandra", "Ghatkopar", "Malad"]);
+  });
+
+  describe("with a Chembur unit covering Tilak Nagar", () => {
+    const withChembur = [...rows, row({ id: "chembur", city: "Mumbai", area: "Chembur", areasCovered: ["Chembur", "Tilak Nagar"] })];
+
+    it("exact first: an exact area in the free text beats looser matches from the area", () => {
+      expect(ids(matchAmbulances(withChembur, { city: "Mumbai", area: "Pant Nagar", query: "Pant Nagar, Ghatkopar" }))).toEqual(["ghatkopar"]);
+      // With "nagar" generic the line above passes even without exact-first; this one does
+      // not: the area's neighbour tier (Malad, Andheri) must lose to the exact "Malad".
+      expect(ids(matchAmbulances(withChembur, { city: "Mumbai", area: "Goregaon", query: "Goregaon, near Malad" }))).toEqual(["malad"]);
+    });
+
+    it("a generic locality word alone matches nothing (Pant Nagar)", () => {
+      expect(ids(matchAmbulances(withChembur, { query: "Pant Nagar" }))).toEqual([]);
+    });
+  });
 });
