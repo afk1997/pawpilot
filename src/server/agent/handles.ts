@@ -17,24 +17,28 @@ export class HandleRegistry {
     this.map = { ...initial };
   }
   ambulance(id: string): string {
-    const h = makeHandle("ambulance", this.conversationId, id);
-    this.map[h] = { kind: "ambulance", id };
-    return h;
+    return this.issue("ambulance", id);
   }
   clinic(id: string): string {
-    const h = makeHandle("clinic", this.conversationId, id);
-    this.map[h] = { kind: "clinic", id };
-    return h;
+    return this.issue("clinic", id);
   }
-  /** Own keys only, so names like "constructor" or "__proto__" never resolve to inherited members. */
+  /** Case-insensitive, since handles are always lowercase; own keys only, so "constructor" or "__proto__" never resolve to inherited members. */
   resolve(handle: string): { kind: HandleKind; id: string } | undefined {
-    return Object.hasOwn(this.map, handle) ? this.map[handle] : undefined;
+    const key = handle.toLowerCase();
+    return Object.hasOwn(this.map, key) ? this.map[key] : undefined;
   }
   handles(): string[] {
     return Object.keys(this.map);
   }
   toJSON(): HandleMap {
     return { ...this.map };
+  }
+  /** A handle already held by a different entity throws: a failure is recoverable, handing out someone else's number is not. */
+  private issue(kind: HandleKind, id: string): string {
+    const h = makeHandle(kind, this.conversationId, id);
+    if (Object.hasOwn(this.map, h) && this.map[h].id !== id) throw new Error("handle collision");
+    this.map[h] = { kind, id };
+    return h;
   }
 }
 

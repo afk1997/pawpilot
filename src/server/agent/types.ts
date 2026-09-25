@@ -31,7 +31,7 @@ export type TurnResult =
       model: string | null;
       costUsd: number | null;
     }
-  | { ok: false; kind: BackendErrorKind; message: string; retryAfter: Date | null; latencyMs: number };
+  | { ok: false; kind: BackendErrorKind; message: string; retryAfter: Date | null; latencyMs: number; sessionId: string | null };
 
 export interface LLMBackend {
   readonly name: string;

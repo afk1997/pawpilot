@@ -47,4 +47,32 @@ describe("handles", () => {
     expect(Object.hasOwn(json, "__proto__")).toBe(false);
     expect(Object.keys(json)).toEqual(["amb_deadbeef", h]);
   });
+  it("refuses to point an existing handle at a different entity", () => {
+    const amb = makeHandle("ambulance", "conv-1", "amb-1");
+    const cli = makeHandle("clinic", "conv-1", "c-1");
+    const r = new HandleRegistry("conv-1", { [amb]: { kind: "ambulance", id: "amb-other" }, [cli]: { kind: "clinic", id: "c-other" } });
+    expect(() => r.ambulance("amb-1")).toThrow("handle collision");
+    expect(() => r.clinic("c-1")).toThrow("handle collision");
+    expect(r.toJSON()).toEqual({ [amb]: { kind: "ambulance", id: "amb-other" }, [cli]: { kind: "clinic", id: "c-other" } });
+  });
+  it("re-issues the same handle for the same entity", () => {
+    const amb = makeHandle("ambulance", "conv-1", "amb-1");
+    const r = new HandleRegistry("conv-1", { [amb]: { kind: "ambulance", id: "amb-1" } });
+    expect(r.ambulance("amb-1")).toBe(amb);
+    expect(r.ambulance("amb-1")).toBe(amb);
+    expect(r.handles()).toEqual([amb]);
+  });
+  it("resolves handles case-insensitively, still own keys only", () => {
+    const r = new HandleRegistry("conv-1");
+    const h = r.ambulance("amb-1");
+    expect(r.resolve(h.toUpperCase())).toEqual({ kind: "ambulance", id: "amb-1" });
+    expect(r.resolve("CONSTRUCTOR")).toBeUndefined();
+    expect(r.resolve("__PROTO__")).toBeUndefined();
+  });
+  it("extracts PHONE keys with digits and underscores", () => {
+    expect(extractTokens("FAQ {{PHONE:faq_1}}, volunteers {{PHONE:volunteer_contact_phone}}")).toEqual([
+      { kind: "PHONE", value: "faq_1", raw: "{{PHONE:faq_1}}" },
+      { kind: "PHONE", value: "volunteer_contact_phone", raw: "{{PHONE:volunteer_contact_phone}}" },
+    ]);
+  });
 });

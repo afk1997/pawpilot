@@ -1,12 +1,12 @@
-export type Language = "en" | "hi" | "mr" | "gu";
-export const LANGUAGES: Language[] = ["en", "hi", "mr", "gu"];
+export const LANGUAGES = ["en", "hi", "mr", "gu"] as const;
+export type Language = (typeof LANGUAGES)[number];
 
 export type MessageKind =
   | "text" | "audio" | "image" | "video" | "document" | "location" | "sticker" | "contact" | "interactive";
 
 export type MessageOrigin = "reporter" | "agent" | "fallback" | "human" | "system";
 
-export type Intent =
-  | "ambulance" | "clinic" | "donate" | "volunteer" | "faq" | "suggestion" | "smalltalk" | "other";
+export const INTENTS = ["ambulance", "clinic", "donate", "volunteer", "faq", "suggestion", "smalltalk", "other"] as const;
+export type Intent = (typeof INTENTS)[number];
 
 export type TurnStatus = "ok" | "fallback" | "failed";
