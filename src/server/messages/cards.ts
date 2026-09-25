@@ -72,10 +72,22 @@ const MULTI_HEADER: Record<Language, (n: number, place: string) => string> = {
   gu: (n, p) => `${p} માં ${n} એમ્બ્યુલન્સ ઉપલબ્ધ છે. કૃપા કરીને કોઈ પણ એકને કૉલ કરો:`,
 };
 
+/** Header for units in different cities (e.g. a matcher run without a city), where naming one city would mislead. */
+const MULTI_HEADER_NO_CITY: Record<Language, (n: number) => string> = {
+  en: (n) => `${n} ambulances are available. Please call any one of them:`,
+  hi: (n) => `${n} एम्बुलेंस उपलब्ध हैं। कृपया इनमें से किसी एक को कॉल करें:`,
+  mr: (n) => `${n} एम्बुलन्स उपलब्ध आहेत. कृपया यांपैकी कोणालाही कॉल करा:`,
+  gu: (n) => `${n} એમ્બ્યુલન્સ ઉપલબ્ધ છે. કૃપા કરીને કોઈ પણ એકને કૉલ કરો:`,
+};
+
 export function buildMultiAmbulanceCard(rows: CardAmbulance[], lang: Language = "en"): string {
   if (rows.length === 0) return "";
   if (rows.length === 1) return buildAmbulanceCard(rows[0], lang);
-  const lines: string[] = [(MULTI_HEADER[lang] ?? MULTI_HEADER.en)(rows.length, rows[0].city), ""];
+  const city = rows[0].city;
+  const header = rows.every((r) => r.city === city)
+    ? (MULTI_HEADER[lang] ?? MULTI_HEADER.en)(rows.length, city)
+    : (MULTI_HEADER_NO_CITY[lang] ?? MULTI_HEADER_NO_CITY.en)(rows.length);
+  const lines: string[] = [header, ""];
   rows.forEach((row, i) => {
     lines.push(`${i + 1}. ${ambulanceDisplayName(row)}`);
     lines.push(`   ${formatIndianPhone(row.phone)}`);

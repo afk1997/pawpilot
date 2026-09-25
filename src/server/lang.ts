@@ -21,17 +21,22 @@ export function isMenuWord(text: string): boolean {
   return MENU_WORDS.test((text ?? "").trim());
 }
 
-const GREETING_WORDS = /^(hi+|hello+|hey+|hii+|helo|namaste|namaskar|namaskaram|नमस्ते|नमस्कार|નમસ્તે|નમસ્કાર|good (morning|afternoon|evening)|ok|okay|thanks?|thank you|there|ji|hai)$/i;
+const GREETING_WORDS = /^(hi+|hello+|hey+|hii+|helo|namaste|namaskar|namaskaram|नमस्ते|नमस्कार|નમસ્તે|નમસ્કાર|ok|okay|thanks?|there|ji|hai)$/i;
 
-/** True when the text carries no request: greetings, punctuation, emoji, menu words, empty. */
+/** Multi-word greetings, matched against the whole cleaned message before the per-word check. */
+const GREETING_PHRASES = new Set(["good morning", "good afternoon", "good evening", "thank you", "thanks a lot", "ok thanks"]);
+
+/** True when the text carries no request: greetings, punctuation, emoji, menu words, empty. Digits are always content. */
 export function isGreetingOnly(text: string): boolean {
   const cleaned = (text ?? "")
-    .replace(/[\p{Extended_Pictographic}\p{Emoji_Component}‍️]/gu, " ")
+    // Not \p{Emoji_Component}: it includes 0-9, # and *, and a pincode is content, not noise.
+    .replace(/[\p{Extended_Pictographic}\u200d\ufe0e\ufe0f\u20e3]/gu, " ")
     .replace(/[^\p{L}\p{M}\p{N}\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
   if (cleaned.length === 0) return true;
   if (isMenuWord(cleaned)) return true;
+  if (GREETING_PHRASES.has(cleaned)) return true;
   return cleaned.split(" ").every((w) => GREETING_WORDS.test(w));
 }

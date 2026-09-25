@@ -35,6 +35,17 @@ describe("cards", () => {
     expect(text).toContain("2. Arham Animal Ambulance, Ghatkopar\n   +91 70000 00001");
   });
 
+  it("drops the city from the multi card header when units are in different cities", () => {
+    const rajkot: CardAmbulance = { city: "Rajkot", area: null, phone: "+919876500001", operatorName: "Blue Cross", operatorIsArham: false };
+    expect(buildMultiAmbulanceCard([arham, rajkot], "en").split("\n")[0]).toBe("2 ambulances are available. Please call any one of them:");
+    for (const lang of ["en", "hi", "mr", "gu"] as const) {
+      const text = buildMultiAmbulanceCard([arham, rajkot], lang);
+      expect(text.split("\n")[0]).not.toMatch(/Mumbai|Rajkot|Ghatkopar/);
+      expect(text).toContain("+91 70000 00001");
+      expect(text).toContain("+91 98765 00001");
+    }
+  });
+
   it("builds the helpline card in every language", () => {
     for (const lang of ["en", "hi", "mr", "gu"] as const) {
       const t = buildHelplineCard("+919999900000", lang);

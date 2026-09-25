@@ -20,6 +20,17 @@ describe("isGreetingOnly", () => {
   it("rejects anything with substance", () => {
     for (const t of ["hi, dog injured in ghatkopar", "ambulance", "donate", "घाटकोपर में कुत्ता"]) expect(isGreetingOnly(t)).toBe(false);
   });
+  it("treats digits as content, never as greeting noise", () => {
+    expect(isGreetingOnly("400077")).toBe(false);
+    expect(isGreetingOnly("hi 400077")).toBe(false);
+    for (const t of ["🙏", "🙏🏽", "❤️"]) expect(isGreetingOnly(t)).toBe(true);
+  });
+  it("accepts multi-word greetings only as the whole message", () => {
+    expect(isGreetingOnly("good morning")).toBe(true);
+    expect(isGreetingOnly("thank you")).toBe(true);
+    expect(isGreetingOnly("Thanks a lot! 🙏")).toBe(true);
+    expect(isGreetingOnly("good morning, dog injured in ghatkopar")).toBe(false);
+  });
 });
 
 describe("isMenuWord", () => {
