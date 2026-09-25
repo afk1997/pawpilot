@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { eq, asc } from "drizzle-orm";
 import { resetDb, createConversation } from "../helpers/db";
 import { seedDirectory } from "../helpers/fixtures";
-import { getDb, getSql } from "@/server/db/client";
+import { closeDb, getDb, getSql } from "@/server/db/client";
+import { getConfig, resetConfigForTests } from "@/server/config";
 import { conversations, messages, turns } from "@/server/db/schema";
 import { storeReporterMessage } from "@/server/inbound/store";
 import { setFetchForTests } from "@/server/interakt/client";
@@ -133,4 +134,34 @@ describe("runTurn v1", () => {
     expect(jobs[0].startAfter.getTime() - jobs[0].createdOn.getTime()).toBeGreaterThanOrEqual(1000);
     expect((await runTurn(c.id)).kind).toBe("welcome");
   });
+
+  it("finishes a full worker's worth of concurrent turns without exhausting the connection pool", async () => {
+    // Each turn keeps one pooled connection reserved for its advisory lock. At the highest allowed
+    // concurrency a fixed pool of 8 left none for the turns' own queries and every turn hung.
+    const configured = process.env.WORKER_CONCURRENCY;
+    process.env.WORKER_CONCURRENCY = "8";
+    resetConfigForTests();
+    await closeDb(); // the next query builds a pool sized for this concurrency
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const n = getConfig().workerConcurrency;
+      const ids: string[] = [];
+      for (let i = 0; i < n; i++) {
+        const c = await createConversation({ isTest: true, phone: `+91TEST_pool${i}`, welcomedAt: new Date() });
+        await storeReporterMessage(c.id, { kind: "text", content: "Surat" });
+        ids.push(c.id);
+      }
+      const hung = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${n} concurrent turns did not finish within 15 s`)), 15_000);
+      });
+      const outcomes = await Promise.race([Promise.all(ids.map((id) => runTurn(id))), hung]);
+      expect(outcomes.map((o) => o.kind)).toEqual(Array(n).fill("fallback"));
+    } finally {
+      clearTimeout(timer);
+      if (configured === undefined) delete process.env.WORKER_CONCURRENCY;
+      else process.env.WORKER_CONCURRENCY = configured;
+      resetConfigForTests();
+      await closeDb();
+    }
+  }, 30_000);
 });

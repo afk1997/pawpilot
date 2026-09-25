@@ -30,4 +30,16 @@ describe("getConfig", () => {
     expect(getConfig().claude.effort).toBe("high");
     process.env.LLM_EFFORT = "medium";
   });
+
+  it("caps the worker concurrency at 8", () => {
+    try {
+      process.env.WORKER_CONCURRENCY = "9";
+      expect(() => getConfig()).toThrow(/WORKER_CONCURRENCY/);
+      process.env.WORKER_CONCURRENCY = "8";
+      resetConfigForTests();
+      expect(getConfig().workerConcurrency).toBe(8);
+    } finally {
+      delete process.env.WORKER_CONCURRENCY;
+    }
+  });
 });

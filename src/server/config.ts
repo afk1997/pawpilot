@@ -21,7 +21,7 @@ const envSchema = z.object({
   WEBSITE_URL: z.string().url().default("https://arhamalwayscare.org"),
   ADMIN_PASSWORD: z.string().min(6),
   SESSION_SECRET: z.string().min(32),
-  WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(16).default(4),
+  WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(8).default(4),
   LOG_LEVEL: z.string().default("info"),
   LOG_RAW_WEBHOOKS: z.string().default("0"),
 });
