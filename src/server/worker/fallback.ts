@@ -5,7 +5,7 @@ import { log } from "../log";
 import { loadActiveAmbulances } from "../directory/repo";
 import { matchAmbulances } from "../directory/matcher";
 import { buildAmbulanceCard, buildHelplineCard, buildMultiAmbulanceCard } from "../messages/cards";
-import { fallbackFoundIntro, fallbackHelplineIntro, fallbackNoMatch } from "../messages/system-replies";
+import { fallbackFoundIntro, fallbackNoMatch } from "../messages/system-replies";
 import { deliverText } from "./deliver";
 import { createTurn, finishTurn, flagConversation, markAnswered, updateConversation } from "./persist";
 import { recordEvent } from "../inbound/store";
@@ -45,9 +45,10 @@ export async function runFallbackTurn(input: { conversation: Conversation; pendi
     reply = `${fallbackFoundIntro(lang, matched)}\n\n${buildMultiAmbulanceCard(match.candidates, lang)}`;
   } else {
     sent = "helpline";
-    // An exact place with more units than a card lists was found: "couldn't find that area" would be wrong.
-    const intro = exactPlace && matched > 3 ? fallbackHelplineIntro(lang) : fallbackNoMatch(lang);
-    reply = `${intro}\n${buildHelplineCard(getConfig().helplinePhone, lang)}`;
+    const card = buildHelplineCard(getConfig().helplinePhone, lang);
+    // An exact place with more units than a card lists was found, so "couldn't find that area" would be
+    // wrong: send the card alone (its first line already asks the reporter to call the helpline).
+    reply = exactPlace && matched > 3 ? card : `${fallbackNoMatch(lang)}\n${card}`;
   }
 
   const message = await deliverText(conversation, { text: reply, origin: "fallback", turnId: turn.id });

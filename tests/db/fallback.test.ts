@@ -103,12 +103,15 @@ describe("runFallbackTurn", () => {
     expect(r.message.content.match(/\+91 \d{5} \d{5}/g)).toEqual(["+91 99999 00000"]);
   });
 
-  it("introduces the helpline card as a call to the helpline when an exact city has more than three units", async () => {
+  it("sends the helpline card alone when an exact city has more than three units", async () => {
     const probe = matchAmbulances(await loadActiveAmbulances(), { query: "injured dog in Mumbai" });
     expect(probe.match).toBe("city");
     expect(probe.candidates.length).toBeGreaterThan(3);
     const r = await fallbackFor("injured dog in Mumbai", "en");
-    expect(r.message.content).toBe(`Please call our helpline:\n${buildHelplineCard("+919999900000", "en")}`);
+    const [cardFirstLine] = buildHelplineCard("+919999900000", "en").split("\n");
+    expect(r.message.content.split("\n")[0]).toBe(cardFirstLine);
+    expect(r.message.content).not.toContain("Please call our helpline:");
+    expect(r.message.content.match(/\+91 \d{5} \d{5}/g)).toEqual(["+91 99999 00000"]);
     expect(r.turn.structuredOutput).toEqual({ matched: probe.candidates.length, matchType: "city", sent: "helpline" });
   });
 
