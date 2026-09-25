@@ -7,7 +7,7 @@ services:
       POSTGRES_PASSWORD: arham
       POSTGRES_DB: arham
     ports:
-      - "5439:5432"
+      - "127.0.0.1:5439:5432"
     volumes:
       - arham-pgdata-dev:/var/lib/postgresql/data
       - ./init:/docker-entrypoint-initdb.d:ro

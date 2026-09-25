@@ -24,10 +24,11 @@ export async function createConversation(opts: {
     .insert(conversations)
     .values({
       phone,
-      language: opts.language ?? null,
-      isTest: opts.isTest ?? false,
-      mode: opts.mode ?? "agent",
-      welcomedAt: opts.welcomedAt ?? null,
+      // Only what the caller passed; everything else takes the database default.
+      ...(opts.language !== undefined && { language: opts.language }),
+      ...(opts.isTest !== undefined && { isTest: opts.isTest }),
+      ...(opts.mode !== undefined && { mode: opts.mode }),
+      ...(opts.welcomedAt !== undefined && { welcomedAt: opts.welcomedAt }),
     })
     .returning();
   return row;
