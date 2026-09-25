@@ -10,16 +10,23 @@ export interface TurnJobData {
 
 let instance: PgBoss | null = null;
 let starting: Promise<PgBoss> | null = null;
+// The role of the instance that is starting or memoized.
+let instanceRole: "app" | "worker" = "app";
 
 /**
  * One pg-boss per process. The app only sends; the worker also supervises
  * (maintenance, expiration). Both create the queue idempotently. A failed
  * start is never memoized: the half-started instance is stopped and the next
- * call starts afresh.
+ * call starts afresh. A worker must start it: an app-role instance never supervises, so asking
+ * for the worker role once one is starting or started is refused.
  */
 export function getBoss(role: "app" | "worker" = "app"): Promise<PgBoss> {
+  if ((instance || starting) && role === "worker" && instanceRole === "app") {
+    return Promise.reject(new Error("pg-boss already started in app role"));
+  }
   if (instance) return Promise.resolve(instance);
   if (starting) return starting;
+  instanceRole = role;
   starting = (async () => {
     const boss = new PgBoss({
       connectionString: getConfig().databaseUrl,

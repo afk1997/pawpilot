@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { maskPhone } from "@/server/log";
+import { maskPhone, safeErrorFields } from "@/server/log";
 
 describe("maskPhone", () => {
   it("keeps only the last four digits", () => {
@@ -11,5 +11,27 @@ describe("maskPhone", () => {
   });
   it("masks test phones without crashing", () => {
     expect(maskPhone("+91TEST_ab12cd34")).toBe("+91TEST_ab12cd34");
+  });
+});
+
+describe("safeErrorFields", () => {
+  it("keeps the class name and the code, preferring the cause's code (drizzle wraps the driver's error)", () => {
+    class DrizzleLikeError extends Error {}
+    const wrapped = new DrizzleLikeError("Failed query ... params: +919876543210", { cause: { code: "57P01", detail: "Key (phone)=(+919876543210)" } });
+    expect(safeErrorFields(wrapped)).toEqual({ errorClass: "DrizzleLikeError", code: "57P01" });
+    expect(safeErrorFields(Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }))).toEqual({ errorClass: "Error", code: "ECONNREFUSED" });
+  });
+
+  it("never carries the message, and drops a code that could be a phone number", () => {
+    const err = Object.assign(new Error("reporter +919876543210"), { code: "919876543210" });
+    expect(safeErrorFields(err)).toEqual({ errorClass: "Error" });
+    expect(JSON.stringify(safeErrorFields(err))).not.toMatch(/\d/);
+    expect(safeErrorFields(Object.assign(new Error("x"), { code: "98765-43210" }))).toEqual({ errorClass: "Error" });
+  });
+
+  it("names a non-Error throwable by its type", () => {
+    expect(safeErrorFields("boom +919876543210")).toEqual({ errorClass: "string" });
+    expect(safeErrorFields(null)).toEqual({ errorClass: "object" });
+    expect(safeErrorFields(undefined)).toEqual({ errorClass: "undefined" });
   });
 });

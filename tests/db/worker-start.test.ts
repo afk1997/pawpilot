@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { inspect } from "node:util";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { PgBoss } from "pg-boss";
 import { resetDb, createConversation } from "../helpers/db";
 import { seedDirectory } from "../helpers/fixtures";
 import { getDb } from "@/server/db/client";
-import { conversations, messages } from "@/server/db/schema";
+import * as dbClient from "@/server/db/client";
+import { conversations, events, messages } from "@/server/db/schema";
 import { getConfig, resetConfigForTests } from "@/server/config";
 import { log } from "@/server/log";
 import { storeReporterMessage } from "@/server/inbound/store";
@@ -31,6 +32,30 @@ async function waitFor(check: () => boolean | Promise<boolean>, timeoutMs = 10_0
   }
 }
 
+/** Spies on every pino level. Call it after startWorker, whose log.level assignment replaces pino's level methods. */
+function spyOnEveryLevel() {
+  const spies = (["fatal", "error", "warn", "info", "debug", "trace"] as const).map((level) => vi.spyOn(log, level));
+  return {
+    error: spies[1],
+    info: spies[3],
+    /** Every call, rendered by util.inspect, which prints an Error's message and stack where JSON.stringify prints {}. */
+    rendered: () => spies.flatMap((spy) => spy.mock.calls).map((args) => inspect(args, { depth: null })).join("\n"),
+  };
+}
+
+/** The SIGTERM and SIGINT listeners registered after this call, and a way to remove only those. */
+function signalListenersAdded() {
+  const signals = ["SIGTERM", "SIGINT"] as const;
+  const before = new Map(signals.map((s) => [s, process.listeners(s)]));
+  const added = (s: (typeof signals)[number]) => process.listeners(s).filter((l) => !before.get(s)!.includes(l));
+  return {
+    added,
+    remove: () => {
+      for (const s of signals) for (const l of added(s)) process.off(s, l);
+    },
+  };
+}
+
 describe("startWorker", () => {
   beforeEach(async () => { await stopBoss(); await resetDb(); await seedDirectory(); });
   afterEach(async () => { await stopBoss(); });
@@ -53,6 +78,19 @@ describe("startWorker", () => {
       expect(out[0].content.length).toBeGreaterThan(0);
       await new Promise((r) => setTimeout(r, 400));
       expect((await getWorkerState()).lastHeartbeatAt).not.toBeNull();
+    } finally {
+      await worker.stop();
+    }
+  });
+
+  it("advances the heartbeat on its interval after the startup beat", async () => {
+    const worker = await startWorker({ concurrency: 1, heartbeatMs: 200 });
+    try {
+      const first = (await getWorkerState()).lastHeartbeatAt;
+      expect(first).not.toBeNull();
+      await new Promise((r) => setTimeout(r, 500));
+      const later = (await getWorkerState()).lastHeartbeatAt;
+      expect(later!.getTime()).toBeGreaterThan(first!.getTime());
     } finally {
       await worker.stop();
     }
@@ -83,6 +121,43 @@ describe("startWorker", () => {
     const ancient = await withPendingMessage("+91TEST_sweep_ancient", 7 * 60 * 60);
     expect(await sweepUnanswered()).toBe(0);
     expect(await (await getBoss()).findJobs(TURN_QUEUE, { key: ancient.id })).toHaveLength(0);
+  });
+
+  it("sweepUnanswered flags rather than re-runs a conversation with 3 failed turns in the last hour", async () => {
+    const failing = await withPendingMessage("+91TEST_sweep_failing", 30);
+    const flaky = await withPendingMessage("+91TEST_sweep_flaky", 30);
+    const recovered = await withPendingMessage("+91TEST_sweep_recovered", 30);
+    const turnFailed = (conversationId: string, count: number, ageSeconds = 0) =>
+      getDb()
+        .insert(events)
+        .values(
+          Array.from({ length: count }, () => ({
+            conversationId, kind: "turn_failed", payload: { errorClass: "Error" }, createdAt: sql`now() - make_interval(secs => ${ageSeconds})`,
+          }))
+        );
+    await turnFailed(failing.id, 3);
+    await turnFailed(flaky.id, 2);
+    await turnFailed(recovered.id, 3, 2 * 60 * 60); // outside the hour
+    const warn = vi.spyOn(log, "warn");
+    try {
+      expect(await sweepUnanswered()).toBe(2);
+      const boss = await getBoss();
+      expect(await boss.findJobs(TURN_QUEUE, { key: failing.id })).toHaveLength(0);
+      expect(await boss.findJobs(TURN_QUEUE, { key: flaky.id })).toHaveLength(1);
+      expect(await boss.findJobs(TURN_QUEUE, { key: recovered.id })).toHaveLength(1);
+      const flags = await getDb().select({ id: conversations.id, flagged: conversations.flagged, flagReason: conversations.flagReason }).from(conversations);
+      expect(flags.find((r) => r.id === failing.id)).toMatchObject({ flagged: true, flagReason: "turn_failed" });
+      expect(flags.find((r) => r.id === flaky.id)).toMatchObject({ flagged: false });
+      expect(flags.find((r) => r.id === recovered.id)).toMatchObject({ flagged: false });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith({ conversationId: failing.id }, expect.any(String));
+      // Flagged now: the next sweep neither re-runs it nor warns again.
+      await sweepUnanswered();
+      expect(await boss.findJobs(TURN_QUEUE, { key: failing.id })).toHaveLength(0);
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("answers a stale pending message through the sweep alone", async () => {
@@ -123,22 +198,22 @@ describe("startWorker", () => {
 
   it("logs a failed turn with only its class and code, then rethrows so pg-boss retries it", async () => {
     const c = await createConversation({ isTest: true, phone: "+91TEST_turn_failed" });
-    const failing = vi.spyOn(turnRunner, "runTurn").mockRejectedValue(new Error("insert failed for reporter +919876543210"));
+    vi.spyOn(turnRunner, "runTurn").mockRejectedValue(new Error("insert failed for reporter +919876543210"));
     const worker = await startWorker({ concurrency: 1 });
-    // After startWorker, whose log.level assignment replaces pino's level methods.
-    const spies = (["fatal", "error", "warn", "info", "debug", "trace"] as const).map((level) => vi.spyOn(log, level));
-    const error = spies[1];
+    const logs = spyOnEveryLevel();
     try {
       await enqueueTurn(c.id, { immediate: true });
       const boss = await getBoss();
       await waitFor(async () => (await boss.findJobs(TURN_QUEUE, { key: c.id }))[0]?.state === "retry");
-      expect(error).toHaveBeenCalledWith({ conversationId: c.id, errorClass: "Error" }, "turn failed");
-      const logged = spies.flatMap((spy) => spy.mock.calls).map((args) => inspect(args, { depth: null }));
-      expect(logged.join("\n")).not.toContain("9876543210");
+      expect(logs.error).toHaveBeenCalledWith({ conversationId: c.id, errorClass: "Error" }, "turn failed");
+      expect(logs.rendered()).not.toContain("9876543210");
+      const failures = await getDb().select().from(events).where(and(eq(events.conversationId, c.id), eq(events.kind, "turn_failed")));
+      expect(failures).toHaveLength(1);
+      expect(failures[0].payload).toMatchObject({ errorClass: "Error" });
+      expect(JSON.stringify(failures[0].payload)).not.toMatch(/\d/);
     } finally {
       await worker.stop();
-      for (const spy of spies) spy.mockRestore();
-      failing.mockRestore();
+      vi.restoreAllMocks();
     }
   });
 
@@ -190,23 +265,42 @@ describe("startWorker", () => {
 
   it("runs the shutdown once when a second stop signal arrives", async () => {
     const exit = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
-    const signals = ["SIGTERM", "SIGINT"] as const;
-    const before = new Map(signals.map((s) => [s, process.listeners(s)]));
-    const added = (s: (typeof signals)[number]) => process.listeners(s).filter((l) => !before.get(s)!.includes(l));
+    const listeners = signalListenersAdded();
     try {
       await runWorkerProcess();
       const info = vi.spyOn(log, "info"); // after startWorker's log.level assignment
       // Called directly rather than through process.emit, so no other listener in the test process runs.
-      for (const l of added("SIGTERM")) l("SIGTERM");
-      for (const l of added("SIGINT")) l("SIGINT");
+      for (const l of listeners.added("SIGTERM")) l("SIGTERM");
+      for (const l of listeners.added("SIGINT")) l("SIGINT");
       await waitFor(() => exit.mock.calls.length > 0);
       await new Promise((r) => setTimeout(r, 200)); // room for a second shutdown to finish, were there one
       expect(info.mock.calls.filter(([, msg]) => msg === "worker shutting down")).toEqual([[{ signal: "SIGTERM" }, "worker shutting down"]]);
       expect(exit).toHaveBeenCalledTimes(1);
       expect(exit).toHaveBeenCalledWith(0);
     } finally {
-      for (const s of signals) for (const l of added(s)) process.off(s, l);
+      listeners.remove();
       vi.restoreAllMocks();
+    }
+  });
+
+  it("closes the database and logs the end of shutdown, with data-free fields, when the graceful stop fails", async () => {
+    const exit = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+    vi.spyOn(PgBoss.prototype, "stop").mockRejectedValueOnce(new Error("stop failed near +919876543210"));
+    const closeDb = vi.spyOn(dbClient, "closeDb");
+    const listeners = signalListenersAdded();
+    try {
+      await runWorkerProcess();
+      const logs = spyOnEveryLevel();
+      for (const l of listeners.added("SIGTERM")) l("SIGTERM");
+      await waitFor(() => exit.mock.calls.length > 0);
+      expect(logs.error).toHaveBeenCalledWith({ errorClass: "Error" }, "worker stop failed");
+      expect(closeDb).toHaveBeenCalledTimes(1);
+      expect(logs.info).toHaveBeenCalledWith(expect.objectContaining({ signal: "SIGTERM" }), "worker stopped");
+      expect(exit).toHaveBeenCalledWith(1);
+      expect(logs.rendered()).not.toContain("9876543210");
+    } finally {
+      listeners.remove();
+      vi.restoreAllMocks(); // the real stop() runs again, so afterEach's stopBoss() stops this instance
     }
   });
 });

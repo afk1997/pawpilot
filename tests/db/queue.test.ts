@@ -41,6 +41,13 @@ describe("queue", () => {
     expect(q?.expireInSeconds).toBe(120);
   });
 
+  it("refuses the worker role while an app-role instance is starting or started", async () => {
+    const starting = getBoss("app");
+    await expect(getBoss("worker")).rejects.toThrow("pg-boss already started in app role");
+    await starting;
+    await expect(getBoss("worker")).rejects.toThrow("pg-boss already started in app role");
+  });
+
   it("retries after a failed start instead of memoizing the failure", async () => {
     const databaseUrl = process.env.DATABASE_URL;
     const stop = vi.spyOn(PgBoss.prototype, "stop");
