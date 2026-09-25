@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { resetConfigForTests } from "@/server/config";
+import { log } from "@/server/log";
 import { splitPhone, isTestPhone, sendText, sendInteractiveList, setFetchForTests } from "@/server/interakt/client";
 
 const okFetch = (captured: { url?: string; init?: RequestInit }) =>
@@ -55,11 +56,19 @@ describe("send functions", () => {
     const cap: { url?: string; init?: RequestInit } = {};
     setFetchForTests(okFetch(cap));
     await sendInteractiveList("+919096820338", { body: "Pick one", buttonLabel: "Options", rows: [{ id: "menu:ambulance", title: "Animal ambulance" }] });
-    const body = JSON.parse(String(cap.init!.body));
-    expect(body.type).toBe("InteractiveList");
-    expect(body.data.message.type).toBe("list");
-    expect(body.data.message.action.button).toBe("Options");
-    expect(body.data.message.action.sections[0].rows[0]).toEqual({ id: "menu:ambulance", title: "Animal ambulance" });
+    expect(JSON.parse(String(cap.init!.body))).toEqual({
+      countryCode: "+91",
+      phoneNumber: "9096820338",
+      type: "InteractiveList",
+      callbackData: "agent",
+      data: {
+        message: {
+          type: "list",
+          body: { text: "Pick one" },
+          action: { button: "Options", sections: [{ title: "Options", rows: [{ id: "menu:ambulance", title: "Animal ambulance" }] }] },
+        },
+      },
+    });
   });
 
   it("refuses to send to a test phone without calling fetch", async () => {
@@ -76,10 +85,29 @@ describe("send functions", () => {
     const r = await sendText("+919096820338", "hello");
     expect(r.ok).toBe(false);
     expect(r.status).toBe(400);
-    setFetchForTests((async () => { throw new Error("ECONNRESET"); }) as typeof fetch);
+    expect(r.error).toMatch(/^interakt 400:/);
+    setFetchForTests((async () => {
+      throw new TypeError("fetch failed", { cause: Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }) });
+    }) as typeof fetch);
     const r2 = await sendText("+919096820338", "hello");
     expect(r2.ok).toBe(false);
     expect(r2.error).toMatch(/ECONNRESET/);
+    setFetchForTests((async () => {
+      throw new TypeError("fetch failed", { cause: Object.assign(new AggregateError([], ""), { code: "ECONNREFUSED" }) });
+    }) as typeof fetch);
+    const r3 = await sendText("+919096820338", "hello");
+    expect(r3.error).toBe("fetch failed: ECONNREFUSED");
+  });
+
+  it("logs only the masked, normalized phone", async () => {
+    const warn = vi.spyOn(log, "warn");
+    const error = vi.spyOn(log, "error");
+    setFetchForTests((async () => new Response("{}", { status: 400 })) as typeof fetch);
+    await sendText("+91 70000 00001", "hello");
+    expect(warn).toHaveBeenCalledWith({ to: "+91xxxxxx0001", status: 400 }, "interakt send failed");
+    setFetchForTests((async () => { throw new Error("boom"); }) as typeof fetch);
+    await sendText("+91 70000 00001", "hello");
+    expect(error).toHaveBeenCalledWith({ to: "+91xxxxxx0001", error: "boom" }, "interakt send threw");
   });
 
   it("times sends out after 15 s and reports the abort without throwing", async () => {
@@ -92,8 +120,9 @@ describe("send functions", () => {
     const r = await sendText("+919096820338", "hello");
     expect(timeout).toHaveBeenCalledWith(15_000);
     expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal).toBe(timeout.mock.results[0]?.value);
     expect(r).toMatchObject({ ok: false, status: 0 });
-    expect(r.error).toMatch(/timeout|abort/i);
+    expect(r.error).toBe("The operation was aborted due to timeout");
   });
 
   it("returns a failure instead of throwing when the environment is invalid", async () => {

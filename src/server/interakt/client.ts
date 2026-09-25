@@ -25,7 +25,7 @@ export function isTestPhone(phone: string): boolean {
   return phone.startsWith("+91TEST_");
 }
 
-/** ITU-T E.164 two-digit country codes. Codes are prefix-free: 1 and 7 are the only one-digit codes, all others have three digits. */
+/** ITU-T E.164 two-digit country codes. Codes are prefix-free; codes not listed here (other than 1 and 7) have three digits. */
 const TWO_DIGIT_COUNTRY_CODES = new Set([
   "20", "27", "30", "31", "32", "33", "34", "36", "39", "40", "41", "43", "44", "45", "46", "47", "48", "49",
   "51", "52", "53", "54", "55", "56", "57", "58", "60", "61", "62", "63", "64", "65", "66",
@@ -58,10 +58,27 @@ export function splitPhone(phone: string): { countryCode: string; phoneNumber: s
 /** Caps a stalled Interakt call; Node's fetch would otherwise wait minutes, past the turn job's expiry. */
 const SEND_TIMEOUT_MS = 15_000;
 
-async function post(payload: Record<string, unknown>, to: string): Promise<InteraktResult> {
+/**
+ * Node's fetch rejects network failures as TypeError("fetch failed") and keeps the reason in `cause`. That cause can be
+ * an AggregateError with an empty message, so its `code` (ECONNREFUSED, ENOTFOUND, UND_ERR_SOCKET, ...) is preferred.
+ */
+function describeError(e: unknown): string {
+  if (!(e instanceof Error)) return String(e);
+  const cause = e.cause;
+  if (!(cause instanceof Error)) return e.message;
+  const code = (cause as { code?: unknown }).code;
+  const detail = typeof code === "string" && code !== "" ? code : cause.message;
+  return detail ? `${e.message}: ${detail}` : e.message;
+}
+
+type Payload = Record<string, unknown> & { countryCode: string; phoneNumber: string };
+
+/** `to` is checked for test phones; logs only ever see the payload's normalized recipient, masked. */
+async function post(payload: Payload, to: string): Promise<InteraktResult> {
   if (isTestPhone(to)) {
     return { ok: false, status: 0, body: null, error: "refusing to send to a test phone" };
   }
+  const maskedTo = maskPhone(`${payload.countryCode}${payload.phoneNumber}`);
   const doFetch = fetchImpl ?? fetch;
   try {
     const cfg = getConfig();
@@ -76,12 +93,12 @@ async function post(payload: Record<string, unknown>, to: string): Promise<Inter
     const result: InteraktResult = { ok: res.ok, status: res.status, body, messageId };
     if (!res.ok) {
       result.error = `interakt ${res.status}: ${JSON.stringify(body).slice(0, 300)}`;
-      log.warn({ to: maskPhone(to), status: res.status }, "interakt send failed");
+      log.warn({ to: maskedTo, status: res.status }, "interakt send failed");
     }
     return result;
   } catch (e) {
-    const error = e instanceof Error ? e.message : String(e);
-    log.error({ to: maskPhone(to), error }, "interakt send threw");
+    const error = describeError(e);
+    log.error({ to: maskedTo, error }, "interakt send threw");
     return { ok: false, status: 0, body: null, error };
   }
 }
