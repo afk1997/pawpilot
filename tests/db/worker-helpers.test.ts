@@ -2,8 +2,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { resetDb, createConversation } from "../helpers/db";
 import { getDb } from "@/server/db/client";
-import { messages, turns, conversations } from "@/server/db/schema";
+import { messages, turns, conversations, events } from "@/server/db/schema";
 import { storeReporterMessage } from "@/server/inbound/store";
+import * as store from "@/server/inbound/store";
 import { gatherPending, loadHistory } from "@/server/worker/gather";
 import { deliverText, deliverList } from "@/server/worker/deliver";
 import { createTurn, finishTurn, markAnswered, loadConversationHandles, type HandleMap } from "@/server/worker/persist";
@@ -68,6 +69,9 @@ describe("worker helpers", () => {
     expect(calls).toBe(2);
     expect(r.message.kind).toBe("text");
     expect(r.message.deliveryStatus).toBe("sent");
+    const evs = await getDb().select().from(events).where(eq(events.kind, "list_send_failed"));
+    expect(evs).toHaveLength(1);
+    expect(evs[0]).toMatchObject({ conversationId: c.id, payload: { status: 400, error: expect.stringContaining("interakt 400") } });
   });
 
   it("loads history chronologically and merges handles from past turns", async () => {
@@ -112,6 +116,8 @@ describe("worker helpers", () => {
     expect(JSON.stringify(warn.mock.calls)).not.toContain("9876543211");
     expect(m.error).toContain("+919876543211");
     expect(r.message.error).toContain("+919876543211");
+    const [ev] = await getDb().select().from(events).where(eq(events.kind, "list_send_failed"));
+    expect(ev.payload).toMatchObject({ status: 400, error: expect.stringContaining("+919876543211") });
   });
 
   it("strips U+0000, which Postgres text rejects, from the stored content and template", async () => {
@@ -179,5 +185,25 @@ describe("worker helpers", () => {
     const r = await deliverList(c, { list: { body: "b", buttonLabel: "Options", rows: [{ id: "menu:ambulance", title: "A" }] }, fallbackText: "plain", origin: "system" });
     expect(r).toMatchObject({ usedList: false, message: { kind: "text", deliveryStatus: "failed" } });
     expect(warn).toHaveBeenCalledWith({ conversationId: c.id, status: 400 }, "outbound failed");
+  });
+
+  it("still falls back to text when the list_send_failed event cannot be recorded", async () => {
+    const c = await createConversation({ phone: "+919876543216" });
+    let calls = 0;
+    setFetchForTests((async () => {
+      calls += 1;
+      return calls === 1
+        ? new Response(JSON.stringify({ message: "invalid number +919876543216" }), { status: 400 })
+        : new Response(JSON.stringify({ id: "y" }), { status: 201 });
+    }) as typeof fetch);
+    const record = vi
+      .spyOn(store, "recordEvent")
+      .mockRejectedValueOnce(new Error('Failed query: insert into "events" params: {"error":"interakt 400: invalid number +919876543216"}'));
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
+    const r = await deliverList(c, { list: { body: "b", buttonLabel: "Options", rows: [{ id: "menu:ambulance", title: "A" }] }, fallbackText: "plain", origin: "system" });
+    expect(record).toHaveBeenCalledTimes(1);
+    expect(r).toMatchObject({ usedList: false, message: { kind: "text", deliveryStatus: "sent" } });
+    expect(warn).toHaveBeenCalledWith({ conversationId: c.id }, "list_send_failed event not recorded");
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("9876543216");
   });
 });

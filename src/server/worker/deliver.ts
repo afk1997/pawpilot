@@ -1,7 +1,7 @@
 import { getDb } from "../db/client";
 import { messages, type Conversation, type Message } from "../db/schema";
 import { sendInteractiveList, sendText, type InteractiveListSpec, type InteraktResult } from "../interakt/client";
-import { stripNul, stripNulOrNull } from "../inbound/store";
+import { recordEvent, stripNul, stripNulOrNull } from "../inbound/store";
 import { updateConversation } from "./persist";
 import type { MessageOrigin } from "../types";
 import { log } from "../log";
@@ -56,6 +56,12 @@ export async function deliverList(
     return { message, usedList: true };
   }
   log.warn({ conversationId: conversation.id, status: listSend.status }, "list send failed, falling back to text");
+  // Interakt's reason goes to events, never to logs; failing to record it must not stop the fallback.
+  try {
+    await recordEvent("list_send_failed", { status: listSend.status, error: listSend.error ?? null }, conversation.id);
+  } catch {
+    log.warn({ conversationId: conversation.id }, "list_send_failed event not recorded");
+  }
   const message = await deliverText(conversation, { text: input.fallbackText, origin: input.origin });
   return { message, usedList: false };
 }
