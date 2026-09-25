@@ -2,7 +2,7 @@ import { getDb } from "../db/client";
 import { messages, type Conversation, type Message } from "../db/schema";
 import { sendInteractiveList, sendText, type InteractiveListSpec, type InteraktResult } from "../interakt/client";
 import { recordEvent, stripNul, stripNulOrNull } from "../inbound/store";
-import { updateConversation } from "./persist";
+import { flagConversation, updateConversation } from "./persist";
 import type { MessageOrigin } from "../types";
 import { log } from "../log";
 
@@ -30,7 +30,10 @@ async function persistOutbound(
   return row;
 }
 
-/** Sends free-form text (skipped for test conversations) and persists the assistant message. */
+/**
+ * Sends free-form text (skipped for test conversations) and persists the assistant message.
+ * A failed send is made visible to the dispatcher: an outbound_failed event and a send_failed flag.
+ */
 export async function deliverText(
   conversation: Conversation,
   input: { text: string; template?: string | null; origin: MessageOrigin; turnId?: string | null }
@@ -38,7 +41,17 @@ export async function deliverText(
   const send = conversation.isTest ? null : await sendText(conversation.phone, input.text);
   // Status only: send.error can carry Interakt's response body (a phone number, say); it is kept on messages.error.
   if (send && !send.ok) log.warn({ conversationId: conversation.id, status: send.status }, "outbound failed");
-  return persistOutbound(conversation, input, send);
+  const row = await persistOutbound(conversation, input, send);
+  if (send && !send.ok) {
+    // Interakt's reason goes to events, never to logs; failing to record it must not stop the flag.
+    try {
+      await recordEvent("outbound_failed", { status: send.status, error: send.error ?? null, messageId: row.id }, conversation.id);
+    } catch {
+      log.warn({ conversationId: conversation.id }, "outbound_failed event not recorded");
+    }
+    await flagConversation(conversation.id, "send_failed");
+  }
+  return row;
 }
 
 /** Sends a WhatsApp list; falls back to plain text when the list is rejected. */

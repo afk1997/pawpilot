@@ -37,6 +37,7 @@ describe("worker helpers", () => {
     expect(m.contentTemplate).toBe("hello {{AMB:amb_1}}");
     const [row] = await getDb().select().from(conversations).where(eq(conversations.id, c.id));
     expect(row.lastOutboundAt).not.toBeNull();
+    expect(row.flagged).toBe(false);
   });
 
   it("skips Interakt for test conversations", async () => {
@@ -54,6 +55,39 @@ describe("worker helpers", () => {
     const m = await deliverText(c, { text: "hi", origin: "agent" });
     expect(m.deliveryStatus).toBe("failed");
     expect(m.error).toMatch(/400/);
+  });
+
+  it("records an outbound_failed event and flags the conversation send_failed, keeping a reason already there", async () => {
+    setFetchForTests((async () => new Response(JSON.stringify({ message: "rejected" }), { status: 400 })) as typeof fetch);
+    const fresh = await createConversation({ phone: "+919876543217" });
+    const flagged = await createConversation({ phone: "+919876543218" });
+    await getDb().update(conversations).set({ flagged: true, flagReason: "needs_human" }).where(eq(conversations.id, flagged.id));
+    const m = await deliverText(fresh, { text: "hi", origin: "agent" });
+    await deliverText(flagged, { text: "hi", origin: "agent" });
+    const evs = await getDb().select().from(events).where(eq(events.kind, "outbound_failed"));
+    expect(evs.filter((e) => e.conversationId === fresh.id).map((e) => e.payload)).toEqual([
+      { status: 400, error: expect.stringContaining("interakt 400"), messageId: m.id },
+    ]);
+    const flagOf = async (id: string) => {
+      const [row] = await getDb().select().from(conversations).where(eq(conversations.id, id));
+      return [row.flagged, row.flagReason];
+    };
+    expect(await flagOf(fresh.id)).toEqual([true, "send_failed"]);
+    expect(await flagOf(flagged.id)).toEqual([true, "needs_human"]);
+  });
+
+  it("still flags a failed send when the outbound_failed event cannot be recorded", async () => {
+    const c = await createConversation({ phone: "+919876543219" });
+    setFetchForTests((async () => new Response(JSON.stringify({ message: "invalid number +919876543219" }), { status: 400 })) as typeof fetch);
+    const record = vi.spyOn(store, "recordEvent").mockRejectedValueOnce(new Error("events table unavailable"));
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
+    const m = await deliverText(c, { text: "hi", origin: "agent" });
+    expect(record).toHaveBeenCalledTimes(1);
+    expect(m.deliveryStatus).toBe("failed");
+    expect(warn).toHaveBeenCalledWith({ conversationId: c.id }, "outbound_failed event not recorded");
+    expect(JSON.stringify(warn.mock.calls)).not.toMatch(/9876543219|events table unavailable/);
+    const [row] = await getDb().select().from(conversations).where(eq(conversations.id, c.id));
+    expect([row.flagged, row.flagReason]).toEqual([true, "send_failed"]);
   });
 
   it("falls back to text when the list send fails", async () => {

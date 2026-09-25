@@ -1,4 +1,4 @@
-import { desc, eq, inArray } from "drizzle-orm";
+import { desc, eq, inArray, sql } from "drizzle-orm";
 import { getDb } from "../db/client";
 import { conversations, messages, turns, type Conversation, type NewTurn, type Turn } from "../db/schema";
 import type { TurnStatus } from "../types";
@@ -25,6 +25,22 @@ export async function updateConversation(
   patch: Partial<Omit<Conversation, "id" | "phone" | "isTest" | "createdAt" | "updatedAt">>
 ): Promise<void> {
   await getDb().update(conversations).set({ ...patch, updatedAt: new Date() }).where(eq(conversations.id, id));
+}
+
+/**
+ * Flags a conversation for the dispatcher in one DB-side update. A reason already
+ * on a flagged conversation (a dispatcher's, say) is kept, even one set after the
+ * caller read the row.
+ */
+export async function flagConversation(id: string, reason: string): Promise<void> {
+  await getDb()
+    .update(conversations)
+    .set({
+      flagged: true,
+      flagReason: sql`case when ${conversations.flagged} then ${conversations.flagReason} else ${reason} end`,
+      updatedAt: sql`now()`,
+    })
+    .where(eq(conversations.id, id));
 }
 
 export type HandleMap = Record<string, { kind: "ambulance" | "clinic"; id: string }>;

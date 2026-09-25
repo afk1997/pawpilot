@@ -1,12 +1,13 @@
 import type { Conversation, Message, Turn } from "../db/schema";
 import { getConfig } from "../config";
 import { detectLanguage } from "../lang";
+import { log } from "../log";
 import { loadActiveAmbulances } from "../directory/repo";
 import { matchAmbulances } from "../directory/matcher";
 import { buildAmbulanceCard, buildHelplineCard, buildMultiAmbulanceCard } from "../messages/cards";
-import { fallbackFoundIntro, fallbackNoMatch } from "../messages/system-replies";
+import { fallbackFoundIntro, fallbackHelplineIntro, fallbackNoMatch } from "../messages/system-replies";
 import { deliverText } from "./deliver";
-import { createTurn, finishTurn, markAnswered, updateConversation } from "./persist";
+import { createTurn, finishTurn, flagConversation, markAnswered, updateConversation } from "./persist";
 import { recordEvent } from "../inbound/store";
 import type { Language } from "../types";
 
@@ -30,30 +31,40 @@ export async function runFallbackTurn(input: { conversation: Conversation; pendi
 
   const rows = await loadActiveAmbulances();
   const match = matchAmbulances(rows, { query: text });
+  const matched = match.candidates.length;
   // With no model to confirm the place, only an exact area or city match earns a
   // unit's number; substring/token/fuzzy/neighbour hits are guesses and get the helpline.
   const exactPlace = match.match === "area" || match.match === "city";
+  let sent: "unit" | "units" | "helpline";
   let reply: string;
-  if (exactPlace && match.candidates.length === 1) {
+  if (exactPlace && matched === 1) {
+    sent = "unit";
     reply = `${fallbackFoundIntro(lang)}\n\n${buildAmbulanceCard(match.candidates[0], lang)}`;
-  } else if (exactPlace && match.candidates.length >= 2 && match.candidates.length <= 3) {
-    reply = `${fallbackFoundIntro(lang, match.candidates.length)}\n\n${buildMultiAmbulanceCard(match.candidates, lang)}`;
+  } else if (exactPlace && matched >= 2 && matched <= 3) {
+    sent = "units";
+    reply = `${fallbackFoundIntro(lang, matched)}\n\n${buildMultiAmbulanceCard(match.candidates, lang)}`;
   } else {
-    reply = `${fallbackNoMatch(lang)}\n${buildHelplineCard(getConfig().helplinePhone, lang)}`;
+    sent = "helpline";
+    // An exact place with more units than a card lists was found: "couldn't find that area" would be wrong.
+    const intro = exactPlace && matched > 3 ? fallbackHelplineIntro(lang) : fallbackNoMatch(lang);
+    reply = `${intro}\n${buildHelplineCard(getConfig().helplinePhone, lang)}`;
   }
 
   const message = await deliverText(conversation, { text: reply, origin: "fallback", turnId: turn.id });
   await markAnswered(pending.map((m) => m.id), turn.id);
-  await finishTurn(turn.id, {
-    error: reason,
-    structuredOutput: { matched: match.candidates.length, matchType: match.match },
-    latencyMs: 0,
-  });
-  await updateConversation(conversation.id, {
-    language: lang,
-    flagged: true,
-    flagReason: conversation.flagged ? conversation.flagReason : "claude_unavailable",
-  });
-  await recordEvent("fallback_turn", { reason, matched: match.candidates.length }, conversation.id);
-  return { turn: { ...turn, error: reason }, message };
+  const finish = { error: reason, structuredOutput: { matched, matchType: match.match, sent }, latencyMs: 0 };
+  await finishTurn(turn.id, finish);
+  if (conversation.language == null) await updateConversation(conversation.id, { language: lang });
+  await flagConversation(conversation.id, "claude_unavailable");
+  // Best effort: the reply and the turn are already recorded, so a failing events insert must not fail the turn.
+  try {
+    await recordEvent(
+      "fallback_turn",
+      { reason, turnId: turn.id, matched, matchType: match.match, sent, deliveryStatus: message.deliveryStatus },
+      conversation.id
+    );
+  } catch {
+    log.warn({ conversationId: conversation.id }, "fallback_turn event not recorded");
+  }
+  return { turn: { ...turn, ...finish }, message };
 }
