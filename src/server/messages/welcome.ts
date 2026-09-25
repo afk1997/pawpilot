@@ -1,3 +1,4 @@
+import { getConfig } from "../config";
 import type { Language } from "../types";
 
 export type MenuId = "menu:ambulance" | "menu:clinic" | "menu:donate" | "menu:volunteer" | "menu:suggestion";
@@ -56,22 +57,29 @@ const MENU_BY_LANG: Record<Language, (site: string) => string> = {
   gu: (site) => `અમે કેવી રીતે મદદ કરી શકીએ?\n\n🚑  *એનિમલ એમ્બ્યુલન્સ*\n💝  *દાન*\n🤝  *સ્વયંસેવક*\n🏥  *ક્લિનિક માહિતી*\n✉️  *સૂચન*\n\nવિકલ્પ લખો, અથવા ${site} જુઓ.`,
 };
 
-let site = "https://arhamalwayscare.org";
-/** Called once at startup with config.websiteUrl. */
+let site: string | null = null;
+/** Called once at startup with config.websiteUrl; until then the texts read the URL from the config. */
 export function setWebsiteUrl(url: string): void {
   site = url;
 }
 
+function websiteUrl(): string {
+  return site ?? getConfig().websiteUrl;
+}
+
 export function welcomeText(lang: Language = "en"): string {
-  return (WELCOME_BY_LANG[lang] ?? WELCOME_BY_LANG.en)(site);
+  return (WELCOME_BY_LANG[lang] ?? WELCOME_BY_LANG.en)(websiteUrl());
 }
 
 export function menuText(lang: Language = "en"): string {
-  return (MENU_BY_LANG[lang] ?? MENU_BY_LANG.en)(site);
+  return (MENU_BY_LANG[lang] ?? MENU_BY_LANG.en)(websiteUrl());
 }
 
 /** WhatsApp list button label, max 20 chars. */
 export const MENU_BUTTON_LABEL: Record<Language, string> = { en: "Options", hi: "विकल्प", mr: "पर्याय", gu: "વિકલ્પો" };
+
+/** WhatsApp list section title, max 24 chars. */
+export const MENU_SECTION_TITLE: Record<Language, string> = { en: "Choose an option", hi: "एक विकल्प चुनें", mr: "एक पर्याय निवडा", gu: "એક વિકલ્પ પસંદ કરો" };
 
 const ROW_TITLES: Record<Language, Record<MenuId, string>> = {
   en: { "menu:ambulance": "Animal ambulance", "menu:clinic": "Clinic info", "menu:donate": "Donate", "menu:volunteer": "Volunteer", "menu:suggestion": "Suggestion" },
