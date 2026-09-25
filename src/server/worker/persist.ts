@@ -11,7 +11,7 @@ export async function createTurn(input: { conversationId: string; status: TurnSt
   return row;
 }
 
-export async function finishTurn(id: string, patch: Partial<NewTurn>): Promise<void> {
+export async function finishTurn(id: string, patch: Partial<Omit<NewTurn, "id" | "conversationId" | "createdAt">>): Promise<void> {
   await getDb().update(turns).set(patch).where(eq(turns.id, id));
 }
 
@@ -20,7 +20,10 @@ export async function markAnswered(messageIds: string[], turnId: string | null):
   await getDb().update(messages).set({ answeredTurnId: turnId }).where(inArray(messages.id, messageIds));
 }
 
-export async function updateConversation(id: string, patch: Partial<Conversation>): Promise<void> {
+export async function updateConversation(
+  id: string,
+  patch: Partial<Omit<Conversation, "id" | "phone" | "isTest" | "createdAt" | "updatedAt">>
+): Promise<void> {
   await getDb().update(conversations).set({ ...patch, updatedAt: new Date() }).where(eq(conversations.id, id));
 }
 

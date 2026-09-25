@@ -6,7 +6,7 @@ import { messages, turns, conversations } from "@/server/db/schema";
 import { storeReporterMessage } from "@/server/inbound/store";
 import { gatherPending, loadHistory } from "@/server/worker/gather";
 import { deliverText, deliverList } from "@/server/worker/deliver";
-import { createTurn, finishTurn, markAnswered, loadConversationHandles } from "@/server/worker/persist";
+import { createTurn, finishTurn, markAnswered, loadConversationHandles, type HandleMap } from "@/server/worker/persist";
 import { setFetchForTests } from "@/server/interakt/client";
 import { log } from "@/server/log";
 
@@ -65,6 +65,9 @@ describe("worker helpers", () => {
     const r = await deliverList(c, { list: { body: "b", buttonLabel: "Options", rows: [{ id: "menu:ambulance", title: "A" }] }, fallbackText: "plain", origin: "system" });
     expect(r.usedList).toBe(false);
     expect(r.message.content).toBe("plain");
+    expect(calls).toBe(2);
+    expect(r.message.kind).toBe("text");
+    expect(r.message.deliveryStatus).toBe("sent");
   });
 
   it("loads history chronologically and merges handles from past turns", async () => {
@@ -116,5 +119,65 @@ describe("worker helpers", () => {
     const m = await deliverText(c, { text: "call\u0000 now", template: "call\u0000 {{AMB:amb_1}}", origin: "agent" });
     const [row] = await getDb().select().from(messages).where(eq(messages.id, m.id));
     expect([row.content, row.contentTemplate]).toEqual(["call now", "call {{AMB:amb_1}}"]);
+  });
+
+  it("gathers user messages only, in insertion order, around an assistant reply", async () => {
+    const c = await createConversation({ isTest: true, phone: "+91TEST_p" });
+    const a = await storeReporterMessage(c.id, { kind: "text", content: "dog hit by a car" });
+    await deliverText(c, { text: "reply", origin: "agent" });
+    const b = await storeReporterMessage(c.id, { kind: "text", content: "near the station" });
+    const g = await gatherPending(c.id);
+    expect(g?.pending.map((m) => m.id)).toEqual([a.id, b.id]);
+  });
+
+  it("limits history to the most recent messages, oldest first", async () => {
+    const c = await createConversation({ isTest: true, phone: "+91TEST_l" });
+    await storeReporterMessage(c.id, { kind: "text", content: "one" });
+    await deliverText(c, { text: "two", origin: "agent" });
+    await storeReporterMessage(c.id, { kind: "text", content: "three" });
+    expect((await loadHistory(c.id, 2)).map((m) => m.content)).toEqual(["two", "three"]);
+  });
+
+  it("merges handles from the last 20 turns only, newer turns winning", async () => {
+    const c = await createConversation({ isTest: true, phone: "+91TEST_k" });
+    const turnWith = async (handles: HandleMap) => {
+      const t = await createTurn({ conversationId: c.id, status: "ok" });
+      await finishTurn(t.id, { handles });
+    };
+    await turnWith({ amb_gone: { kind: "ambulance", id: "id-gone" } });
+    await turnWith({ amb_kept: { kind: "ambulance", id: "id-kept" }, amb_same: { kind: "ambulance", id: "id-old" } });
+    await turnWith({ amb_same: { kind: "ambulance", id: "id-new" } });
+    for (let i = 0; i < 18; i++) await createTurn({ conversationId: c.id, status: "ok" });
+    expect(await loadConversationHandles(c.id)).toEqual({
+      amb_kept: { kind: "ambulance", id: "id-kept" },
+      amb_same: { kind: "ambulance", id: "id-new" },
+    });
+  });
+
+  it("records a list for a test conversation without calling Interakt", async () => {
+    const c = await createConversation({ isTest: true, phone: "+91TEST_list" });
+    let called = false;
+    setFetchForTests((async () => { called = true; return new Response("{}", { status: 201 }); }) as typeof fetch);
+    const r = await deliverList(c, { list: { body: "b", buttonLabel: "Options", rows: [{ id: "menu:ambulance", title: "A" }] }, fallbackText: "plain", origin: "system" });
+    expect(called).toBe(false);
+    expect(r.usedList).toBe(true);
+    expect(r.message).toMatchObject({ kind: "interactive", deliveryStatus: "test_skipped", content: "plain" });
+  });
+
+  it("stores no provider id for a failed send, even when the error body carries one", async () => {
+    const c = await createConversation({ phone: "+919876543214" });
+    setFetchForTests((async () => new Response(JSON.stringify({ id: "err-1", message: "rejected" }), { status: 400 })) as typeof fetch);
+    const first = await deliverText(c, { text: "a", origin: "agent" });
+    const second = await deliverText(c, { text: "b", origin: "agent" });
+    expect([first, second].map((m) => [m.deliveryStatus, m.providerMessageId])).toEqual([["failed", null], ["failed", null]]);
+  });
+
+  it("logs a conversation-scoped line when a list's text fallback also fails", async () => {
+    const c = await createConversation({ phone: "+919876543215" });
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
+    setFetchForTests((async () => new Response("{}", { status: 400 })) as typeof fetch);
+    const r = await deliverList(c, { list: { body: "b", buttonLabel: "Options", rows: [{ id: "menu:ambulance", title: "A" }] }, fallbackText: "plain", origin: "system" });
+    expect(r).toMatchObject({ usedList: false, message: { kind: "text", deliveryStatus: "failed" } });
+    expect(warn).toHaveBeenCalledWith({ conversationId: c.id, status: 400 }, "outbound failed");
   });
 });

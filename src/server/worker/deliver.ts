@@ -20,7 +20,7 @@ async function persistOutbound(
       kind: input.kind ?? "text",
       content: stripNul(input.text),
       contentTemplate: stripNulOrNull(input.template),
-      providerMessageId: send?.messageId ? `out:${send.messageId}` : null,
+      providerMessageId: send?.ok && send.messageId ? `out:${send.messageId}` : null,
       deliveryStatus: send === null ? "test_skipped" : send.ok ? "sent" : "failed",
       error: send && !send.ok ? send.error ?? `status=${send.status}` : null,
       // input.turnId is accepted but not stored yet: Task 21 adds messages.turn_id and stores it here.
@@ -56,7 +56,6 @@ export async function deliverList(
     return { message, usedList: true };
   }
   log.warn({ conversationId: conversation.id, status: listSend.status }, "list send failed, falling back to text");
-  const textSend = await sendText(conversation.phone, input.fallbackText);
-  const message = await persistOutbound(conversation, { text: input.fallbackText, origin: input.origin }, textSend);
+  const message = await deliverText(conversation, { text: input.fallbackText, origin: input.origin });
   return { message, usedList: false };
 }
