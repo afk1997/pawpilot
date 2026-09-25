@@ -1,283 +1,166 @@
-/**
- * Interakt webhook payload parser + signature verifier.
- *
- * Reference: https://www.interakt.shop/resource-center/interakts-webhooks/
- *
- * Interakt-specific contract:
- *   - Returns 200 within 3 seconds (stricter than Meta's 5s).
- *   - Authenticates via HMAC-SHA256 in the `Interakt-Signature` header,
- *     formatted as `sha256=<hex>`.
- *   - Inbound message events have `type === "message_received"`.
- *   - There is NO GET-handshake (no hub.challenge); webhooks are POST-only.
- *
- * Inbound payload shape (from docs, real bodies may add fields):
- *   {
- *     "version": "1.0",
- *     "timestamp": "ISO-8601",
- *     "type": "message_received",
- *     "data": {
- *       "customer": {
- *         "id": "...",
- *         "channel_phone_number": "917003705584",
- *         "traits": { ... }
- *       },
- *       "message": {
- *         "id": "...",
- *         "chat_message_type": "CustomerMessage",
- *         "message_status": "Sent",
- *         "received_at_utc": "...",
- *         "message_content_type": "Text" | "Image" | "Video" | "Audio" | "Document" | "Location",
- *         "message": "the text body (for text)"
- *       }
- *     }
- *   }
- *
- * Other event types we skip: message_api_sent / delivered / read / failed,
- * message_campaign_*, account_alerts, etc. (delivery callbacks may be
- * persisted to messages.delivery_status in a future patch.)
- */
+import { createHmac, timingSafeEqual } from "node:crypto";
+import type { MessageKind } from "../types";
 
-import type { IncomingMessage, MessageType } from "./types";
+export interface ParsedInbound {
+  providerMessageId: string;
+  fromPhone: string;
+  fromName: string | null;
+  kind: MessageKind;
+  content: string;
+  mediaUrl: string | null;
+  lat: number | null;
+  lng: number | null;
+  placeHint: string | null;
+  interactiveId: string | null;
+  receivedAt: Date;
+  rawContentType: string;
+}
+
+export type ParseOutcome =
+  | { kind: "inbound"; message: ParsedInbound }
+  | { kind: "ignored"; reason: string; eventType: string };
+
+interface InteraktCustomer {
+  channel_phone_number?: string;
+  phone_number?: string;
+  country_code?: string;
+  traits?: Record<string, unknown>;
+}
 
 interface InteraktPayload {
-  version?: string;
+  type?: string;
   timestamp?: string;
-  type?: string; // "message_received" | "message_api_sent" | etc.
   data?: {
-    customer?: {
-      id?: string;
-      channel_phone_number?: string;
-      country_code?: string;
-      traits?: {
-        name?: string;
-        firstName?: string;
-        lastName?: string;
-        whatsappName?: string;
-        [k: string]: unknown;
-      };
-    };
-    message?: {
-      id?: string;
-      chat_message_type?: string;
-      message_status?: string;
-      received_at_utc?: string;
-      message_content_type?: string;
-      message?: string; // text body for Text type
-      // Media fields are not fully documented; we look in several
-      // likely places defensively. Real shape will be confirmed via
-      // raw-body logging on the first real call.
-      url?: string;
-      media_url?: string;
-      media_id?: string;
-      caption?: string;
-      latitude?: number;
-      longitude?: number;
-      location?: { latitude?: number; longitude?: number; name?: string; address?: string };
-      [k: string]: unknown;
-    };
+    customer?: InteraktCustomer;
+    message?: Record<string, unknown>;
   };
 }
 
-// Interakt's `type` casing varies (the test ping uses "Webhook Test" with
-// spaces, while the docs claim `message_received` snake_case). Match
-// case-insensitively against any of these forms to be safe.
-const INBOUND_TYPE_PATTERNS = [
-  /^message[_\s]received$/i,
-  /^messages[_\s]received$/i,
-  /^message[_\s]received[_\s]from[_\s]customers?$/i,
-];
+const INBOUND_TYPES = [/^message[_\s]received$/i, /^messages[_\s]received$/i, /^message[_\s]received[_\s]from[_\s]customers?$/i];
 
-function isInboundMessageType(t: string | undefined): boolean {
-  if (!t) return false;
-  return INBOUND_TYPE_PATTERNS.some((re) => re.test(t.trim()));
-}
+const MIN_PHONE_DIGITS = 8;
 
-/** Map Interakt's `message_content_type` to our internal MessageType. */
-function mapContentType(contentType: string | undefined): MessageType {
-  switch ((contentType ?? "").toLowerCase()) {
-    case "text":
-      return "text";
-    case "image":
-      return "image";
-    case "video":
-      return "video";
-    case "audio":
-    case "voice":
-      return "audio";
-    case "document":
-    case "file":
-      return "document";
-    case "location":
-      return "location";
-    case "sticker":
-      return "sticker";
-    case "contact":
-    case "contacts":
-      return "contact";
-    default:
-      return "text";
-  }
-}
-
-/** Normalize "917003705584" → "+917003705584". Defensive for already-E.164 input. */
-function toE164(raw: string | undefined, countryCodeHint?: string): string | null {
-  if (!raw) return null;
-  const cleaned = raw.replace(/[^\d+]/g, "");
-  if (cleaned.startsWith("+")) return cleaned;
-  if (cleaned.length >= 11 && cleaned.length <= 15) return `+${cleaned}`;
-  if (cleaned.length === 10) {
-    const cc = (countryCodeHint ?? "+91").replace(/[^\d+]/g, "");
-    const ccPrefix = cc.startsWith("+") ? cc : `+${cc || "91"}`;
-    return `${ccPrefix}${cleaned}`;
-  }
-  return cleaned ? `+${cleaned}` : null;
+function digitsOf(v: unknown): string {
+  return typeof v === "string" ? v.replace(/\D/g, "") : "";
 }
 
 /**
- * Parse an Interakt webhook body into a normalized IncomingMessage.
- * Returns null for events we don't process (status callbacks, account events).
+ * The sender in E.164, from the first source with at least 8 digits: `country_code` + `phone_number` ("+91",
+ * "9876543210"), then `channel_phone_number`. The latter is the WhatsApp id, country code included and no "+"
+ * ("917003705584"), so it only gains the "+"; adding +91 by length would turn a foreign sender ("6581234567",
+ * Singapore) into a wrong Indian number.
  */
-export function parseInteraktPayload(raw: unknown): IncomingMessage | null {
-  if (typeof raw !== "object" || raw === null) return null;
-  const p = raw as InteraktPayload;
+function toE164(customer: InteraktCustomer): string | null {
+  const countryCode = digitsOf(customer.country_code);
+  const phoneNumber = digitsOf(customer.phone_number);
+  const sources = [countryCode && phoneNumber ? countryCode + phoneNumber : "", digitsOf(customer.channel_phone_number)];
+  const digits = sources.find((d) => d.length >= MIN_PHONE_DIGITS);
+  return digits ? `+${digits}` : null;
+}
 
-  // Skip non-incoming events.
-  if (!isInboundMessageType(p.type)) return null;
+function mapKind(contentType: string): MessageKind {
+  switch (contentType.toLowerCase()) {
+    case "text": return "text";
+    case "image": return "image";
+    case "video": return "video";
+    case "audio": case "voice": return "audio";
+    case "document": case "file": return "document";
+    case "location": return "location";
+    case "sticker": return "sticker";
+    case "contact": case "contacts": return "contact";
+    case "interactivebuttonreply": case "interactivelistreply": return "interactive";
+    default: return "text";
+  }
+}
+
+function parseJsonString(v: unknown): Record<string, unknown> | null {
+  if (typeof v !== "string") return null;
+  try {
+    const o = JSON.parse(v);
+    return o && typeof o === "object" ? (o as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function parseInteraktPayload(raw: unknown): ParseOutcome {
+  if (typeof raw !== "object" || raw === null) return { kind: "ignored", reason: "non_object", eventType: "(none)" };
+  const p = raw as InteraktPayload;
+  const eventType = typeof p.type === "string" ? p.type : "(none)";
+  if (!INBOUND_TYPES.some((re) => re.test(eventType.trim()))) return { kind: "ignored", reason: "event_type", eventType };
 
   const customer = p.data?.customer;
   const message = p.data?.message;
-  if (!customer || !message) return null;
-  if (!message.id) return null;
-
-  // Skip outbound echoes — only customer messages should reach the agent.
-  if (message.chat_message_type && message.chat_message_type !== "CustomerMessage") {
-    return null;
+  if (!customer || !message || typeof message.id !== "string") return { kind: "ignored", reason: "missing_fields", eventType };
+  if (typeof message.chat_message_type === "string" && message.chat_message_type !== "CustomerMessage") {
+    return { kind: "ignored", reason: "not_customer_message", eventType };
   }
+  const fromPhone = toE164(customer);
+  if (!fromPhone) return { kind: "ignored", reason: "no_phone", eventType };
 
-  const fromPhone = toE164(customer.channel_phone_number, customer.country_code);
-  if (!fromPhone) return null;
+  const traits = customer.traits ?? {};
+  const fromName = [traits.whatsappName, traits.firstName, traits.name].find((v): v is string => typeof v === "string" && v.length > 0) ?? null;
 
-  const fromName =
-    customer.traits?.whatsappName ??
-    customer.traits?.firstName ??
-    customer.traits?.name ??
-    null;
+  const rawContentType = typeof message.message_content_type === "string" ? message.message_content_type : "Text";
+  const kind = mapKind(rawContentType);
+  const body = typeof message.message === "string" ? message.message : "";
+  const mediaUrl = typeof message.media_url === "string" && message.media_url.length > 0 ? message.media_url : null;
 
-  const type = mapContentType(message.message_content_type);
+  let content = "";
+  let lat: number | null = null;
+  let lng: number | null = null;
+  let placeHint: string | null = null;
+  let interactiveId: string | null = null;
 
-  // Coalesce text body across the variants we've seen.
-  let text = "";
-  if (type === "text") {
-    text = message.message ?? "";
-  } else if (type === "image" || type === "video" || type === "document") {
-    text = message.caption ?? message.message ?? "";
-  } else if (type === "location") {
-    const locName = message.location?.name ?? "";
-    const locAddr = message.location?.address ?? "";
-    text = [locName, locAddr].filter(Boolean).join(", ");
-  }
-
-  // Coalesce media URL across plausible field names.
-  let mediaUrl: string | null = null;
-  if (type !== "text" && type !== "location") {
-    mediaUrl = message.url ?? message.media_url ?? null;
-  }
-
-  // Location coordinates.
-  const lat =
-    message.location?.latitude ??
-    (typeof message.latitude === "number" ? message.latitude : null);
-  const lng =
-    message.location?.longitude ??
-    (typeof message.longitude === "number" ? message.longitude : null);
-
-  // Timestamp.
-  let receivedAt: Date;
-  const tsStr = message.received_at_utc ?? p.timestamp;
-  if (tsStr) {
-    const d = new Date(tsStr);
-    receivedAt = isNaN(d.getTime()) ? new Date() : d;
+  if (kind === "location") {
+    const loc = parseJsonString(body) ?? (message.location as Record<string, unknown> | undefined) ?? {};
+    lat = typeof loc.latitude === "number" ? loc.latitude : Number(loc.latitude) || null;
+    lng = typeof loc.longitude === "number" ? loc.longitude : Number(loc.longitude) || null;
+    const parts = [loc.name, loc.address].filter((v): v is string => typeof v === "string" && v.length > 0);
+    placeHint = parts.length ? parts.join(", ") : null;
+    content = placeHint ?? "";
+  } else if (kind === "interactive") {
+    const obj = parseJsonString(body) ?? {};
+    const reply = (obj.list_reply ?? obj.button_reply ?? {}) as Record<string, unknown>;
+    interactiveId = typeof reply.id === "string" ? reply.id : null;
+    content = typeof reply.title === "string" ? reply.title : body;
   } else {
-    receivedAt = new Date();
+    content = body;
   }
+
+  const tsStr = (message.received_at_utc as string | undefined) ?? p.timestamp;
+  const parsedDate = tsStr ? new Date(tsStr) : new Date();
 
   return {
-    providerMessageId: message.id,
-    fromPhone,
-    fromName,
-    type,
-    text,
-    mediaUrl,
-    locationLat: lat ?? null,
-    locationLng: lng ?? null,
-    receivedAt,
+    kind: "inbound",
+    message: {
+      providerMessageId: message.id,
+      fromPhone,
+      fromName,
+      kind,
+      content,
+      mediaUrl: kind === "text" ? null : mediaUrl,
+      lat,
+      lng,
+      placeHint,
+      interactiveId,
+      receivedAt: isNaN(parsedDate.getTime()) ? new Date() : parsedDate,
+      rawContentType,
+    },
   };
 }
 
-/**
- * Verify an Interakt webhook signature. Defaults to HMAC-SHA256 — the
- * scheme Interakt actually uses per their docs.
- *
- * Header: `Interakt-Signature: sha256=<hex>`
- * Computed as: HMAC-SHA256(secret_key, raw_request_body)
- *
- * If INTERAKT_WEBHOOK_SECRET isn't set, we log a warning and accept
- * (dev/sandbox only). Production must set it.
- *
- * Mode override: INTERAKT_WEBHOOK_VERIFY_MODE = "hmac" (default) or "off".
- */
+/** `Interakt-Signature: sha256=<hex>` = HMAC-SHA256(secret, raw body bytes). */
 export async function verifyInteraktSignature(
   rawBody: string,
-  headers: Headers
+  signatureHeader: string | null,
+  opts: { secret: string; mode: "hmac" | "off" }
 ): Promise<boolean> {
-  const secret = process.env.INTERAKT_WEBHOOK_SECRET;
-  const mode = (process.env.INTERAKT_WEBHOOK_VERIFY_MODE ?? "hmac").toLowerCase();
-
-  if (mode === "off") return true;
-
-  if (!secret) {
-    if (process.env.NODE_ENV === "production") {
-      console.warn(
-        "[webhook] INTERAKT_WEBHOOK_SECRET not set; refusing webhook in production."
-      );
-      return false;
-    }
-    return true; // dev only
-  }
-
-  // Header lookup is case-insensitive on the Headers object, so "Interakt-Signature"
-  // and "interakt-signature" both work.
-  const provided =
-    headers.get("interakt-signature") ??
-    headers.get("x-interakt-signature") ??
-    headers.get("x-hub-signature-256");
-
-  if (!provided) {
-    console.warn("[webhook] no Interakt-Signature header on inbound request");
-    return false;
-  }
-
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    "raw",
-    enc.encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"]
-  );
-  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(rawBody));
-  const expected =
-    "sha256=" +
-    Array.from(new Uint8Array(sig))
-      .map((b) => b.toString(16).padStart(2, "0"))
-      .join("");
-
-  return timingSafeEq(provided, expected);
-}
-
-function timingSafeEq(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
+  if (opts.mode === "off") return true;
+  if (!opts.secret) return false;
+  if (!signatureHeader) return false;
+  const expected = "sha256=" + createHmac("sha256", opts.secret).update(rawBody, "utf8").digest("hex");
+  const a = Buffer.from(signatureHeader);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
 }
