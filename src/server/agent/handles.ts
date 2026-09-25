@@ -5,8 +5,10 @@ export type HandleMap = Record<string, { kind: HandleKind; id: string }>;
 
 /** Stable within a conversation, opaque across conversations. */
 export function makeHandle(kind: HandleKind, conversationId: string, entityId: string): string {
-  const hex = createHash("sha256").update(`${conversationId}:${kind}:${entityId}`).digest("hex").slice(0, 8);
-  return `${kind === "ambulance" ? "amb" : "cli"}_${hex}`;
+  const hex = createHash("sha256").update(`${conversationId}:${kind}:${entityId}`).digest("hex");
+  // Letters only (each hex nibble 0-f becomes a-p), so a handle never holds a digit run that could pass for a phone number.
+  const letters = hex.slice(0, 8).replace(/[0-9a-f]/g, (c) => String.fromCharCode(97 + parseInt(c, 16)));
+  return `${kind === "ambulance" ? "amb" : "cli"}_${letters}`;
 }
 
 export class HandleRegistry {

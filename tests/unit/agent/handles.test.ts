@@ -4,10 +4,10 @@ import { HandleRegistry, makeHandle, extractTokens, TOKEN_RE } from "@/server/ag
 describe("handles", () => {
   it("is deterministic per conversation and entity, opaque across conversations", () => {
     const a = makeHandle("ambulance", "conv-1", "amb-1");
-    expect(a).toMatch(/^amb_[0-9a-f]{8}$/);
+    expect(a).toMatch(/^amb_[a-p]{8}$/);
     expect(makeHandle("ambulance", "conv-1", "amb-1")).toBe(a);
     expect(makeHandle("ambulance", "conv-2", "amb-1")).not.toBe(a);
-    expect(makeHandle("clinic", "conv-1", "c-1")).toMatch(/^cli_[0-9a-f]{8}$/);
+    expect(makeHandle("clinic", "conv-1", "c-1")).toMatch(/^cli_[a-p]{8}$/);
   });
   it("registry resolves handles it issued and initial ones", () => {
     const r = new HandleRegistry("conv-1", { amb_deadbeef: { kind: "ambulance", id: "old" } });
