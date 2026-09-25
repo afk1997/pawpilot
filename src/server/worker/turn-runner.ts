@@ -29,7 +29,13 @@ async function withConversationLock<T>(conversationId: string, fn: () => Promise
     try {
       return await fn();
     } finally {
-      await reserved`select pg_advisory_unlock(hashtext(${conversationId})::bigint)`;
+      try {
+        await reserved`select pg_advisory_unlock(hashtext(${conversationId})::bigint)`;
+      } catch {
+        // Never mask fn's result or error. The usual cause is a lost connection, and Postgres drops a
+        // session lock together with its session.
+        log.warn({ conversationId }, "advisory unlock failed");
+      }
     }
   } finally {
     reserved.release();
@@ -69,8 +75,13 @@ async function runTurnLocked(conversationId: string): Promise<TurnOutcome> {
 
   if (await claimWelcome(conversation.id)) {
     await sendWelcome(conversation, lang);
-    await updateConversation(conversation.id, { language: lang });
-    conversation = { ...conversation, language: lang, welcomedAt: new Date() };
+    // A burst with no real content ("hi", a sticker, a voice note) detects as English only by default,
+    // so it does not decide the language; the first message with real content does.
+    if (!(cls.allGreeting || cls.allAudio) || lang !== "en") {
+      await updateConversation(conversation.id, { language: lang });
+      conversation = { ...conversation, language: lang };
+    }
+    conversation = { ...conversation, welcomedAt: new Date() };
     welcomeJustSent = true;
     if (cls.allGreeting) {
       const turn = await createTurn({ conversationId: conversation.id, status: "ok", model: "system:welcome" });

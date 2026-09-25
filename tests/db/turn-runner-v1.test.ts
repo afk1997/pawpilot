@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { eq, asc } from "drizzle-orm";
 import { resetDb, createConversation } from "../helpers/db";
 import { seedDirectory } from "../helpers/fixtures";
@@ -7,7 +7,9 @@ import { getConfig, resetConfigForTests } from "@/server/config";
 import { conversations, messages, turns } from "@/server/db/schema";
 import { storeReporterMessage } from "@/server/inbound/store";
 import { setFetchForTests } from "@/server/interakt/client";
+import { log } from "@/server/log";
 import { menuText, welcomeText } from "@/server/messages/welcome";
+import { claimWelcome } from "@/server/worker/first-contact";
 import { runTurn } from "@/server/worker/turn-runner";
 import { getBoss, stopBoss, TURN_QUEUE } from "@/server/queue/boss";
 
@@ -36,7 +38,7 @@ describe("runTurn v1", () => {
     expect(out[0].content).toContain("Arham Always Care");
     const [row] = await getDb().select().from(conversations).where(eq(conversations.id, c.id));
     expect(row.welcomedAt).not.toBeNull();
-    expect(row.language).toBe("en");
+    expect(row.language).toBeNull();
     expect((await runTurn(c.id)).kind).toBe("noop");
   });
 
@@ -135,15 +137,107 @@ describe("runTurn v1", () => {
     expect((await runTurn(c.id)).kind).toBe("welcome");
   });
 
+  it.each([
+    ["a bare greeting", { kind: "text", content: "hi" }, "welcome"],
+    ["a voice note", { kind: "audio", content: "", mediaUrl: "https://x/a.ogg" }, "audio_only"],
+  ] as const)("leaves the language unset after %s, so the first real message decides it", async (_first, message, firstKind) => {
+    const c = await conv();
+    const language = async () => (await getDb().select().from(conversations).where(eq(conversations.id, c.id)))[0].language;
+    await storeReporterMessage(c.id, message);
+    expect((await runTurn(c.id)).kind).toBe(firstKind);
+    expect(await language()).toBeNull();
+    await storeReporterMessage(c.id, { kind: "text", content: "घाटकोपर में कुत्ता घायल है" });
+    expect((await runTurn(c.id)).kind).toBe("fallback");
+    const reply = (await assistant(c.id)).at(-1)!.content;
+    expect(reply).toContain("आपके इलाके की एनिमल एम्बुलेंस यह रही:");
+    expect(reply).toContain("+91 70000 00001");
+    expect(await language()).toBe("hi");
+  });
+
+  it("returns the turn's outcome, releasing the lock, when the advisory unlock query fails", async () => {
+    const c = await conv();
+    await getDb().update(conversations).set({ welcomedAt: new Date() }).where(eq(conversations.id, c.id));
+    await storeReporterMessage(c.id, { kind: "text", content: "Surat" });
+    const sql = getSql();
+    const reserve = sql.reserve.bind(sql);
+    vi.spyOn(sql, "reserve").mockImplementationOnce(async () => {
+      const conn = await reserve();
+      // Runs the real unlock, then fails the way a connection lost mid-query does.
+      const unlockFails = async (strings: TemplateStringsArray, ...values: never[]) => {
+        const rows = await conn(strings, ...values);
+        if (strings.join("").includes("pg_advisory_unlock")) throw new Error("connection lost while unlocking");
+        return rows;
+      };
+      return Object.assign(unlockFails, { release: conn.release }) as unknown as typeof conn;
+    });
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
+    try {
+      expect((await runTurn(c.id)).kind).toBe("fallback");
+      expect(warn).toHaveBeenCalledWith({ conversationId: c.id }, "advisory unlock failed");
+    } finally {
+      vi.restoreAllMocks();
+    }
+    await storeReporterMessage(c.id, { kind: "text", content: "Surat" });
+    expect((await runTurn(c.id)).kind).toBe("fallback"); // not "locked"
+  });
+
+  /** Stubs Interakt so that `during` runs once, while the turn's first send is in flight. */
+  function duringFirstSend(during: () => Promise<void>) {
+    let ran = false;
+    setFetchForTests((async () => {
+      if (!ran) {
+        ran = true;
+        await during();
+      }
+      return new Response(JSON.stringify({ id: `wa-${Math.random().toString(36).slice(2, 9)}` }), { status: 201 });
+    }) as typeof fetch);
+  }
+  const byContent = async (content: string) => (await getDb().select().from(messages).where(eq(messages.content, content)))[0];
+
+  it("requeues at once for a message that arrives mid-turn and leaves it pending for that turn", async () => {
+    const c = await createConversation({ phone: "+919876500998", welcomedAt: new Date() });
+    await storeReporterMessage(c.id, { kind: "text", content: "Surat" });
+    duringFirstSend(async () => {
+      await storeReporterMessage(c.id, { kind: "text", content: "and a cat too" });
+    });
+    const r = await runTurn(c.id).finally(() => setFetchForTests(null));
+    expect(r).toMatchObject({ kind: "fallback", requeued: true });
+    const jobs = await (await getBoss()).findJobs(TURN_QUEUE, { key: c.id });
+    expect(jobs).toHaveLength(1);
+    expect(Math.abs(jobs[0].startAfter.getTime() - jobs[0].createdOn.getTime())).toBeLessThan(1000);
+    expect((await byContent("Surat")).answeredTurnId).toBe(r.turnId);
+    expect((await byContent("and a cat too")).answeredTurnId).toBeNull();
+  });
+
+  it("does not requeue when the conversation is taken over mid-turn, leaving the new message pending", async () => {
+    const c = await createConversation({ phone: "+919876500997", welcomedAt: new Date() });
+    await storeReporterMessage(c.id, { kind: "text", content: "Surat" });
+    duringFirstSend(async () => {
+      await storeReporterMessage(c.id, { kind: "text", content: "and a cat too" });
+      await getDb().update(conversations).set({ mode: "human" }).where(eq(conversations.id, c.id));
+    });
+    const r = await runTurn(c.id).finally(() => setFetchForTests(null));
+    expect(r).toMatchObject({ kind: "fallback", requeued: false });
+    expect((await byContent("and a cat too")).answeredTurnId).toBeNull();
+    expect(await (await getBoss()).findJobs(TURN_QUEUE, { key: c.id })).toHaveLength(0);
+  });
+
+  it("lets exactly one of two concurrent first-contact claims win", async () => {
+    const c = await conv();
+    const claims = await Promise.all([claimWelcome(c.id), claimWelcome(c.id)]);
+    expect(claims.filter(Boolean)).toHaveLength(1);
+    expect(await claimWelcome(c.id)).toBe(false);
+  });
+
   it("finishes a full worker's worth of concurrent turns without exhausting the connection pool", async () => {
     // Each turn keeps one pooled connection reserved for its advisory lock. At the highest allowed
     // concurrency a fixed pool of 8 left none for the turns' own queries and every turn hung.
     const configured = process.env.WORKER_CONCURRENCY;
-    process.env.WORKER_CONCURRENCY = "8";
-    resetConfigForTests();
-    await closeDb(); // the next query builds a pool sized for this concurrency
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
+      process.env.WORKER_CONCURRENCY = "8";
+      resetConfigForTests();
+      await closeDb(); // the next query builds a pool sized for this concurrency
       const n = getConfig().workerConcurrency;
       const ids: string[] = [];
       for (let i = 0; i < n; i++) {

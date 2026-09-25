@@ -32,6 +32,7 @@ describe("getConfig", () => {
   });
 
   it("caps the worker concurrency at 8", () => {
+    const configured = process.env.WORKER_CONCURRENCY;
     try {
       process.env.WORKER_CONCURRENCY = "9";
       expect(() => getConfig()).toThrow(/WORKER_CONCURRENCY/);
@@ -39,7 +40,9 @@ describe("getConfig", () => {
       resetConfigForTests();
       expect(getConfig().workerConcurrency).toBe(8);
     } finally {
-      delete process.env.WORKER_CONCURRENCY;
+      if (configured === undefined) delete process.env.WORKER_CONCURRENCY;
+      else process.env.WORKER_CONCURRENCY = configured;
+      resetConfigForTests();
     }
   });
 });
