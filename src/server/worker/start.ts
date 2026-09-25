@@ -10,31 +10,43 @@ import { runTurn, type TurnOutcome } from "./turn-runner";
 import { closeDb, getDb } from "../db/client";
 import { conversations, events, messages } from "../db/schema";
 
-/** With this many failed turns in the last hour, the sweep flags a conversation instead of re-running it. */
+/**
+ * With this many `turn_failed` events in the last hour, the sweep flags a conversation for the dispatcher
+ * instead of re-running it. Every failed attempt records one, so in practice a single job that exhausts its
+ * three attempts trips the cap, some 15–30 s after its first failure with the queue's retry backoff when the
+ * turns fail fast. New inbound messages still get fresh jobs from the webhook; only the sweep stops.
+ */
 const SWEEP_FAILED_TURN_CAP = 3;
 
 /**
  * Backstop for turns the queue never ran: a message that landed on a debounce-slot boundary, or an
- * enqueue that failed after the webhook stored the message. Enqueues an immediate turn for every
- * agent-mode conversation with a reporter message unanswered for over 15 s. So that a burst that keeps
- * failing is not retried forever, two cases are left alone:
+ * enqueue that failed after the webhook stored the message. Enqueues an immediate turn, longest-waiting
+ * first, for every agent-mode conversation with a reporter message unanswered for over 15 s. So that a
+ * burst that keeps failing is not retried forever, two cases are left alone:
  * - messages older than 6 h;
- * - conversations with SWEEP_FAILED_TURN_CAP or more `turn_failed` events in the last hour, which the
- *   sweep flags `turn_failed` (a reason already set wins), with a warning logged when it flags.
+ * - conversations at SWEEP_FAILED_TURN_CAP, which the sweep flags `turn_failed` (a reason already set
+ *   wins) with a warning when it flags; a failed flag write is logged and does not stop the sweep.
  * Nothing lists such messages: the dispatcher sees them only through the conversation's flag and the logs.
  * Returns how many jobs it created (enqueueTurn's null means one already exists).
  */
 export async function sweepUnanswered(): Promise<number> {
-  const recentFailures = sql<number>`(
-    select count(*)::int from ${events}
-    where ${events.conversationId} = ${messages.conversationId}
-      and ${events.kind} = 'turn_failed'
-      and ${events.createdAt} > now() - interval '1 hour'
-  )`;
-  const rows = await getDb()
-    .selectDistinct({ conversationId: messages.conversationId, flagged: conversations.flagged, recentFailures })
+  const db = getDb();
+  // Counted once per conversation, then joined: a correlated count would run for every pending message.
+  const recent = db
+    .select({ conversationId: events.conversationId, failures: sql<number>`count(*)::int`.as("turn_failures_last_hour") })
+    .from(events)
+    .where(and(eq(events.kind, "turn_failed"), gt(events.createdAt, sql`now() - interval '1 hour'`)))
+    .groupBy(events.conversationId)
+    .as("recent_turn_failures");
+  const rows = await db
+    .select({
+      conversationId: messages.conversationId,
+      flagged: conversations.flagged,
+      failures: sql<number>`coalesce(${recent.failures}, 0)`,
+    })
     .from(messages)
     .innerJoin(conversations, eq(conversations.id, messages.conversationId))
+    .leftJoin(recent, eq(recent.conversationId, messages.conversationId))
     .where(
       and(
         eq(messages.role, "user"),
@@ -43,13 +55,19 @@ export async function sweepUnanswered(): Promise<number> {
         gt(messages.createdAt, sql`now() - interval '6 hours'`),
         eq(conversations.mode, "agent")
       )
-    );
+    )
+    .groupBy(messages.conversationId, conversations.flagged, recent.failures)
+    .orderBy(sql`min(${messages.createdAt})`, messages.conversationId);
   let enqueued = 0;
-  for (const { conversationId, flagged, recentFailures: failures } of rows) {
+  for (const { conversationId, flagged, failures } of rows) {
     if (failures >= SWEEP_FAILED_TURN_CAP) {
       if (!flagged) {
-        await flagConversation(conversationId, "turn_failed");
-        log.warn({ conversationId }, "turns keep failing; sweep flagged the conversation instead of re-running it");
+        try {
+          await flagConversation(conversationId, "turn_failed");
+          log.warn({ conversationId }, "turns keep failing; sweep flagged the conversation instead of re-running it");
+        } catch {
+          log.warn({ conversationId }, "turn_failed flag not recorded");
+        }
       }
       continue;
     }

@@ -15,13 +15,30 @@ import { runWorkerProcess, startWorker, sweepUnanswered } from "@/server/worker/
 import * as turnRunner from "@/server/worker/turn-runner";
 import { getWorkerState } from "@/server/worker/pause";
 import { createTurn } from "@/server/worker/persist";
+import * as persist from "@/server/worker/persist";
+
+/** A reporter message on the conversation, backdated `ageSeconds` on the database clock. */
+async function addPendingMessage(conversationId: string, ageSeconds: number) {
+  const { id } = await storeReporterMessage(conversationId, { kind: "text", content: "Surat" });
+  await getDb().update(messages).set({ createdAt: sql`now() - make_interval(secs => ${ageSeconds})` }).where(eq(messages.id, id!));
+}
 
 /** A welcomed test conversation with one reporter message, backdated `ageSeconds` on the database clock. */
 async function withPendingMessage(phone: string, ageSeconds: number, mode: "agent" | "human" = "agent") {
   const c = await createConversation({ isTest: true, phone, mode, welcomedAt: new Date() });
-  const { id } = await storeReporterMessage(c.id, { kind: "text", content: "Surat" });
-  await getDb().update(messages).set({ createdAt: sql`now() - make_interval(secs => ${ageSeconds})` }).where(eq(messages.id, id!));
+  await addPendingMessage(c.id, ageSeconds);
   return c;
+}
+
+/** `count` turn_failed events for the conversation, `ageSeconds` old on the database clock. */
+async function recordTurnFailures(conversationId: string, count: number, ageSeconds = 0) {
+  await getDb()
+    .insert(events)
+    .values(
+      Array.from({ length: count }, () => ({
+        conversationId, kind: "turn_failed", payload: { errorClass: "Error" }, createdAt: sql`now() - make_interval(secs => ${ageSeconds})`,
+      }))
+    );
 }
 
 async function waitFor(check: () => boolean | Promise<boolean>, timeoutMs = 10_000): Promise<void> {
@@ -127,17 +144,10 @@ describe("startWorker", () => {
     const failing = await withPendingMessage("+91TEST_sweep_failing", 30);
     const flaky = await withPendingMessage("+91TEST_sweep_flaky", 30);
     const recovered = await withPendingMessage("+91TEST_sweep_recovered", 30);
-    const turnFailed = (conversationId: string, count: number, ageSeconds = 0) =>
-      getDb()
-        .insert(events)
-        .values(
-          Array.from({ length: count }, () => ({
-            conversationId, kind: "turn_failed", payload: { errorClass: "Error" }, createdAt: sql`now() - make_interval(secs => ${ageSeconds})`,
-          }))
-        );
-    await turnFailed(failing.id, 3);
-    await turnFailed(flaky.id, 2);
-    await turnFailed(recovered.id, 3, 2 * 60 * 60); // outside the hour
+    await addPendingMessage(flaky.id, 40); // two pending messages must not double-count its two failures
+    await recordTurnFailures(failing.id, 3);
+    await recordTurnFailures(flaky.id, 2);
+    await recordTurnFailures(recovered.id, 3, 2 * 60 * 60); // outside the hour
     const warn = vi.spyOn(log, "warn");
     try {
       expect(await sweepUnanswered()).toBe(2);
@@ -156,6 +166,33 @@ describe("startWorker", () => {
       expect(await boss.findJobs(TURN_QUEUE, { key: failing.id })).toHaveLength(0);
       expect(warn).toHaveBeenCalledTimes(1);
     } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("sweepUnanswered still enqueues the rest of the tick when a flag write fails", async () => {
+    // Longest-waiting first, so both capped conversations come before the healthy one.
+    const cappedA = await withPendingMessage("+91TEST_sweep_capped_a", 90);
+    const cappedB = await withPendingMessage("+91TEST_sweep_capped_b", 60);
+    const healthy = await withPendingMessage("+91TEST_sweep_healthy", 30);
+    await recordTurnFailures(cappedA.id, 3);
+    await recordTurnFailures(cappedB.id, 3);
+    const flag = vi.spyOn(persist, "flagConversation").mockRejectedValueOnce(new Error("flag write failed for +919876543210"));
+    const warn = vi.spyOn(log, "warn");
+    try {
+      expect(await sweepUnanswered()).toBe(1);
+      const boss = await getBoss();
+      expect(await boss.findJobs(TURN_QUEUE, { key: healthy.id })).toHaveLength(1);
+      expect(await boss.findJobs(TURN_QUEUE, { key: cappedA.id })).toHaveLength(0);
+      expect(await boss.findJobs(TURN_QUEUE, { key: cappedB.id })).toHaveLength(0);
+      expect(flag).toHaveBeenCalledTimes(2);
+      expect(warn).toHaveBeenCalledWith({ conversationId: cappedA.id }, "turn_failed flag not recorded");
+      expect(inspect(warn.mock.calls, { depth: null })).not.toContain("9876543210");
+      const flags = await getDb().select({ id: conversations.id, flagged: conversations.flagged, flagReason: conversations.flagReason }).from(conversations);
+      expect(flags.find((r) => r.id === cappedA.id)).toMatchObject({ flagged: false });
+      expect(flags.find((r) => r.id === cappedB.id)).toMatchObject({ flagged: true, flagReason: "turn_failed" });
+    } finally {
+      flag.mockRestore();
       warn.mockRestore();
     }
   });
@@ -180,7 +217,7 @@ describe("startWorker", () => {
 
   it("logs a failed sweep with only a fixed message, the error code and its class", async () => {
     class QueryFailed extends Error {}
-    const failing = vi.spyOn(getDb(), "selectDistinct").mockImplementation(() => {
+    const failing = vi.spyOn(getDb(), "select").mockImplementation(() => {
       throw new QueryFailed("Failed query ... params: +919876543210", { cause: { code: "57P01", detail: "Key (phone)=(+919876543210)" } });
     });
     const worker = await startWorker({ concurrency: 1, sweepMs: 100 });
