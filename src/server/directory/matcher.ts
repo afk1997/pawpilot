@@ -65,6 +65,12 @@ const GENERIC_TOKENS: ReadonlySet<string> = new Set([
  */
 const FUZZY_MIN_LENGTH = 6;
 
+/**
+ * Tier 4 lets a token match the start of a place word only with this many
+ * letters: "kandi" finds Kandivali, but "band" (closed) does not find Bandra.
+ */
+const PREFIX_MIN_LENGTH = 5;
+
 function cityMatches(rowCity: string, wanted: string): boolean {
   const c = normalize(rowCity);
   if (c === wanted) return true;
@@ -129,9 +135,12 @@ function broaderMatch(pool: DirectoryAmbulance[], needle: string): MatchResult |
     if (hit.length > 0) return finish(hit, "substring");
   }
 
-  // Tier 4 — token containment, generic words dropped.
+  // Tier 4 — a token equals a whole place word or starts one (PREFIX_MIN_LENGTH),
+  // generic words dropped. A word inside a name ("gali" in Bengali Square) is no match.
   hit = pool.filter((r) =>
-    [r.city, r.area ?? "", ...r.areasCovered].map(normalize).some((h) => looseToks.some((t) => h === t || h.includes(t)))
+    [r.city, r.area ?? "", ...r.areasCovered]
+      .map(normalize)
+      .some((h) => h.split(" ").some((w) => looseToks.some((t) => w === t || (t.length >= PREFIX_MIN_LENGTH && w.startsWith(t)))))
   );
   if (hit.length > 0) return finish(hit, "token");
 

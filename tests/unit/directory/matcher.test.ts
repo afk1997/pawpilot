@@ -208,4 +208,34 @@ describe("matchAmbulances", () => {
       expect(ids(r)).toEqual(["andheri", "bandra", "ghatkopar", "malad"]);
     });
   });
+
+  describe("with place names that contain everyday words", () => {
+    const withWords = [
+      ...rows,
+      row({ id: "indore", city: "Indore", area: "Bengali Square", areasCovered: ["Bengali Square"] }),
+      row({ id: "lokhandwala", city: "Mumbai", area: "Lokhandwala", areasCovered: ["Lokhandwala", "Vile Parle"] }),
+      row({ id: "ambegaon", city: "Pune", area: "Ambegaon", areasCovered: ["Ambegaon"] }),
+    ];
+
+    it.each([
+      "hamari gali mein kutta ghayal hai", // "gali" (lane) is inside "Bengali Square"
+      "ambulance wala ka number do", // "wala" is inside "Lokhandwala"
+      "mere gaon mein kutta ghayal hai", // "gaon" (village) is inside "Ambegaon"
+      "sab dukaan band hai, kutta ghayal hai", // "band" (closed) starts "Bandra" but is shorter than 5
+    ])("a short word inside or at the start of a place name matches nothing: %s", (query) => {
+      expect(ids(matchAmbulances(withWords, { query }))).toEqual([]);
+    });
+
+    it("a whole place word or a 5+ letter start of one still matches (kandi, parle)", () => {
+      expect(ids(matchAmbulances(withWords, { query: "kandi" }))).toEqual(["malad"]);
+      // Alone, "kandi" is a whole-needle substring (tier 3); in a sentence only tier 4's prefix rule finds it.
+      const kandi = matchAmbulances(withWords, { query: "kandi east mein kutta ghayal hai" });
+      expect(kandi.match).toBe("token");
+      expect(ids(kandi)).toEqual(["malad"]);
+      // "parle" is the second word of "Vile Parle": a whole word anywhere in the name counts.
+      const parle = matchAmbulances(withWords, { query: "parle east mein kutta ghayal hai" });
+      expect(parle.match).toBe("token");
+      expect(ids(parle)).toEqual(["lokhandwala"]);
+    });
+  });
 });
