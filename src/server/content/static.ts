@@ -9,8 +9,11 @@ type Localized = Record<string, Record<string, string> | string>;
 const isFilled = (v: unknown): v is string => typeof v === "string" && v.trim().length > 0 && !v.trim().toUpperCase().startsWith("TODO");
 /** A field whose whole value is one phone number: 7+ digits, at most one space or hyphen between two digits. */
 const PHONE_RE = /^\+?\d(?:[ -]?\d){6,}$/;
-/** A phone number inside a string; it never runs across a line break or a spaced hyphen. */
-const PHONE_RUN_RE = /\+?\d(?:[ -]?\d){6,}/g;
+/**
+ * A phone number inside a string; it never runs across a line break or a spaced hyphen. Match it against
+ * foldDigits output so native numerals count. Global: String.replace resets it on each call.
+ */
+export const PHONE_RUN_RE = /\+?\d(?:[ -]?\d){6,}/g;
 
 /**
  * Maps Devanagari (U+0966–096F) and Gujarati (U+0AE6–0AEF) numerals to ASCII 0–9. Each numeral is one
