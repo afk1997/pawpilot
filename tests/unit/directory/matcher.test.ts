@@ -36,6 +36,12 @@ describe("normalize", () => {
     // explicit escape produces the precomposed letter a keyboard may send.
     expect(normalize("\u0917\u0941\u095C\u0917\u093E\u0902\u0935")).toBe("gurugram");
   });
+
+  it("resolves the short-u सुरत spelling and Marathi locatives", () => {
+    expect(normalize("सुरत")).toBe("surat");
+    // मुंबईला and नागपुरात resolve by suffix stripping; पुण्यात and मुंबईत need their explicit branches.
+    expect(normalize("मुंबईला नागपुरात पुण्यात मुंबईत")).toBe("mumbai nagpur pune mumbai");
+  });
 });
 
 describe("matchAmbulances", () => {
@@ -134,6 +140,72 @@ describe("matchAmbulances", () => {
 
     it("a generic locality word alone matches nothing (Pant Nagar)", () => {
       expect(ids(matchAmbulances(withChembur, { query: "Pant Nagar" }))).toEqual([]);
+    });
+  });
+
+  it("a city merely similar to a covered one gets no fallback (Nagaur is not Nagpur)", () => {
+    const withNagpur = [...rows, row({ id: "nagpur", city: "Nagpur", areasCovered: ["Nagpur"] })];
+    const r = matchAmbulances(withNagpur, { city: "Nagaur", query: "gaay ghayal hai" });
+    expect(r.candidates).toEqual([]);
+    expect(r.outOfCoverage).toBe(true);
+  });
+
+  it("an uncovered city passed as the city is out of coverage (Lucknow)", () => {
+    const r = matchAmbulances(rows, { city: "Lucknow", query: "Lucknow" });
+    expect(r.candidates).toEqual([]);
+    expect(r.outOfCoverage).toBe(true);
+  });
+
+  it("a bare generic word matches nothing, not even as a substring (Nagar, Road)", () => {
+    const withGeneric = [
+      ...rows,
+      row({ id: "chembur", city: "Mumbai", area: "Chembur", areasCovered: ["Chembur", "Tilak Nagar"] }),
+      row({ id: "mira", city: "Mumbai", area: "Mira Road", areasCovered: ["Mira Road", "Bhayandar"] }),
+    ];
+    expect(ids(matchAmbulances(withGeneric, { query: "Nagar" }))).toEqual([]);
+    expect(ids(matchAmbulances(withGeneric, { query: "Road" }))).toEqual([]);
+  });
+
+  it("an ordinary word never breaks the neighbour lookup (constructor)", () => {
+    const r = matchAmbulances(rows, { query: "dog near the constructor site" });
+    expect(r.candidates).toEqual([]);
+    expect(r.outOfCoverage).toBe(true);
+  });
+
+  it("neighbour keys match a word or an adjacent word pair inside longer text", () => {
+    const r = matchAmbulances(rows, { query: "goregaon east mein kutta" });
+    expect(r.match).toBe("neighbour");
+    expect(ids(r)).toEqual(["andheri", "malad"]);
+    expect(ids(matchAmbulances(rows, { query: "dog hurt near vile parle east station" }))).toEqual(["andheri"]);
+  });
+
+  describe("filler words in the reporter's text", () => {
+    const withDadar = [...rows, row({ id: "dadar", city: "Mumbai", area: "Dadar", areasCovered: ["Dadar", "Matunga"] })];
+
+    it.each([
+      "Lucknow mein kutta ghayal hai madad karo", // madad is one letter from Malad
+      "Lucknow mein mere ghar ke paas kutta ghayal hai", // ghar is one letter from Khar
+      "Lucknow mein haalat bahut kharab hai", // the neighbour key "khar" is inside "kharab"
+      "Lucknow mein bahut tension hai", // the neighbour key "sion" is inside "tension"
+    ])("match no unit in an uncovered city: %s", (query) => {
+      const r = matchAmbulances(withDadar, { city: "Lucknow", query });
+      expect(r.candidates).toEqual([]);
+      expect(r.outOfCoverage).toBe(true);
+    });
+
+    it("a word from a unit's label matches nothing (hope you can help)", () => {
+      const labelled = rows.map((u) => (u.id === "rajkotB" ? { ...u, label: "Rajkot - Hope" } : u));
+      const r = matchAmbulances(labelled, { query: "hope you can help" });
+      expect(r.candidates).toEqual([]);
+      expect(r.outOfCoverage).toBe(true);
+      // A bare label word is a whole-needle substring (tier 3) rather than a token (tier 4).
+      expect(ids(matchAmbulances(labelled, { query: "Hope" }))).toEqual([]);
+    });
+
+    it("in a covered city they fall back to the whole city (Borivali)", () => {
+      const r = matchAmbulances(rows, { city: "Mumbai", area: "Borivali", query: "Borivali mein mere ghar ke paas kutta ghayal hai" });
+      expect(r.match).toBe("city");
+      expect(ids(r)).toEqual(["andheri", "bandra", "ghatkopar", "malad"]);
     });
   });
 });

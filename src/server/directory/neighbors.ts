@@ -53,16 +53,13 @@ const NEIGHBOR_MAP: Record<string, string[]> = {
 };
 
 /**
- * Given a location query (lowercased, normalized), return ordered candidate
- * neighbors that we *might* have ambulance coverage in.
+ * Given a location key (lowercased, normalized), return ordered candidate
+ * neighbors that we *might* have ambulance coverage in. Exact keys only: the
+ * matcher passes single words and word pairs ("goregaon", "vile parle"), so a
+ * word that merely contains a key ("kharab", "tension") finds nothing.
+ * Object.hasOwn keeps a word like "constructor" off Object.prototype.
  */
 export function neighborCandidates(query: string): string[] {
   const q = query.toLowerCase().trim();
-  // Exact key hit
-  if (NEIGHBOR_MAP[q]) return NEIGHBOR_MAP[q];
-  // Token contains a known neighbor key (e.g. "goregaon east")
-  for (const key of Object.keys(NEIGHBOR_MAP)) {
-    if (q.includes(key)) return NEIGHBOR_MAP[key];
-  }
-  return [];
+  return Object.hasOwn(NEIGHBOR_MAP, q) ? NEIGHBOR_MAP[q] : [];
 }

@@ -13,7 +13,7 @@ const LATIN_ALIASES: Record<string, string> = {
 const INDIC_ALIASES: Record<string, string> = {
   // cities — Devanagari
   "मुंबई": "mumbai", "मुम्बई": "mumbai", "पुणे": "pune", "नागपुर": "nagpur", "नागपूर": "nagpur", "सोलापुर": "solapur",
-  "सोलापूर": "solapur", "अमरावती": "amravati", "दिल्ली": "delhi", "अहमदाबाद": "ahmedabad", "सूरत": "surat",
+  "सोलापूर": "solapur", "अमरावती": "amravati", "दिल्ली": "delhi", "अहमदाबाद": "ahmedabad", "सूरत": "surat", "सुरत": "surat",
   "वडोदरा": "vadodara", "राजकोट": "rajkot", "जामनगर": "jamnagar", "भावनगर": "bhavnagar", "गांधीनगर": "gandhinagar",
   "इंदौर": "indore", "कोलकाता": "kolkata", "चेन्नई": "chennai", "हैदराबाद": "hyderabad", "बेंगलुरु": "bengaluru",
   "बैंगलोर": "bengaluru", "गुरुग्राम": "gurugram", "गुड़गांव": "gurugram",
@@ -30,7 +30,7 @@ const INDIC_ALIASES: Record<string, string> = {
   "વેસુ": "vesu", "વરાછા": "varachha", "ઘાટકોપર": "ghatkopar", "અંધેરી": "andheri",
 };
 
-/** Strip common Indic case suffixes glued to place names ("सुरतमां", "મુંબઈમાં", "पुण्यात"). */
+/** Strip common Indic case suffixes glued to place names ("सुरतमां", "મુંબઈમાં", "नागपुरात"). */
 const INDIC_SUFFIXES = ["माँ", "मां", "में", "मे", "ला", "ात", "मध्ये", "માં", "મા", "ના", "થી"];
 
 function stripIndicSuffix(token: string): string {
@@ -53,10 +53,9 @@ export function applyCityAliases(s: string): string {
       if (Object.hasOwn(INDIC_ALIASES, token)) return INDIC_ALIASES[token];
       const stripped = stripIndicSuffix(token);
       if (Object.hasOwn(INDIC_ALIASES, stripped)) return INDIC_ALIASES[stripped];
-      // Marathi locative "पुण्यात" → "पुणे" is irregular; handle the covered cities explicitly.
+      // Marathi locatives the suffix list does not cover: "पुण्यात" (the stem of पुणे changes) and "मुंबईत".
       if (token === "पुण्यात") return "pune";
-      if (token === "मुंबईत" || token === "मुंबईला") return "mumbai";
-      if (token === "नागपुरात") return "nagpur";
+      if (token === "मुंबईत") return "mumbai";
       return token;
     })
     .join(" ");
