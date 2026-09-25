@@ -72,3 +72,6 @@ ambulances-clinics-*.xlsx
 *.cases-export.json
 *.cases-export.csv
 arham-private/
+
+# Codex CLI config (contains tokens)
+.codex/
