@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { resetDb, createConversation } from "../helpers/db";
 import { seedDirectory } from "../helpers/fixtures";
 import { getDb } from "@/server/db/client";
-import { conversations, events, messages, turns } from "@/server/db/schema";
+import { conversations, events, messages, turns, workerState } from "@/server/db/schema";
 import { storeReporterMessage } from "@/server/inbound/store";
 import * as store from "@/server/inbound/store";
 import { setFetchForTests } from "@/server/interakt/client";
@@ -44,14 +44,41 @@ describe("pause state", () => {
     expect((await getWorkerState()).lastHeartbeatAt).not.toBeNull();
   });
   it("treats an expired pause as not paused", async () => {
-    await pauseClaude(new Date(Date.now() - 1000), "LIMITED");
+    await getWorkerState();
+    await getDb().update(workerState).set({ claudePausedUntil: new Date(Date.now() - 1000), pauseReason: "LIMITED" });
     expect(await isClaudePaused()).toBe(false);
   });
   it("is no longer paused at the exact instant the pause ends", async () => {
-    const until = new Date(Date.now() + 60_000);
+    const until = new Date(Date.now() + 10 * 60_000);
     await pauseClaude(until, "LIMITED");
     expect(await isClaudePaused(new Date(until.getTime() - 1))).toBe(true);
     expect(await isClaudePaused(until)).toBe(false);
+  });
+  it("never shortens a pause: a shorter later pause keeps the longer one and its reason, a longer one extends it", async () => {
+    const now = Date.now();
+    const pause = async () => {
+      const s = await getWorkerState();
+      return [s.claudePausedUntil?.getTime(), s.pauseReason];
+    };
+    await pauseClaude(new Date(now + 60 * 60_000), "AUTH");
+    await pauseClaude(new Date(now + 5 * 60_000), "LIMITED");
+    expect(await pause()).toEqual([now + 60 * 60_000, "AUTH"]);
+    await pauseClaude(new Date(now + 2 * 60 * 60_000), "LIMITED");
+    expect(await pause()).toEqual([now + 2 * 60 * 60_000, "LIMITED"]);
+  });
+  it("pauses for at least a minute, even when asked to pause until a time already past", async () => {
+    const now = new Date();
+    await pauseClaude(new Date(now.getTime() - 1000), "LIMITED", now);
+    expect((await getWorkerState()).claudePausedUntil?.getTime()).toBe(now.getTime() + 60_000);
+    expect(await isClaudePaused()).toBe(true);
+  });
+  it("replaces an expired pause and its reason", async () => {
+    await getWorkerState();
+    await getDb().update(workerState).set({ claudePausedUntil: new Date(Date.now() - 60_000), pauseReason: "AUTH" });
+    const until = new Date(Date.now() + 10 * 60_000);
+    await pauseClaude(until, "LIMITED");
+    const s = await getWorkerState();
+    expect([s.claudePausedUntil?.getTime(), s.pauseReason]).toEqual([until.getTime(), "LIMITED"]);
   });
 });
 

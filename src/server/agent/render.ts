@@ -26,6 +26,12 @@ export interface RenderResult {
   text: string;
   /** The model's reply with every token in canonical form ({{AMB:<handle>}}): what `text` was rendered from. */
   template: string;
+  /**
+   * `template` with every dropped token and leftover syntax removed and the text's formatting cleanup applied: the
+   * template of what `text` says, holding a token for each number it shows (the card excepted), so a transcript built
+   * from it never shows the model writing something the reporter did not get.
+   */
+  sentTemplate: string;
   /** Every number in `text` as stored: the substituted tokens' in order of first use, then the card's. */
   inserted: string[];
   unknownHandles: string[];
@@ -154,14 +160,21 @@ export async function renderReply(input: RenderInput): Promise<RenderResult> {
 
   // Leftovers are removed only from the text between tokens, so no cleanup can cut into an inserted number.
   const between = (s: string) => dropLeftovers(s.replace(PRIVATE_USE_RE, ""), unknownHandles);
+  const tidy = (s: string) => cleanupFormatting(s.replace(/[ \t]{2,}/g, " ").replace(/ +([.,!?])/g, "$1"));
+  // The sent template is assembled beside the text: each substituted token stays a token, each dropped one goes.
   let text = "";
+  let sent = "";
   let last = 0;
   for (const m of tokens) {
-    text += between(template.slice(last, m.index)) + (slotOf.get(tokenKey(m[1], m[2])) ?? "");
+    const gap = between(template.slice(last, m.index));
+    const slot = slotOf.get(tokenKey(m[1], m[2])) ?? "";
+    text += gap + slot;
+    sent += gap + (slot === "" ? "" : m[0]);
     last = m.index + m[0].length;
   }
-  text += between(template.slice(last));
-  text = cleanupFormatting(text.replace(/[ \t]{2,}/g, " ").replace(/ +([.,!?])/g, "$1"));
+  const tail = between(template.slice(last));
+  text = tidy(text + tail);
+  const sentTemplate = tidy(sent + tail);
 
   let card = "";
   const cands = input.lastAmbulanceCandidates ?? [];
@@ -180,6 +193,7 @@ export async function renderReply(input: RenderInput): Promise<RenderResult> {
   return {
     text: card ? (body ? `${body}\n\n${card}` : card) : body,
     template,
+    sentTemplate,
     inserted,
     unknownHandles,
     appendedCard: card !== "",

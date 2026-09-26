@@ -18,6 +18,8 @@ export interface TurnDeps {
   backend?: LLMBackend;
   /** The clock for the pause check, the prompt's time and the transcript; the system clock when absent. */
   now?: () => Date;
+  /** A monotonic clock in milliseconds for the Claude turn's time budget; performance.now() when absent. */
+  nowMs?: () => number;
 }
 
 export type TurnOutcome = {
@@ -131,6 +133,7 @@ async function runTurnLocked(conversationId: string, deps: TurnDeps): Promise<Tu
   // Everything else goes to Claude, a bare greeting after the welcome included: the prompt answers it with one warm
   // line, never the menu again.
   const now = deps.now ?? (() => new Date());
-  const r = await runClaudeTurn({ conversation, pending, lang, welcomeJustSent, backend: deps.backend, now });
+  const nowMs = deps.nowMs ?? (() => performance.now());
+  const r = await runClaudeTurn({ conversation, pending, lang, welcomeJustSent, backend: deps.backend, now, nowMs });
   return { kind: r.outcome, turnId: r.turnId, requeued: await requeueIfPending(conversation.id) };
 }

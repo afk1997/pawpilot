@@ -112,6 +112,18 @@ describe("renderReply guards", () => {
     expect(broken.unknownHandles).toEqual(["amb_x", "{AMB:amb_x}", "{{"]);
   });
 
+  it("gives a sent template that drops what the text drops and keeps a token for each number the text shows", async () => {
+    const r = new HandleRegistry("conv");
+    const hg = r.ambulance("g");
+    const out = await renderReply(base(r, {
+      replyTemplate: `**Call** {{amb: ${hg}}} or {{AMB:amb_zzzzzzzz}} or {{PHONE:98765}} or {{{PHONE:helpline}}} now`,
+      lastAmbulanceCandidates: [wadala],
+    }));
+    expect(out.text).toBe("*Call* +91 70000 00001 or or or +91 99999 00000 now");
+    expect(out.sentTemplate).toBe(`*Call* {{AMB:${hg}}} or or or {{PHONE:helpline}} now`);
+    expect(out.template).toBe(`**Call** {{AMB:${hg}}} or {{AMB:amb_zzzzzzzz}} or {{PHONE:98765}} or {{{PHONE:helpline}}} now`);
+  });
+
   it("keeps the inserted number when a token is wrapped in extra braces", async () => {
     const r = new HandleRegistry("conv");
     const hg = r.ambulance("g");

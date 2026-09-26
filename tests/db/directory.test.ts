@@ -24,6 +24,14 @@ describe("directory repo", () => {
     expect(clinicById.get(ids.clinicSurat)).toMatchObject({ label: "Arham Clinic Surat", phone: "+912612345678", hours: "9am-7pm" });
   });
 
+  it("resolves ids to active units and clinics only, so a handle issued before an ingest never renders a retired number", async () => {
+    const ids = await seedDirectory();
+    await getDb().update(ambulances).set({ active: false }).where(eq(ambulances.id, ids.ghatkopar));
+    await getDb().update(clinics).set({ active: false }).where(eq(clinics.id, ids.clinicSurat));
+    expect([...(await getAmbulancesByIds([ids.ghatkopar, ids.malad])).keys()]).toEqual([ids.malad]);
+    expect((await getClinicsByIds([ids.clinicSurat])).size).toBe(0);
+  });
+
   it("builds and caches the coverage summary", async () => {
     const ids = await seedDirectory();
     const s1 = await getCoverageSummary();

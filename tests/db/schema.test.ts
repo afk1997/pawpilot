@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
 import { messages, conversations } from "@/server/db/schema";
 import { resetDb, createConversation } from "../helpers/db";
@@ -7,6 +7,16 @@ import { seedDirectory } from "../helpers/fixtures";
 
 describe("schema", () => {
   beforeEach(resetDb);
+
+  it("indexes messages by the turn that sent them and by the turn that answered them", async () => {
+    const rows = await getDb().execute<{ indexname: string; indexdef: string }>(
+      sql`select indexname, indexdef from pg_indexes where tablename = 'messages' and indexname in ('messages_turn_idx', 'messages_answered_turn_idx') order by indexname`
+    );
+    expect(rows.map((r) => [r.indexname, /\((\w+)\)$/.exec(r.indexdef)?.[1]])).toEqual([
+      ["messages_answered_turn_idx", "answered_turn_id"],
+      ["messages_turn_idx", "turn_id"],
+    ]);
+  });
 
   it("seeds the directory fixture", async () => {
     const ids = await seedDirectory();

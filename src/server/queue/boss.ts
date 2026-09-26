@@ -3,6 +3,11 @@ import { getConfig } from "../config";
 import { log } from "../log";
 
 export const TURN_QUEUE = "turn";
+/**
+ * How long a turn job may run before pg-boss expires and retries it: well above a Claude turn's 100 s budget, so a
+ * slow turn is never retried while it still runs.
+ */
+const TURN_EXPIRE_SECONDS = 240;
 
 export interface TurnJobData {
   conversationId: string;
@@ -46,8 +51,11 @@ export function getBoss(role: "app" | "worker" = "app"): Promise<PgBoss> {
           retryLimit: 2,
           retryBackoff: true,
           retryDelay: 5,
-          expireInSeconds: 120,
+          expireInSeconds: TURN_EXPIRE_SECONDS,
         });
+      } else if (existing.expireInSeconds !== TURN_EXPIRE_SECONDS) {
+        // A queue an older version created keeps its options until they are updated.
+        await boss.updateQueue(TURN_QUEUE, { expireInSeconds: TURN_EXPIRE_SECONDS });
       }
     } catch (err) {
       await boss.stop().catch(() => undefined);

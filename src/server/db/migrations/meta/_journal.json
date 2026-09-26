@@ -15,6 +15,13 @@
       "when": 1790413031607,
       "tag": "0001_message_turn_id",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1790416785004,
+      "tag": "0002_message_turn_indexes",
+      "breakpoints": true
     }
   ]
 }

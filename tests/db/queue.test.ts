@@ -38,7 +38,16 @@ describe("queue", () => {
     const q = await boss.getQueue(TURN_QUEUE);
     expect(q?.policy).toBe("singleton");
     expect(q?.retryLimit).toBe(2);
-    expect(q?.expireInSeconds).toBe(120);
+    // Well above a Claude turn's 100 s budget, so a slow turn is never expired and retried while it still runs.
+    expect(q?.expireInSeconds).toBe(240);
+  });
+
+  it("raises the expiry of a turn queue an older version created", async () => {
+    const boss = await getBoss("worker");
+    await boss.updateQueue(TURN_QUEUE, { expireInSeconds: 120 });
+    await stopBoss();
+    const restarted = await getBoss("worker");
+    expect((await restarted.getQueue(TURN_QUEUE))?.expireInSeconds).toBe(240);
   });
 
   it("refuses the worker role while an app-role instance is starting or started", async () => {

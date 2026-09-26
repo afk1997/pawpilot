@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { getDb } from "../db/client";
 import { workerState } from "../db/schema";
 
@@ -22,9 +22,25 @@ export async function isClaudePaused(now: Date = new Date()): Promise<boolean> {
   return !!s.claudePausedUntil && s.claudePausedUntil.getTime() > now.getTime();
 }
 
-export async function pauseClaude(until: Date, reason: string): Promise<void> {
+/** The shortest pause: a reset time already past (or a clock skewed behind the database's) still pauses. */
+const MIN_PAUSE_MS = 60_000;
+
+/**
+ * Pauses Claude until `until`, at least MIN_PAUSE_MS after `now`. A pause never shortens one already in force (two
+ * workers, or an AUTH pause followed by a LIMITED one): the later end wins, with its reason.
+ */
+export async function pauseClaude(until: Date, reason: string, now: Date = new Date()): Promise<void> {
   await ensureRow();
-  await getDb().update(workerState).set({ claudePausedUntil: until, pauseReason: reason }).where(eq(workerState.singleton, true));
+  // As a timestamptz literal: a Date inside raw sql reaches the driver unserialized.
+  const end = sql`${new Date(Math.max(until.getTime(), now.getTime() + MIN_PAUSE_MS)).toISOString()}::timestamptz`;
+  const current = workerState.claudePausedUntil;
+  await getDb()
+    .update(workerState)
+    .set({
+      claudePausedUntil: sql`greatest(coalesce(${current}, ${end}), ${end})`,
+      pauseReason: sql`case when ${current} is null or ${current} <= ${end} then ${reason} else ${workerState.pauseReason} end`,
+    })
+    .where(eq(workerState.singleton, true));
 }
 
 export async function clearClaudePause(): Promise<void> {

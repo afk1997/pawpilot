@@ -3,7 +3,7 @@ import { asc, eq } from "drizzle-orm";
 import { resetDb, createConversation } from "../helpers/db";
 import { seedDirectory, type DirectoryIds } from "../helpers/fixtures";
 import { getDb } from "@/server/db/client";
-import { conversations, events, messages, turns } from "@/server/db/schema";
+import { ambulances, conversations, events, messages, turns } from "@/server/db/schema";
 import { storeReporterMessage } from "@/server/inbound/store";
 import { runTurn } from "@/server/worker/turn-runner";
 import { stopBoss } from "@/server/queue/boss";
@@ -14,6 +14,7 @@ import { createTurn, finishTurn } from "@/server/worker/persist";
 import { getWorkerState, isClaudePaused, pauseClaude } from "@/server/worker/pause";
 import type { LLMBackend, ObservedToolUse, TurnInput, TurnResult } from "@/server/agent/types";
 import * as agent from "@/server/agent";
+import * as render from "@/server/agent/render";
 import { formatIst } from "@/server/agent/prompt";
 import { findDigitRuns } from "@/server/agent/scrub";
 import { setFetchForTests } from "@/server/interakt/client";
@@ -146,8 +147,7 @@ describe("runTurn with a backend", () => {
     const backend = new FakeBackend([errorResult("INVALID_OUTPUT"), errorResult("TRANSIENT"), errorResult("TRANSIENT")]);
     const r = await runTurn(c.id, { backend });
     expect(r.kind).toBe("fallback");
-    expect(backend.calls.length).toBeGreaterThanOrEqual(2);
-    expect(backend.calls.length).toBeLessThanOrEqual(3);
+    expect(backend.calls).toHaveLength(2);
     const c2 = await conv();
     await storeReporterMessage(c2.id, { kind: "text", content: "hello again" });
     const b2 = new FakeBackend([errorResult("TRANSIENT"), okReply({ reply: "Namaste! Kaise madad karun?", language: "hi", intent: "smalltalk" })]);
@@ -241,8 +241,8 @@ describe("the Claude turn's guards, audit and context", () => {
     expect(backend.calls).toHaveLength(2);
     const [m] = await outbound(c.id);
     expect(m.content).toBe("Call or now.");
+    expect(m.contentTemplate).toBe("Call or now.");
     expect(findDigitRuns(m.contentTemplate!)).toEqual([]);
-    expect(m.contentTemplate).not.toContain("{{PHONE:");
     const t = await lastTurn(c.id);
     expect(t.scrubbed).toBe(true);
     const [ev] = await eventsOf("scrub_strip");
@@ -252,13 +252,15 @@ describe("the Claude turn's guards, audit and context", () => {
   it("records only handle-shaped drops as unknown_handle events and keeps dropped syntax on the turn", async () => {
     const c = await conv();
     await storeReporterMessage(c.id, { kind: "text", content: "number?" });
-    const backend = new FakeBackend([okReply({ reply: "Call {{AMB:amb_zzzzzzzz}} or {AMB:x} now.", notes: "n" })]);
+    // amb_pppppppp has a handle's shape; amb_zzzzzzzz does not (handles use the letters a to p only).
+    const backend = new FakeBackend([okReply({ reply: "Call {{AMB:amb_pppppppp}} or {{AMB:amb_zzzzzzzz}} or {AMB:x} now.", notes: "n" })]);
     await runTurn(c.id, { backend });
     expect(backend.calls).toHaveLength(1);
     const [m] = await outbound(c.id);
-    expect(m.content).toBe("Call or now.");
+    expect(m.content).toBe("Call or or now.");
+    expect(m.contentTemplate).toBe("Call or or now.");
     const t = await lastTurn(c.id);
-    expect((await eventsOf("unknown_handle")).map((e) => e.payload)).toEqual([{ turnId: t.id, handles: ["amb_zzzzzzzz"] }]);
+    expect((await eventsOf("unknown_handle")).map((e) => e.payload)).toEqual([{ turnId: t.id, handles: ["amb_pppppppp"] }]);
     expect(t.structuredOutput).toMatchObject({ notes: "n", droppedSyntax: ["{AMB:x}"] });
     expect(t.scrubbed).toBe(false);
   });
@@ -396,12 +398,12 @@ describe("the Claude turn's guards, audit and context", () => {
     await storeReporterMessage(c.id, { kind: "text", content: "surat" });
     const backend = new FakeBackend([async (input: TurnInput) => {
       await findAmbulancesImpl(input.toolContext!, { city: "Surat", area: null, query: "surat" });
-      return withToolUses(errorResult("TRANSIENT", "timed out"), [{ name: "mcp__arham__find_ambulances", isError: false }, { name: "Bash", isError: true }]);
+      return withToolUses(errorResult("TRANSIENT", "assistant error: server_error"), [{ name: "mcp__arham__find_ambulances", isError: false }, { name: "Bash", isError: true }]);
     }]);
     const r = await runTurn(c.id, { backend });
     expect(r.kind).toBe("fallback");
     const [claude] = await turnsOf(c.id);
-    expect([claude.status, claude.error, claude.sessionId]).toEqual(["failed", "claude_transient: timed out", null]);
+    expect([claude.status, claude.error, claude.sessionId]).toEqual(["failed", "claude_transient: assistant error: server_error", null]);
     expect((claude.toolCalls as { name: string }[]).map((x) => x.name)).toEqual(["find_ambulances", "find_ambulances", "Bash", "Bash"]);
   });
 
@@ -436,14 +438,17 @@ describe("the Claude turn's guards, audit and context", () => {
     expect(backend.calls[0].prompt).toContain("Location known so far: unknown");
   });
 
-  it("lists as shared only the handles in replies the reporter received", async () => {
+  it("lists as shared only the handles in replies whose send did not fail", async () => {
     const c = await conv();
-    const [h1, h2, h3] = [ids.ghatkopar, ids.malad, ids.andheri].map((id) => makeHandle("ambulance", c.id, id));
+    const [h1, h2, h3, h4] = [ids.ghatkopar, ids.malad, ids.andheri, ids.bandra].map((id) => makeHandle("ambulance", c.id, id));
     const old = await createTurn({ conversationId: c.id, status: "ok" });
     await finishTurn(old.id, {
-      handles: { [h1]: { kind: "ambulance", id: ids.ghatkopar }, [h2]: { kind: "ambulance", id: ids.malad }, [h3]: { kind: "ambulance", id: ids.andheri } },
+      handles: {
+        [h1]: { kind: "ambulance", id: ids.ghatkopar }, [h2]: { kind: "ambulance", id: ids.malad },
+        [h3]: { kind: "ambulance", id: ids.andheri }, [h4]: { kind: "ambulance", id: ids.bandra },
+      },
     });
-    const reply = (template: string, deliveryStatus: string, minutesAgo: number) => ({
+    const reply = (template: string, deliveryStatus: string | null, minutesAgo: number) => ({
       conversationId: c.id, role: "assistant" as const, origin: "agent" as const, content: "x", contentTemplate: template, deliveryStatus,
       createdAt: new Date(Date.now() - minutesAgo * 60_000),
     });
@@ -451,11 +456,12 @@ describe("the Claude turn's guards, audit and context", () => {
       reply(`Call {{AMB:${h1}}}`, "sent", 4),
       reply(`Call {{AMB:${h2}}}`, "failed", 3),
       reply(`Call {{AMB:${h3}}} or {{AMB:amb_zzzzzzzz}} or {{PHONE:helpline}}, or {{AMB:${h1}}} again`, "test_skipped", 2),
+      reply(`Or {{AMB:${h4}}}`, null, 1),
     ]);
     await storeReporterMessage(c.id, { kind: "text", content: "not reachable" });
     const backend = new FakeBackend([okReply({ reply: "Okay." })]);
     await runTurn(c.id, { backend });
-    expect(backend.calls[0].prompt).toContain(`Handles already shared in this chat: ${h1}, ${h3}\n`);
+    expect(backend.calls[0].prompt).toContain(`Handles already shared in this chat: ${h1}, ${h3}, ${h4}\n`);
   });
 
   it("uses the injected clock for the pause check, the prompt's time and the transcript", async () => {
@@ -537,5 +543,238 @@ describe("the Claude turn's guards, audit and context", () => {
     expect(lines.length).toBeGreaterThan(0);
     const logged = JSON.stringify(lines);
     expect(logged).not.toMatch(/Ring|please|not logged in|reporter \+|9876543210|9812345678/);
+  });
+});
+
+describe("the Claude turn's time budget, audit totals and failure handling", () => {
+  beforeEach(async () => { await stopBoss(); await resetDb(); ids = await seedDirectory(); });
+  afterEach(async () => {
+    await stopBoss();
+    vi.restoreAllMocks();
+  });
+
+  /** A monotonic clock the steps move forward, standing in for the time each backend call takes. */
+  const fakeClock = () => {
+    const clock = { ms: 0, nowMs: () => clock.ms };
+    return clock;
+  };
+
+  it("gives each backend call what is left of the turn's budget, at most the configured timeout", async () => {
+    const c = await conv();
+    await storeReporterMessage(c.id, { kind: "text", content: "surat" });
+    const clock = fakeClock();
+    const timeouts: number[] = [];
+    const backend = new FakeBackend([
+      (input: TurnInput) => {
+        timeouts.push(input.timeoutMs);
+        clock.ms += 50_000;
+        return errorResult("TRANSIENT", "mcp_not_connected: arham status=pending");
+      },
+      (input: TurnInput) => {
+        timeouts.push(input.timeoutMs);
+        return okReply({ reply: "Which area of Surat?" });
+      },
+    ]);
+    expect((await runTurn(c.id, { backend, nowMs: clock.nowMs })).kind).toBe("ok");
+    // 100 s budget less a 10 s reserve: 45 s (the configured timeout) first, then the 40 s left.
+    expect(timeouts).toEqual([45_000, 40_000]);
+  });
+
+  it("skips the retry and falls back at once when the budget cannot cover another call", async () => {
+    const c = await conv();
+    await storeReporterMessage(c.id, { kind: "text", content: "surat" });
+    const clock = fakeClock();
+    const backend = new FakeBackend([() => {
+      clock.ms += 80_000;
+      return errorResult("TRANSIENT", "mcp_not_connected: arham status=pending");
+    }]);
+    const r = await runTurn(c.id, { backend, nowMs: clock.nowMs });
+    expect(r.kind).toBe("fallback");
+    expect(backend.calls).toHaveLength(1);
+    const [claude, fallback] = await turnsOf(c.id);
+    expect([claude.status, fallback.error]).toEqual(["failed", "claude_transient"]);
+    expect((await eventsOf("retry_skipped")).map((e) => e.payload)).toEqual([
+      { turnId: claude.id, purpose: "retry", reason: "budget", remainingMs: 10_000 },
+    ]);
+    expect((await outbound(c.id))[0].content).toContain("Arham Animal Ambulance, Surat");
+  });
+
+  it("never retries a transient failure that was a timeout", async () => {
+    const c = await conv();
+    await storeReporterMessage(c.id, { kind: "text", content: "surat" });
+    const backend = new FakeBackend([errorResult("TRANSIENT", "turn timed out"), okReply({ reply: "too late" })]);
+    const r = await runTurn(c.id, { backend });
+    expect(r.kind).toBe("fallback");
+    expect(backend.calls).toHaveLength(1);
+    const [claude] = await turnsOf(c.id);
+    expect(claude.error).toBe("claude_transient: turn timed out");
+    expect((await eventsOf("retry_skipped")).map((e) => e.payload)).toEqual([
+      { turnId: claude.id, purpose: "retry", reason: "timed_out", remainingMs: expect.any(Number) },
+    ]);
+  });
+
+  it.each([
+    ["token", "Call 9876543210 now.", "Call now."],
+    ["dispatch", "We are sending the ambulance now. Call {{PHONE:helpline}}.", "Please call them directly and they will guide you. Call +91 99999 00000."],
+  ] as const)("skips a %s correction the budget cannot cover and guards the draft it has", async (purpose, reply, sent) => {
+    const c = await conv();
+    await storeReporterMessage(c.id, { kind: "text", content: "surat" });
+    const clock = fakeClock();
+    const backend = new FakeBackend([() => {
+      clock.ms += 80_000;
+      return okReply({ reply });
+    }]);
+    expect((await runTurn(c.id, { backend, nowMs: clock.nowMs })).kind).toBe("ok");
+    expect(backend.calls).toHaveLength(1);
+    expect((await outbound(c.id))[0].content).toBe(sent);
+    const t = await lastTurn(c.id);
+    expect((await eventsOf("retry_skipped")).map((e) => e.payload)).toEqual([{ turnId: t.id, purpose, reason: "budget", remainingMs: 10_000 }]);
+  });
+
+  it("sums usage over every attempt and records the turn's wall-clock latency", async () => {
+    const c = await conv();
+    await storeReporterMessage(c.id, { kind: "text", content: "helpline?" });
+    const clock = fakeClock();
+    const backend = new FakeBackend([
+      () => {
+        clock.ms += 3_000;
+        return withToolUses(okReply({ reply: "Call 9876543210 now." }), [], { extraUsage: true });
+      },
+      () => {
+        clock.ms += 2_000;
+        return okReply({ reply: "Call {{PHONE:helpline}} now." });
+      },
+    ]);
+    await runTurn(c.id, { backend, nowMs: clock.nowMs });
+    const t = await lastTurn(c.id);
+    expect(t.usage).toEqual({ input_tokens: 20, output_tokens: 10, backendCalls: 2, extraUsage: true });
+    expect(t.latencyMs).toBe(5_000);
+  });
+
+  it("keeps model-typed digits out of every event payload", async () => {
+    const c = await conv();
+    await storeReporterMessage(c.id, { kind: "text", content: "helpline?" });
+    await runTurn(c.id, { backend: new FakeBackend([okReply({ reply: "Call {{PHONE:9876543210}} or {{AMB:98765 43210}} now." })]) });
+    const evs = await getDb().select().from(events).where(eq(events.conversationId, c.id));
+    expect(evs.map((e) => e.kind)).toEqual(["scrub_strip"]);
+    expect(JSON.stringify(evs.map((e) => e.payload))).not.toMatch(/98765|43210/);
+  });
+
+  describe("a handle whose unit was deactivated after it was shared", () => {
+    const STALE_NOTE = "Look the place up again with find_ambulances; a previously shared unit is no longer available.";
+    const staleHandle = async (conversationId: string) => {
+      const h = makeHandle("ambulance", conversationId, ids.ghatkopar);
+      const old = await createTurn({ conversationId, status: "ok" });
+      await finishTurn(old.id, { handles: { [h]: { kind: "ambulance", id: ids.ghatkopar } } });
+      await getDb().update(ambulances).set({ active: false }).where(eq(ambulances.id, ids.ghatkopar));
+      return h;
+    };
+
+    it("gets one correction that asks for a fresh lookup, and the retired number is never sent", async () => {
+      const c = await conv();
+      const h = await staleHandle(c.id);
+      await storeReporterMessage(c.id, { kind: "text", content: "number phir se bhejo" });
+      const backend = new FakeBackend([
+        okReply({ reply: `Number: {{AMB:${h}}}`, intent: "ambulance" }),
+        okReply({ reply: "Please call our helpline {{PHONE:helpline}}.", intent: "ambulance" }),
+      ]);
+      await runTurn(c.id, { backend });
+      expect(backend.calls).toHaveLength(2);
+      expect(backend.calls[1].prompt).toContain(`${TOKEN_CORRECTION_NOTE} ${STALE_NOTE}`);
+      const out = await outbound(c.id);
+      expect(out.map((m) => m.content)).toEqual(["Please call our helpline +91 99999 00000."]);
+      expect(await eventsOf("stale_handle")).toHaveLength(0);
+      expect(await eventsOf("unknown_handle")).toHaveLength(0);
+    });
+
+    it("records stale_handle, not unknown_handle, when the correction repeats it", async () => {
+      const c = await conv();
+      const h = await staleHandle(c.id);
+      await storeReporterMessage(c.id, { kind: "text", content: "number phir se bhejo" });
+      const backend = new FakeBackend([okReply({ reply: `Is number par call karein: {{AMB:${h}}}`, intent: "ambulance" })]);
+      await runTurn(c.id, { backend });
+      expect(backend.calls).toHaveLength(2);
+      const [m] = await outbound(c.id);
+      expect(m.content).toBe("Is number par call karein:");
+      expect(m.content).not.toContain("70000 00001");
+      expect((await eventsOf("stale_handle")).map((e) => e.payload)).toEqual([{ turnId: m.turnId, handles: [h] }]);
+      expect(await eventsOf("unknown_handle")).toHaveLength(0);
+    });
+  });
+
+  it("sends again, with its token in the template, a number an earlier draft gave that the corrected reply dropped", async () => {
+    const c = await conv();
+    const h = makeHandle("ambulance", c.id, ids.ghatkopar);
+    const old = await createTurn({ conversationId: c.id, status: "ok" });
+    await finishTurn(old.id, { handles: { [h]: { kind: "ambulance", id: ids.ghatkopar } } });
+    await storeReporterMessage(c.id, { kind: "text", content: "ghatkopar" });
+    const backend = new FakeBackend([
+      okReply({ reply: `Call {{AMB:${h}}} or 9876543210.`, intent: "ambulance" }),
+      okReply({ reply: "Please call the Ghatkopar ambulance right away.", intent: "ambulance" }),
+    ]);
+    await runTurn(c.id, { backend });
+    expect(backend.calls).toHaveLength(2);
+    const [m] = await outbound(c.id);
+    const line = "Please call them directly and they will guide you.";
+    expect(m.content).toBe(`Please call the Ghatkopar ambulance right away.\n\n${line} +91 70000 00001`);
+    expect(m.contentTemplate).toBe(`Please call the Ghatkopar ambulance right away.\n\n${line} {{AMB:${h}}}`);
+    expect((await eventsOf("number_restored")).map((e) => e.payload)).toEqual([{ turnId: m.turnId, count: 1 }]);
+    expect((await lastTurn(c.id)).scrubbed).toBe(false);
+  });
+
+  it("flags the conversation when any draft of the turn asked for a human", async () => {
+    const c = await conv();
+    await storeReporterMessage(c.id, { kind: "text", content: "I want a person" });
+    const backend = new FakeBackend([
+      okReply({ reply: "Call 9876543210.", needs_human: true }),
+      okReply({ reply: "Please call our helpline {{PHONE:helpline}}.", needs_human: false }),
+    ]);
+    await runTurn(c.id, { backend });
+    const row = await conversationRow(c.id);
+    expect([row.flagged, row.flagReason]).toEqual([true, "needs_human"]);
+    expect((await lastTurn(c.id)).structuredOutput).toMatchObject({ reply: "Please call our helpline {{PHONE:helpline}}.", needs_human: true });
+  });
+
+  it("falls back with internal_error, the error's class only, when the turn throws unexpectedly", async () => {
+    vi.spyOn(render, "renderReply").mockRejectedValueOnce(new Error("render broke on +919876543210"));
+    const error = vi.spyOn(log, "error").mockImplementation(() => undefined);
+    const c = await conv();
+    await storeReporterMessage(c.id, { kind: "text", content: "surat" });
+    const r = await runTurn(c.id, { backend: new FakeBackend([okReply({ reply: "Okay." })]) });
+    expect(r.kind).toBe("fallback");
+    expect(error).toHaveBeenCalledWith({ conversationId: c.id, errorClass: "Error" }, "claude turn failed unexpectedly");
+    expect(JSON.stringify(error.mock.calls)).not.toContain("9876543210");
+    const [claude, fallback] = await turnsOf(c.id);
+    expect([claude.status, claude.error]).toEqual(["failed", "internal_error: Error"]);
+    expect([fallback.id, fallback.error]).toEqual([r.turnId, "internal_error"]);
+    expect((await outbound(c.id)).map((m) => m.origin)).toEqual(["fallback"]);
+  });
+
+  it.each([
+    ["AUTH", errorResult("AUTH", "not logged in")],
+    ["LIMITED without a reset time", errorResult("LIMITED", "usage limit")],
+  ] as const)("pauses Claude for 15 minutes on %s", async (_label, result) => {
+    const c = await conv();
+    await storeReporterMessage(c.id, { kind: "text", content: "surat" });
+    const at = new Date();
+    expect((await runTurn(c.id, { backend: new FakeBackend([result]), now: () => at })).kind).toBe("fallback");
+    const state = await getWorkerState();
+    expect([state.claudePausedUntil?.getTime(), state.pauseReason]).toEqual([at.getTime() + 15 * 60_000, result.ok ? null : result.kind]);
+  });
+
+  it("pauses Claude on LIMITED from a corrective retry and still delivers the guarded draft it has", async () => {
+    const c = await conv();
+    await storeReporterMessage(c.id, { kind: "text", content: "helpline?" });
+    const backend = new FakeBackend([
+      okReply({ reply: "Call {{PHONE:helpline}} now. Or try 9876543210." }),
+      errorResult("LIMITED", "usage limit"),
+    ]);
+    expect((await runTurn(c.id, { backend })).kind).toBe("ok");
+    expect(backend.calls).toHaveLength(2);
+    expect((await outbound(c.id))[0].content).toBe("Call +91 99999 00000 now. Or try.");
+    expect(await isClaudePaused()).toBe(true);
+    expect(await eventsOf("claude_limited")).toHaveLength(1);
+    const t = await lastTurn(c.id);
+    expect([t.status, t.scrubbed]).toEqual(["ok", true]);
   });
 });

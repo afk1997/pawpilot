@@ -114,13 +114,16 @@ export const messages = pgTable(
     deliveryStatus: text("delivery_status"),
     error: text("error"),
     answeredTurnId: uuid("answered_turn_id").references(() => turns.id, { onDelete: "set null" }),
-    /** The turn that sent this assistant message; null for reporter messages. */
+    /** The turn that sent this assistant message; null for reporter messages and for replies sent outside a turn. */
     turnId: uuid("turn_id").references(() => turns.id, { onDelete: "set null" }),
     createdAt: ts("created_at").notNull().defaultNow(),
   },
   (t) => [
     index("messages_conversation_idx").on(t.conversationId, t.createdAt),
     uniqueIndex("messages_provider_message_id_idx").on(t.providerMessageId),
+    // Both reference turns with "on delete set null": deleting a turn must not scan every message.
+    index("messages_turn_idx").on(t.turnId),
+    index("messages_answered_turn_idx").on(t.answeredTurnId),
     index("messages_pending_idx")
       .on(t.conversationId)
       .where(sql`${t.role} = 'user' and ${t.answeredTurnId} is null`),
