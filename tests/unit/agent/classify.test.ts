@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildChildEnv, classifyOutcome } from "@/server/agent/claude-code-backend";
+import { DISALLOWED_TOOLS, buildChildEnv, classifyOutcome } from "@/server/agent/claude-code-backend";
 
 const success = (structured_output: unknown, extra: Record<string, unknown> = {}) => ({
   type: "result", subtype: "success", is_error: false, duration_ms: 1000, duration_api_ms: 900, num_turns: 2, result: "",
@@ -92,5 +92,12 @@ describe("buildChildEnv", () => {
   it("sets the OAuth token only when one is given", () => {
     expect(buildChildEnv(parent, { homeDir: "/h", oauthToken: "oauth-test" }).CLAUDE_CODE_OAUTH_TOKEN).toBe("oauth-test");
     expect(Object.hasOwn(buildChildEnv(parent, { homeDir: "/h" }), "CLAUDE_CODE_OAUTH_TOKEN")).toBe(false);
+  });
+});
+
+describe("DISALLOWED_TOOLS", () => {
+  it("denies the built-in tools and claude.ai connector tools, never this app's own MCP tools", () => {
+    expect(DISALLOWED_TOOLS).toEqual(expect.arrayContaining(["Bash", "Read", "Write", "Edit", "WebFetch", "WebSearch", "Task", "mcp__claude_ai_*"]));
+    expect(DISALLOWED_TOOLS.filter((t) => t === "mcp__*" || t.startsWith("mcp__arham"))).toEqual([]);
   });
 });

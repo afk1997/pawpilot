@@ -16,6 +16,12 @@ export interface StreamObservation {
 }
 
 const BUILTIN_TOOLS = ["Bash", "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "WebFetch", "WebSearch", "Task", "NotebookEdit", "TodoWrite", "KillShell", "BashOutput"];
+/**
+ * Tools the child may never call: every built-in, and any claude.ai connector tool (the CLI matches a deny rule's "*"
+ * against the whole tool name). The connector rule is belt-and-braces: strictMcpConfig already keeps connectors from
+ * loading. Never "mcp__*", which would also deny this app's own tools.
+ */
+export const DISALLOWED_TOOLS = [...BUILTIN_TOOLS, "mcp__claude_ai_*"];
 const AUTH_ERRORS = new Set(["authentication_failed", "oauth_org_not_allowed", "account_on_hold", "verification_required", "billing_error", "cloud_credential_error"]);
 /**
  * Never inherited by the child: an API key would bill the API instead of the Max plan, and the others belong to a
@@ -155,7 +161,7 @@ export class ClaudeCodeBackend implements LLMBackend {
           maxTurns: this.opts.maxTurns,
           mcpServers: input.toolServer ? { arham: input.toolServer } : {},
           allowedTools: input.allowedToolNames,
-          disallowedTools: BUILTIN_TOOLS,
+          disallowedTools: DISALLOWED_TOOLS,
           tools: [],
           permissionMode: "bypassPermissions",
           allowDangerouslySkipPermissions: true,
