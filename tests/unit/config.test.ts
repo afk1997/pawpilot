@@ -82,6 +82,36 @@ describe("getConfig", () => {
     }
   });
 
+  it("defaults the website to alwayscare.org", () => {
+    try {
+      vi.stubEnv("WEBSITE_URL", undefined);
+      resetConfigForTests();
+      expect(getConfig().websiteUrl).toBe("https://alwayscare.org");
+    } finally {
+      vi.unstubAllEnvs();
+      resetConfigForTests();
+    }
+  });
+
+  it("keeps extra usage off unless LLM_ALLOW_EXTRA_USAGE turns it on", () => {
+    try {
+      vi.stubEnv("LLM_ALLOW_EXTRA_USAGE", undefined);
+      resetConfigForTests();
+      expect(getConfig().claude.allowExtraUsage).toBe(false);
+      for (const [value, expected] of [["true", true], ["1", true], ["false", false], ["0", false], ["", false], [" ", false]] as const) {
+        vi.stubEnv("LLM_ALLOW_EXTRA_USAGE", value);
+        resetConfigForTests();
+        expect(getConfig().claude.allowExtraUsage, JSON.stringify(value)).toBe(expected);
+      }
+      vi.stubEnv("LLM_ALLOW_EXTRA_USAGE", "maybe");
+      resetConfigForTests();
+      expect(() => getConfig()).toThrow(/LLM_ALLOW_EXTRA_USAGE/);
+    } finally {
+      vi.unstubAllEnvs();
+      resetConfigForTests();
+    }
+  });
+
   it("trims the OAuth token, and reads one that is only whitespace as unset", () => {
     try {
       vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "  sk-ant-oat01-test\n");

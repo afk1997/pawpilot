@@ -20,10 +20,13 @@ run("ClaudeCodeBackend smoke (spends Max usage)", () => {
   it("answers a Ghatkopar request with a token and Hinglish", async () => {
     const ctx: ToolContext = { conversationId: "smoke", language: "hi", registry: new HandleRegistry("smoke"), calls: [], lastAmbulanceCandidates: null, lastAmbulanceMatch: null };
     const { server, allowedToolNames } = createArhamTools(ctx);
-    const backend = new ClaudeCodeBackend({ model: "claude-sonnet-5", effort: "medium", maxTurns: 6, oauthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN, homeDir: "/tmp/arham-claude-home-test" });
+    const backend = new ClaudeCodeBackend({
+      model: "claude-sonnet-5", effort: "medium", maxTurns: 6, oauthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN, homeDir: "/tmp/arham-claude-home-test",
+      allowExtraUsage: false,
+    });
     const res = await backend.runTurn({
       conversationId: "smoke",
-      systemPrompt: buildSystemPrompt({ coverage: await getCoverageSummary(), websiteUrl: "https://arhamalwayscare.org" }),
+      systemPrompt: buildSystemPrompt({ coverage: await getCoverageSummary(), websiteUrl: "https://alwayscare.org" }),
       prompt: buildTurnPrompt({ nowIst: formatIst(new Date()), language: null, knownLocation: null, handlesShared: [], welcomeJustSent: true, correction: null,
         transcript: "--- NEW MESSAGES (answer these) ---\n[10:03] Reporter: ghatkopar station ke paas kutta ghayal hai please jaldi" }),
       toolServer: server, allowedToolNames, timeoutMs: 60_000,

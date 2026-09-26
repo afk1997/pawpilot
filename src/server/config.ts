@@ -18,8 +18,11 @@ const envSchema = z.object({
   LLM_MAX_TURNS: z.coerce.number().int().min(1).max(20).default(6),
   LLM_TURN_TIMEOUT_MS: z.coerce.number().int().min(5_000).default(45_000),
   LLM_HOME_DIR: z.string().default("/tmp/arham-claude-home"),
+  // The owner's decision: no extra usage. Off (unset, empty or "false"), a turn that extra usage paid for is still
+  // delivered, and then Claude pauses until the plan's limit resets.
+  LLM_ALLOW_EXTRA_USAGE: z.preprocess((v) => (typeof v === "string" && v.trim() === "" ? undefined : v), z.stringbool().default(false)),
   HELPLINE_PHONE: e164.describe("HELPLINE_PHONE"),
-  WEBSITE_URL: z.string().url().default("https://arhamalwayscare.org"),
+  WEBSITE_URL: z.string().url().default("https://alwayscare.org"),
   ADMIN_PASSWORD: z.string().min(6),
   SESSION_SECRET: z.string().min(32),
   WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(8).default(4),
@@ -56,6 +59,8 @@ export interface AppConfig {
     maxTurns: number;
     turnTimeoutMs: number;
     homeDir: string;
+    /** False: a turn past the plan's limit is delivered, then Claude pauses until the reset. */
+    allowExtraUsage: boolean;
   };
   helplinePhone: string;
   websiteUrl: string;
@@ -94,6 +99,7 @@ export function getConfig(): AppConfig {
       maxTurns: e.LLM_MAX_TURNS,
       turnTimeoutMs: e.LLM_TURN_TIMEOUT_MS,
       homeDir: e.LLM_HOME_DIR,
+      allowExtraUsage: e.LLM_ALLOW_EXTRA_USAGE,
     },
     helplinePhone: e.HELPLINE_PHONE,
     websiteUrl: e.WEBSITE_URL,

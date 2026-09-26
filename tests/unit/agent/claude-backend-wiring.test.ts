@@ -55,8 +55,8 @@ const streamOf = (...messages: unknown[]) => () => (async function* () {
 })();
 
 let home: string;
-const backendAt = (homeDir: string, oauthToken?: string) =>
-  new ClaudeCodeBackend({ model: "claude-sonnet-5", effort: "medium", maxTurns: 6, oauthToken, homeDir });
+const backendAt = (homeDir: string, oauthToken?: string, allowExtraUsage = false) =>
+  new ClaudeCodeBackend({ model: "claude-sonnet-5", effort: "medium", maxTurns: 6, oauthToken, homeDir, allowExtraUsage });
 
 beforeEach(() => {
   home = mkdtempSync(path.join(tmpdir(), "arham-claude-wiring-"));
@@ -142,8 +142,17 @@ describe("ClaudeCodeBackend wiring", () => {
 
   it("logs extra usage, and a failure with its kind and latency only", async () => {
     const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
-    sdk.stream = streamOf(init(), { type: "rate_limit_event", rate_limit_info: { status: "rejected", overageStatus: "allowed" }, session_id: "s", uuid: "u" }, result());
-    expect(await backendAt(home).runTurn(input())).toMatchObject({ ok: true, extraUsage: true });
+    const overage = (resetsAt?: number) =>
+      ({ type: "rate_limit_event", rate_limit_info: { status: "rejected", overageStatus: "allowed", ...(resetsAt && { resetsAt }) }, session_id: "s", uuid: "u" });
+    sdk.stream = streamOf(init(), overage(), result());
+    const allowed = await backendAt(home, undefined, true).runTurn(input());
+    expect(allowed).toMatchObject({ ok: true, extraUsage: true });
+    expect(allowed).not.toHaveProperty("pauseUntil");
+    expect(warn).toHaveBeenCalledWith({ latencyMs: expect.any(Number) }, "claude turn used extra usage");
+    warn.mockClear();
+    // Not allowed (the default): the reply extra usage already paid for is kept, with a pause until the reset.
+    sdk.stream = streamOf(init(), overage(1_800_000_000), result());
+    expect(await backendAt(home).runTurn(input())).toMatchObject({ ok: true, extraUsage: true, pauseUntil: new Date(1_800_000_000_000) });
     expect(warn).toHaveBeenCalledWith({ latencyMs: expect.any(Number) }, "claude turn used extra usage");
     warn.mockClear();
     sdk.stream = streamOf(init(), result({ subtype: "error_during_execution", is_error: true, errors: ["socket hang up near Ghatkopar"] }));

@@ -8,6 +8,7 @@ import type { BackendErrorKind, LLMBackend, ObservedToolUse, TurnInput, TurnResu
 import { log, safeErrorFields } from "../log";
 
 export interface StreamObservation {
+  /** A usage limit the turn met: a rejection extra usage did not pay for, or one it paid for that is not allowed. */
   rejectedLimit: { resetsAt?: number } | null;
   assistantError: string | null;
   result: SDKResultMessage | null;
@@ -26,6 +27,11 @@ export interface StreamObservation {
   refusal?: boolean;
   /** What the init message got wrong (foreign or missing tools, and the server's status); absent when it matched. */
   initMismatch?: string;
+}
+
+/** Whether extra usage (overage) may pay for a turn past the plan's limit: LLM_ALLOW_EXTRA_USAGE. */
+export interface UsagePolicy {
+  allowExtraUsage: boolean;
 }
 
 /** What a turn's init message must show. */
@@ -110,7 +116,9 @@ export function buildChildEnv(base: NodeJS.ProcessEnv, opts: { homeDir: string; 
  * their results (paired by id through byId), and the result message. Pure apart from its arguments, and guarded
  * against unexpected shapes, since a throw here would fail a turn that may have succeeded.
  */
-export function observe(msg: SDKMessage, obs: StreamObservation, byId: Map<string, ObservedToolUse>, expected: ExpectedSetup): void {
+export function observe(
+  msg: SDKMessage, obs: StreamObservation, byId: Map<string, ObservedToolUse>, expected: ExpectedSetup, policy: UsagePolicy,
+): void {
   switch (msg.type) {
     case "system": {
       if (msg.subtype !== "init") return;
@@ -135,9 +143,11 @@ export function observe(msg: SDKMessage, obs: StreamObservation, byId: Map<strin
     case "rate_limit_event": {
       const info = msg.rate_limit_info;
       if (info?.status === "rejected") {
-        // Extra usage (overage) pays for a turn past the plan's limit: the turn runs, so it is not a refusal.
-        if (info.overageStatus === "allowed" || info.overageStatus === "allowed_warning") obs.extraUsage = true;
-        else obs.rejectedLimit = { resetsAt: info.resetsAt };
+        // Extra usage (overage) pays for a turn past the plan's limit: the turn runs, so it is not a refusal. When extra
+        // usage is not allowed, the limit still counts: classify keeps the reply and asks for a pause until the reset.
+        const overage = info.overageStatus === "allowed" || info.overageStatus === "allowed_warning";
+        if (overage) obs.extraUsage = true;
+        if (!overage || !policy.allowExtraUsage) obs.rejectedLimit = { resetsAt: info.resetsAt };
       } else if (info?.status === "allowed_warning") {
         obs.usageWarning = info;
       }
@@ -172,6 +182,12 @@ export function observe(msg: SDKMessage, obs: StreamObservation, byId: Map<strin
   }
 }
 
+/** The reply the turn produced: no assistant error, a success result that is not an error, and output that validates. */
+function validReply(obs: StreamObservation): boolean {
+  const r = obs.result;
+  return !obs.assistantError && r?.subtype === "success" && !r.is_error && parseStructuredReplyDetailed(r.structured_output).ok;
+}
+
 function classify(obs: StreamObservation): TurnResult {
   const sessionId = obs.result?.session_id ?? null;
   const toolUses = obs.toolUses ?? [];
@@ -180,7 +196,9 @@ function classify(obs: StreamObservation): TurnResult {
 
   // The turn was aborted at init, before the model ran: nothing else in the observation counts.
   if (obs.initMismatch) return fail("TRANSIENT", `mcp_not_connected: ${obs.initMismatch}`);
-  if (obs.rejectedLimit) return fail("LIMITED", "subscription usage limit reached", resetDate(obs.rejectedLimit.resetsAt));
+  // A limit decides the class unless a valid reply arrived anyway: that reply is kept (time to number), and the ok
+  // result below asks for the pause instead.
+  if (obs.rejectedLimit && !validReply(obs)) return fail("LIMITED", "subscription usage limit reached", resetDate(obs.rejectedLimit.resetsAt));
   const r = obs.result;
   if (obs.assistantError) {
     if (obs.assistantError === "rate_limit") return fail("LIMITED", "assistant error: rate_limit");
@@ -243,6 +261,7 @@ function classify(obs: StreamObservation): TurnResult {
     costUsd: typeof r.total_cost_usd === "number" ? r.total_cost_usd : null,
     toolUses,
     ...(obs.extraUsage && { extraUsage: true }),
+    ...(obs.rejectedLimit && { pauseUntil: resetDate(obs.rejectedLimit.resetsAt) }),
   };
 }
 
@@ -268,7 +287,9 @@ export class ClaudeCodeBackend implements LLMBackend {
   /** Set once the home dir has been restricted (or that failed and was logged), so it happens once per backend. */
   private homeRestricted = false;
 
-  constructor(private readonly opts: { model: string; effort: EffortLevel; maxTurns: number; oauthToken?: string; homeDir: string }) {
+  constructor(
+    private readonly opts: { model: string; effort: EffortLevel; maxTurns: number; oauthToken?: string; homeDir: string; allowExtraUsage: boolean },
+  ) {
     // A root worker gives a turn that goes wrong the whole container.
     if (process.getuid?.() === 0) log.warn("worker runs as root; run the container as a non-root user");
   }
@@ -280,6 +301,7 @@ export class ClaudeCodeBackend implements LLMBackend {
     const obs: StreamObservation = { rejectedLimit: null, assistantError: null, result: null, aborted: false, thrown: null, latencyMs: 0, toolUses: [] };
     const byId = new Map<string, ObservedToolUse>();
     const expected: ExpectedSetup = { toolNames: input.allowedToolNames, server: input.toolServer ? SERVER_NAME : null };
+    const policy: UsagePolicy = { allowExtraUsage: this.opts.allowExtraUsage };
     try {
       // Here, not in the constructor: a home dir the worker cannot create fails this turn as TRANSIENT (retry, then
       // fallback) instead of throwing out of getBackend().
@@ -313,7 +335,7 @@ export class ClaudeCodeBackend implements LLMBackend {
         },
       });
       for await (const msg of q) {
-        observe(msg, obs, byId, expected);
+        observe(msg, obs, byId, expected, policy);
         if (obs.initMismatch) {
           abort.abort();
           break;

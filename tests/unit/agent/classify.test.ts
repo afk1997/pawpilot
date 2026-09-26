@@ -23,10 +23,24 @@ describe("classifyOutcome", () => {
     expect(classifyOutcome({ ...base, result: success({ reply: "" }) as never })).toMatchObject({ ok: false, kind: "INVALID_OUTPUT" });
     expect(classifyOutcome({ ...base, result: { ...success(good), subtype: "error_max_structured_output_retries", errors: [] } as never })).toMatchObject({ ok: false, kind: "INVALID_OUTPUT" });
   });
-  it("maps a rejected rate limit to LIMITED with the reset time", () => {
-    const r = classifyOutcome({ ...base, rejectedLimit: { resetsAt: 1_800_000_000 }, result: success(good) as never });
+  it("maps a rejected rate limit to LIMITED with the reset time, unless a valid reply arrived: that one is kept, with the pause", () => {
+    const r = classifyOutcome({ ...base, rejectedLimit: { resetsAt: 1_800_000_000 } });
     expect(r).toMatchObject({ ok: false, kind: "LIMITED" });
     expect(!r.ok && r.retryAfter?.getTime()).toBe(1_800_000_000 * 1000);
+    expect(classifyOutcome({ ...base, rejectedLimit: { resetsAt: 1_800_000_000 }, result: success(good) as never }))
+      .toMatchObject({ ok: true, structured: good, pauseUntil: new Date(1_800_000_000 * 1000) });
+    // No reset time given: the runner pauses for its own default.
+    expect(classifyOutcome({ ...base, rejectedLimit: {}, result: success(good) as never })).toMatchObject({ ok: true, pauseUntil: null });
+    // Anything short of a valid reply is still LIMITED: an error result, a reply that fails validation, an assistant error.
+    const stopped = { ...success(good), subtype: "error_during_execution", is_error: true, errors: ["stopped"] } as never;
+    for (const obs of [
+      { ...base, rejectedLimit: {}, result: stopped },
+      { ...base, rejectedLimit: {}, result: success({ reply: "" }) as never },
+      { ...base, rejectedLimit: {}, assistantError: "overloaded", result: success(good) as never },
+    ]) {
+      expect(classifyOutcome(obs)).toMatchObject({ ok: false, kind: "LIMITED" });
+    }
+    expect(classifyOutcome({ ...base, result: success(good) as never })).not.toHaveProperty("pauseUntil");
   });
   it("maps assistant errors", () => {
     expect(classifyOutcome({ ...base, assistantError: "rate_limit" })).toMatchObject({ ok: false, kind: "LIMITED" });
@@ -66,7 +80,7 @@ describe("classifyOutcome", () => {
   });
   it("carries the session id on failures that have a result message, and null on the others", () => {
     expect(classifyOutcome({ ...base, result: success({ reply: "" }) as never })).toMatchObject({ ok: false, sessionId: "s" });
-    expect(classifyOutcome({ ...base, rejectedLimit: {}, result: success(good) as never })).toMatchObject({ ok: false, sessionId: "s" });
+    expect(classifyOutcome({ ...base, rejectedLimit: {}, result: success({ reply: "" }) as never })).toMatchObject({ ok: false, kind: "LIMITED", sessionId: "s" });
     expect(classifyOutcome({ ...base, thrown: "spawn failed" })).toMatchObject({ ok: false, sessionId: null });
   });
   it("passes the observed tool uses through on success and failure, defaulting to none", () => {
@@ -165,12 +179,16 @@ describe("classifyOutcome", () => {
 describe("observe", () => {
   const allowed = ["mcp__arham__find_ambulances", "mcp__arham__find_clinics", "mcp__arham__get_info"];
   const expected = { toolNames: allowed, server: "arham" };
-  const run = (...msgs: unknown[]): StreamObservation => {
+  const ALLOW_EXTRA = { allowExtraUsage: true };
+  const NO_EXTRA = { allowExtraUsage: false };
+  const runWith = (policy: { allowExtraUsage: boolean }, ...msgs: unknown[]): StreamObservation => {
     const obs: StreamObservation = { ...base, toolUses: [] };
     const byId = new Map<string, ObservedToolUse>();
-    for (const msg of msgs) observe(msg as SDKMessage, obs, byId, expected);
+    for (const msg of msgs) observe(msg as SDKMessage, obs, byId, expected, policy);
     return obs;
   };
+  /** Under the production default: extra usage not allowed. */
+  const run = (...msgs: unknown[]): StreamObservation => runWith(NO_EXTRA, ...msgs);
   const init = (tools: string[], servers = [{ name: "arham", status: "connected" }]) =>
     ({ type: "system", subtype: "init", tools, mcp_servers: servers, session_id: "s", uuid: "u" });
   const assistant = (content: unknown[], error?: string) =>
@@ -205,16 +223,35 @@ describe("observe", () => {
     expect(obs.refusal).toBeUndefined();
     expect(classifyOutcome(obs)).toMatchObject({ ok: false, kind: "AUTH" });
   });
-  it("keeps a turn that extra usage covered and says so, and refuses one it did not", () => {
+  it("with extra usage allowed, keeps a turn it paid for and says so, without a pause", () => {
+    for (const overageStatus of ["allowed", "allowed_warning"]) {
+      const obs = runWith(ALLOW_EXTRA, limit({ status: "rejected", overageStatus, resetsAt: 1_800_000_000 }), success(good));
+      expect(obs).toMatchObject({ rejectedLimit: null, extraUsage: true });
+      const r = classifyOutcome(obs);
+      expect(r).toMatchObject({ ok: true, extraUsage: true });
+      expect(r).not.toHaveProperty("pauseUntil");
+    }
+    expect(classifyOutcome(runWith(ALLOW_EXTRA, success(good)))).not.toHaveProperty("extraUsage");
+  });
+  it("with extra usage not allowed, keeps the reply extra usage already paid for, with a pause until the reset", () => {
     for (const overageStatus of ["allowed", "allowed_warning"]) {
       const obs = run(limit({ status: "rejected", overageStatus, resetsAt: 1_800_000_000 }), success(good));
-      expect(obs).toMatchObject({ rejectedLimit: null, extraUsage: true });
-      expect(classifyOutcome(obs)).toMatchObject({ ok: true, extraUsage: true });
+      expect(obs).toMatchObject({ rejectedLimit: { resetsAt: 1_800_000_000 }, extraUsage: true });
+      expect(classifyOutcome(obs)).toMatchObject({ ok: true, structured: good, extraUsage: true, pauseUntil: new Date(1_800_000_000_000) });
+      // No reply came: the limit decides, with its reset time.
+      expect(classifyOutcome(run(limit({ status: "rejected", overageStatus, resetsAt: 1_800_000_000 }))))
+        .toMatchObject({ ok: false, kind: "LIMITED", retryAfter: new Date(1_800_000_000_000) });
     }
-    for (const info of [{ status: "rejected" }, { status: "rejected", overageStatus: "rejected" }]) {
-      expect(classifyOutcome(run(limit(info), success(good)))).toMatchObject({ ok: false, kind: "LIMITED" });
+  });
+  it("reads a rejection extra usage did not cover as LIMITED under either policy, keeping a reply that arrived anyway", () => {
+    for (const policy of [ALLOW_EXTRA, NO_EXTRA]) {
+      for (const info of [{ status: "rejected" }, { status: "rejected", overageStatus: "rejected" }]) {
+        expect(classifyOutcome(runWith(policy, limit(info)))).toMatchObject({ ok: false, kind: "LIMITED" });
+        const kept = classifyOutcome(runWith(policy, limit(info), success(good)));
+        expect(kept).toMatchObject({ ok: true, pauseUntil: null });
+        expect(kept).not.toHaveProperty("extraUsage");
+      }
     }
-    expect(classifyOutcome(run(success(good)))).not.toHaveProperty("extraUsage");
   });
   it("reads a reset time given in seconds or in milliseconds", () => {
     const retryAt = (resetsAt: number) => {
@@ -245,7 +282,7 @@ describe("observe", () => {
   });
   it("needs no server for a turn without tools, and marks a stream without init", () => {
     const obs: StreamObservation = { ...base, toolUses: [] };
-    observe(init(["StructuredOutput"], []) as never, obs, new Map(), { toolNames: [], server: null });
+    observe(init(["StructuredOutput"], []) as never, obs, new Map(), { toolNames: [], server: null }, NO_EXTRA);
     expect(obs.initMismatch).toBeUndefined();
     expect(run(success(good)).sawInit).toBeUndefined();
   });

@@ -1,3 +1,4 @@
+import { getConfig } from "../config";
 import type { Language } from "../types";
 
 export interface CardAmbulance {
@@ -113,15 +114,20 @@ export function buildHelplineCard(phone: string, lang: Language = "en"): string 
 }
 
 const CLINIC_HEADER: Record<Language, string> = { en: "Our clinics", hi: "हमारे क्लिनिक", mr: "आमचे क्लिनिक", gu: "અમારા ક્લિનિક" };
-const NO_CLINICS: Record<Language, string> = {
-  en: "We don't have a clinic in that city yet. Visit alwayscare.org/clinics for the full list.",
-  hi: "उस शहर में अभी हमारा क्लिनिक नहीं है। पूरी सूची के लिए alwayscare.org/clinics देखें।",
-  mr: "त्या शहरात अजून आमचे क्लिनिक नाही. संपूर्ण यादीसाठी alwayscare.org/clinics पहा.",
-  gu: "તે શહેરમાં હજી અમારું ક્લિનિક નથી. સંપૂર્ણ યાદી માટે alwayscare.org/clinics જુઓ.",
+const NO_CLINICS: Record<Language, (clinicsUrl: string) => string> = {
+  en: (url) => `We don't have a clinic in that city yet. Visit ${url} for the full list.`,
+  hi: (url) => `उस शहर में अभी हमारा क्लिनिक नहीं है। पूरी सूची के लिए ${url} देखें।`,
+  mr: (url) => `त्या शहरात अजून आमचे क्लिनिक नाही. संपूर्ण यादीसाठी ${url} पहा.`,
+  gu: (url) => `તે શહેરમાં હજી અમારું ક્લિનિક નથી. સંપૂર્ણ યાદી માટે ${url} જુઓ.`,
 };
 
+/** The clinic list on the configured website (WEBSITE_URL), so the link cannot drift from it. */
+function clinicsUrl(): string {
+  return `${getConfig().websiteUrl.replace(/\/+$/, "")}/clinics`;
+}
+
 export function buildClinicCard(rows: CardClinic[], lang: Language = "en"): string {
-  if (rows.length === 0) return NO_CLINICS[lang] ?? NO_CLINICS.en;
+  if (rows.length === 0) return (NO_CLINICS[lang] ?? NO_CLINICS.en)(clinicsUrl());
   const lines: string[] = [CLINIC_HEADER[lang] ?? CLINIC_HEADER.en, ""];
   for (const c of rows.slice(0, 5)) {
     lines.push(`*${c.label}* (${c.area ? `${c.city} — ${c.area}` : c.city})`);

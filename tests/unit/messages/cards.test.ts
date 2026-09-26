@@ -1,4 +1,6 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+import { resetConfigForTests } from "@/server/config";
+import { LANGUAGES } from "@/server/types";
 import {
   formatIndianPhone, partnerSuffix, buildAmbulanceCard, buildMultiAmbulanceCard, buildHelplineCard,
   buildClinicCard, renderNumberForToken, type CardAmbulance,
@@ -63,6 +65,17 @@ describe("cards", () => {
     const t = buildClinicCard([{ label: "Arham Clinic Surat", city: "Surat", area: "Vesu", phone: "+912612345678", address: "Vesu Main Road", hours: "9am-7pm" }], "en");
     expect(t).toContain("*Arham Clinic Surat* (Surat — Vesu)");
     expect(t).toContain("📞 +91 26123 45678");
-    expect(buildClinicCard([], "mr")).toContain("alwayscare");
+    expect(buildClinicCard([], "mr")).toContain("https://alwayscare.org/clinics");
+  });
+
+  it("links the empty-state line to the configured website's clinic list, in every language", () => {
+    try {
+      vi.stubEnv("WEBSITE_URL", "https://helpline.example.org/");
+      resetConfigForTests();
+      for (const lang of LANGUAGES) expect(buildClinicCard([], lang), lang).toContain("https://helpline.example.org/clinics");
+    } finally {
+      vi.unstubAllEnvs();
+      resetConfigForTests();
+    }
   });
 });

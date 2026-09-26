@@ -46,6 +46,12 @@ export type TurnResult =
       toolUses?: ObservedToolUse[];
       /** True when the plan's limit was reached and extra usage (overage) paid for this turn. */
       extraUsage?: boolean;
+      /**
+       * Present when a usage limit was reached on the way (extra usage paid but is not allowed, or a rejection the CLI
+       * still answered): the reply is delivered, then Claude pauses until this time, or for the runner's default when
+       * null (no reset time given).
+       */
+      pauseUntil?: Date | null;
     }
   | {
       ok: false;

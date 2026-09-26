@@ -134,6 +134,11 @@ export async function runClaudeTurn(input: {
   let usage: Record<string, unknown> | null = null;
   let backendCalls = 0;
   let extraUsage = false;
+  /**
+   * A usage limit a reply met on the way (TurnResult.pauseUntil): the reply is still sent, no further call is made, and
+   * Claude pauses once this turn has answered. `until` null: no reset time was given.
+   */
+  let limitPause: { until: Date | null; extraUsage: boolean } | null = null;
   const audit = () => ({
     toolCalls: [...(toolContext?.calls ?? []), ...refused],
     handles: registry?.toJSON() ?? null,
@@ -178,6 +183,11 @@ export async function runClaudeTurn(input: {
      * call they end.
      */
     const call = async (prompt: string, purpose: CallPurpose): Promise<TurnResult | null> => {
+      // Past a usage limit, a call would run on extra usage or be refused: the guards finish without a correction.
+      if (limitPause) {
+        await note(conversationId, "retry_skipped", { turnId: turn.id, purpose, reason: "limited" });
+        return null;
+      }
       const remainingMs = Math.round(deadlineMs - nowMs());
       // Never above the configured timeout, so a timeout configured below MIN_CALL_MS does not skip every call.
       if (remainingMs < Math.min(MIN_CALL_MS, cfg.claude.turnTimeoutMs)) {
@@ -201,7 +211,11 @@ export async function runClaudeTurn(input: {
       refused.push(...refusedToolUses(r.toolUses ?? [], ctx.calls.slice(before)));
       if (r.ok) {
         usage = sumUsage(usage, r.usage);
-        if (r.extraUsage) extraUsage = true;
+        if (r.extraUsage && !extraUsage) {
+          extraUsage = true;
+          await note(conversationId, "claude_extra_usage", { turnId: turn.id });
+        }
+        if (r.pauseUntil !== undefined) limitPause = { until: r.pauseUntil, extraUsage: r.extraUsage === true };
       } else if (r.kind === "LIMITED") {
         await pauseClaude(r.retryAfter ?? new Date(now().getTime() + PAUSE_FALLBACK_MS), "LIMITED", now());
         await note(conversationId, "claude_limited", { turnId: turn.id, message: r.message, retryAfter: r.retryAfter });
@@ -249,6 +263,15 @@ export async function runClaudeTurn(input: {
     return { kind: "reply", guarded, first };
   };
 
+  /** The pause a limit asked for, once the reporter has been answered: the reply it let through is never wasted. */
+  const pauseForLimit = async (): Promise<void> => {
+    if (!limitPause) return;
+    const until = limitPause.until ?? new Date(now().getTime() + PAUSE_FALLBACK_MS);
+    await pauseClaude(until, "LIMITED", now());
+    await note(conversationId, "claude_limited", { turnId: turn.id, extraUsage: limitPause.extraUsage, retryAfter: limitPause.until });
+    log.warn({ conversationId, until: until.toISOString() }, "claude usage limit reached; paused after answering");
+  };
+
   let plan: Plan;
   try {
     plan = await prepare();
@@ -270,6 +293,7 @@ export async function runClaudeTurn(input: {
       ...(plan.structuredOutput !== undefined && { structuredOutput: plan.structuredOutput }),
     });
     const r = await runFallbackTurn({ conversation, pending, reason: plan.reason });
+    await pauseForLimit();
     return { turnId: r.turn.id, outcome: "fallback" };
   }
 
@@ -308,5 +332,6 @@ export async function runClaudeTurn(input: {
   await updateConversation(conversationId, { language: g.structured.language });
   if (g.structured.needs_human) await flagConversation(conversationId, "needs_human");
   if (delivered) await recordOkTurn();
+  await pauseForLimit();
   return { turnId: turn.id, outcome: delivered ? "ok" : "failed" };
 }

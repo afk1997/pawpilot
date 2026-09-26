@@ -134,6 +134,43 @@ describe("runTurn with a backend", () => {
     expect(out[1].content).toContain("2 ambulances are available in Rajkot");
   });
 
+  it("delivers a reply extra usage paid for, then pauses Claude until the reset without a correction, when extra usage is not allowed", async () => {
+    const c = await conv();
+    await storeReporterMessage(c.id, { kind: "text", content: "helpline?" });
+    const resetAt = new Date(Date.now() + 30 * 60_000);
+    // The draft types a number, which would earn a corrective call: none is made once the limit is reached.
+    const limited = { ...okReply({ reply: "Call 9876543210 or {{PHONE:helpline}}.", intent: "other" }), extraUsage: true, pauseUntil: resetAt } as TurnResult;
+    const backend = new FakeBackend([limited, ghatkoparStep]);
+    const r = await runTurn(c.id, { backend });
+    expect(r.kind).toBe("ok");
+    expect(backend.calls).toHaveLength(1);
+    const [m] = await outbound(c.id);
+    expect(m.content).toBe("Call or +91 99999 00000.");
+    expect(await getWorkerState()).toMatchObject({ claudePausedUntil: resetAt, pauseReason: "LIMITED" });
+    const t = await lastTurn(c.id);
+    expect(t.status).toBe("ok");
+    expect((await eventsOf("claude_limited")).map((e) => e.payload)).toEqual([{ turnId: t.id, extraUsage: true, retryAfter: resetAt.toISOString() }]);
+    expect((await eventsOf("claude_extra_usage")).map((e) => e.payload)).toEqual([{ turnId: t.id }]);
+    expect((await eventsOf("retry_skipped")).map((e) => e.payload)).toEqual([{ turnId: t.id, purpose: "token", reason: "limited" }]);
+    await storeReporterMessage(c.id, { kind: "text", content: "rajkot" });
+    expect((await runTurn(c.id, { backend })).kind).toBe("fallback");
+    expect(backend.calls).toHaveLength(1);
+  });
+
+  it("pauses Claude after the fallback too, when the reply a limit let through could not be used", async () => {
+    const c = await conv();
+    await storeReporterMessage(c.id, { kind: "text", content: "Lucknow" });
+    const limited = { ...okReply({ reply: "  " }), pauseUntil: null } as TurnResult;
+    const r = await runTurn(c.id, { backend: new FakeBackend([limited]) });
+    expect(r.kind).toBe("fallback");
+    const state = await getWorkerState();
+    expect(state.pauseReason).toBe("LIMITED");
+    // No reset time came with the limit: the default 15-minute pause.
+    expect(state.claudePausedUntil!.getTime() - Date.now()).toBeGreaterThan(14 * 60_000);
+    const [claude] = await turnsOf(c.id);
+    expect((await eventsOf("claude_limited")).map((e) => e.payload)).toEqual([{ turnId: claude.id, extraUsage: false, retryAfter: null }]);
+  });
+
   it("records an auth event and falls back on AUTH", async () => {
     const c = await conv();
     await storeReporterMessage(c.id, { kind: "text", content: "surat" });
@@ -396,6 +433,9 @@ describe("the Claude turn's guards, audit and context", () => {
       { name: "mcp__arham__find_clinics", input: null, output: null, durationMs: 0, error: { errorClass: "SdkRejected" } },
     ]);
     expect(t.usage).toMatchObject({ input_tokens: 10, extraUsage: true });
+    // Extra usage allowed (no pause asked for): an event says it was spent, and Claude keeps running.
+    expect((await eventsOf("claude_extra_usage")).map((e) => e.payload)).toEqual([{ turnId: t.id }]);
+    expect(await isClaudePaused()).toBe(false);
   });
 
   it("keeps the tool calls on a turn that fell back", async () => {

@@ -20,7 +20,10 @@ export function getBackend(): LLMBackend {
   const { claude } = config;
   const backend = config.llmBackend === "fake"
     ? new FakeBackend()
-    : new ClaudeCodeBackend({ model: claude.model, effort: claude.effort, maxTurns: claude.maxTurns, oauthToken: claude.oauthToken, homeDir: claude.homeDir });
+    : new ClaudeCodeBackend({
+        model: claude.model, effort: claude.effort, maxTurns: claude.maxTurns, oauthToken: claude.oauthToken, homeDir: claude.homeDir,
+        allowExtraUsage: claude.allowExtraUsage,
+      });
   cached = { config, backend };
   return backend;
 }
