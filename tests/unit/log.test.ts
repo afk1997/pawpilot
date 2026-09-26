@@ -29,6 +29,23 @@ describe("safeErrorFields", () => {
     expect(safeErrorFields(Object.assign(new Error("x"), { code: "98765-43210" }))).toEqual({ errorClass: "Error" });
   });
 
+  it("names an error whose class name a production bundle minified by the error's own name", () => {
+    const withClassName = (className: string, name?: string) => {
+      class Custom extends Error {}
+      Object.defineProperty(Custom, "name", { value: className });
+      const err = new Custom("failed for +919876543210");
+      if (name !== undefined) err.name = name;
+      return err;
+    };
+    expect(safeErrorFields(withClassName("e", "TimeoutError"))).toEqual({ errorClass: "TimeoutError" });
+    expect(safeErrorFields(withClassName("", "PostgresError"))).toEqual({ errorClass: "PostgresError" });
+    expect(safeErrorFields(withClassName("$n"))).toEqual({ errorClass: "Error" });
+    expect(safeErrorFields(withClassName("tA", "sent to +91 98765 43210"))).toEqual({ errorClass: "Error" });
+    // An unminified class name still wins over the name it inherited or set.
+    expect(safeErrorFields(withClassName("QueryFailed"))).toEqual({ errorClass: "QueryFailed" });
+    expect(safeErrorFields(withClassName("QueryFailed", "Other"))).toEqual({ errorClass: "QueryFailed" });
+  });
+
   it("names a non-Error throwable by its type", () => {
     expect(safeErrorFields("boom +919876543210")).toEqual({ errorClass: "string" });
     expect(safeErrorFields(null)).toEqual({ errorClass: "object" });

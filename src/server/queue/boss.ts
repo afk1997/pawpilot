@@ -3,6 +3,8 @@ import { getConfig } from "../config";
 import { log } from "../log";
 
 export const TURN_QUEUE = "turn";
+/** The Postgres schema pg-boss keeps its tables in; the health check reads its job table there. */
+export const PGBOSS_SCHEMA = "pgboss";
 /**
  * How long a turn job may run before pg-boss expires and retries it: well above a Claude turn's 100 s budget, so a
  * slow turn is never retried while it still runs.
@@ -35,7 +37,7 @@ export function getBoss(role: "app" | "worker" = "app"): Promise<PgBoss> {
   starting = (async () => {
     const boss = new PgBoss({
       connectionString: getConfig().databaseUrl,
-      schema: "pgboss",
+      schema: PGBOSS_SCHEMA,
       supervise: role === "worker",
       schedule: false,
       max: role === "worker" ? 4 : 2,

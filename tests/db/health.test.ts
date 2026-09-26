@@ -11,6 +11,7 @@ import { resetConfigForTests } from "@/server/config";
 import * as dbClient from "@/server/db/client";
 import { getSql } from "@/server/db/client";
 import { log } from "@/server/log";
+import * as pause from "@/server/worker/pause";
 import { GET } from "@/app/api/health/route";
 
 describe("computeHealth", () => {
@@ -103,6 +104,53 @@ describe("computeHealth", () => {
       down.mockRestore();
       logged.mockRestore();
     }
+  });
+
+  it("is 503, with clockSkew, when the worker's heartbeat lies ahead of this clock", async () => {
+    await heartbeat();
+    const h = await computeHealth(new Date(Date.now() - 60_000));
+    expect(h.status).toBe(503);
+    expect(h.checks).toMatchObject({ clockSkew: true });
+    expect(h.checks.workerHeartbeatAgeS).toBeLessThan(0);
+    expect((await computeHealth()).checks.clockSkew).toBe(false);
+  });
+
+  it("answers 503, without throwing, when the environment is invalid, and logs the error's class only", async () => {
+    await heartbeat();
+    const logged = vi.spyOn(log, "error").mockImplementation(() => undefined);
+    try {
+      vi.stubEnv("HELPLINE_PHONE", "99999");
+      resetConfigForTests();
+      const h = await computeHealth();
+      expect(h.status).toBe(503);
+      expect(h.checks).toMatchObject({ config: false, db: false });
+      expect(logged).toHaveBeenCalledWith({ errorClass: "Error" }, "health: config invalid");
+    } finally {
+      vi.unstubAllEnvs();
+      resetConfigForTests();
+      logged.mockRestore();
+    }
+  });
+
+  it("logs a failure after the database answered as a state check failure, not a database one", async () => {
+    await heartbeat();
+    const failing = vi.spyOn(pause, "getWorkerState").mockRejectedValueOnce(Object.assign(new Error("worker_state gone"), { code: "42P01" }));
+    const logged = vi.spyOn(log, "error").mockImplementation(() => undefined);
+    try {
+      const h = await computeHealth();
+      expect(h.status).toBe(503);
+      expect(h.checks).toMatchObject({ config: true, db: true, workerHeartbeatAgeS: null, delivery: null });
+      expect(logged).toHaveBeenCalledWith({ errorClass: "Error", code: "42P01" }, "health: state check failed");
+      expect(logged).not.toHaveBeenCalledWith(expect.anything(), "health: db check failed");
+    } finally {
+      failing.mockRestore();
+      logged.mockRestore();
+    }
+  });
+
+  it("types the pause reason: only the reasons the code records", () => {
+    // @ts-expect-error: not one of "LIMITED", "AUTH" or "eval"; checked by npm run typecheck
+    void (() => pauseClaude(new Date(), "limit"));
   });
 
   it("leaves the queue unknown when its check fails, without failing the health check", async () => {
