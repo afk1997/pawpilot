@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, ilike, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, ilike, inArray, or, sql } from "drizzle-orm";
 import { getDb } from "../db/client";
 import { conversations, messages, turns, type Conversation, type Message, type Turn } from "../db/schema";
 
@@ -22,6 +22,15 @@ function containsPattern(text: string): string {
   return `%${text.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
 }
 
+/** Digits with spaces or dashes between them, "+" allowed in front: a phone number typed the way people write one. */
+const TYPED_PHONE = /^\+?[\d\s-]+$/;
+
+/** The search text as matched: "98765 00022" or "+91-98765-00022" loses its spaces and dashes to match "+919876500022". */
+function searchTerm(search: string): string {
+  const text = search.trim();
+  return TYPED_PHONE.test(text) && /\d/.test(text) ? text.replace(/[\s-]/g, "") : text;
+}
+
 export async function listConversations(opts: { filter: ConversationFilter; search?: string; limit?: number }): Promise<ConversationSummary[]> {
   const db = getDb();
   const conds = [];
@@ -30,7 +39,7 @@ export async function listConversations(opts: { filter: ConversationFilter; sear
   if (opts.filter === "flagged") conds.push(eq(conversations.flagged, true));
   if (opts.filter === "human") conds.push(eq(conversations.mode, "human"));
   if (opts.search && opts.search.trim()) {
-    const q = containsPattern(opts.search.trim());
+    const q = containsPattern(searchTerm(opts.search));
     conds.push(or(ilike(conversations.phone, q), ilike(conversations.name, q))!);
   }
   const rows = await db
@@ -58,9 +67,22 @@ export async function getConversationDetail(id: string): Promise<{ conversation:
   const db = getDb();
   const [conversation] = await db.select().from(conversations).where(eq(conversations.id, id));
   if (!conversation) return null;
-  const [newestFirst, ts] = await Promise.all([
-    db.select().from(messages).where(eq(messages.conversationId, id)).orderBy(desc(messages.createdAt)).limit(MAX_TRANSCRIPT_MESSAGES),
-    db.select().from(turns).where(eq(turns.conversationId, id)).orderBy(asc(turns.createdAt)),
-  ]);
-  return { conversation, messages: newestFirst.reverse(), turns: ts };
+  const newestFirst = await db
+    .select()
+    .from(messages)
+    .where(eq(messages.conversationId, id))
+    .orderBy(desc(messages.createdAt))
+    .limit(MAX_TRANSCRIPT_MESSAGES);
+  const kept = newestFirst.reverse();
+  const ofConversation = eq(turns.conversationId, id);
+  // Below the cap every turn is shown. At the cap, only those the kept messages can show: the turns they were sent by,
+  // and every turn since the oldest kept message (a failed one sent nothing, so no message names it).
+  const capped = kept.length === MAX_TRANSCRIPT_MESSAGES;
+  const sentBy = [...new Set(kept.flatMap((m) => (m.turnId ? [m.turnId] : [])))];
+  const ts = await db
+    .select()
+    .from(turns)
+    .where(capped ? and(ofConversation, or(inArray(turns.id, sentBy), gte(turns.createdAt, kept[0].createdAt))) : ofConversation)
+    .orderBy(asc(turns.createdAt));
+  return { conversation, messages: kept, turns: ts };
 }

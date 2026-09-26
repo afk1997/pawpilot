@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { resetDb, createConversation } from "../helpers/db";
 import { getDb } from "@/server/db/client";
-import { conversations, messages } from "@/server/db/schema";
+import { conversations, messages, turns } from "@/server/db/schema";
 import { storeReporterMessage } from "@/server/inbound/store";
 import { setFetchForTests } from "@/server/interakt/client";
 import { createTurn } from "@/server/worker/persist";
@@ -23,6 +23,7 @@ describe("admin queries", () => {
     const t = await createConversation({ phone: "+91TEST_zz", isTest: true });
     await storeReporterMessage(a.id, { kind: "text", content: "first" });
     await storeReporterMessage(a.id, { kind: "text", content: "latest from a" });
+    for (const content of ["b1", "b2", "latest from b"]) await storeReporterMessage(b.id, { kind: "text", content });
     await getDb().update(conversations).set({ flagged: true, flagReason: "needs_human" }).where(eq(conversations.id, a.id));
     await getDb().update(conversations).set({ mode: "human" }).where(eq(conversations.id, b.id));
 
@@ -30,6 +31,11 @@ describe("admin queries", () => {
     expect(all.map((c) => c.id).sort()).toEqual([a.id, b.id].sort());
     expect(all.find((c) => c.id === a.id)?.lastMessage).toBe("latest from a");
     expect(all.find((c) => c.id === a.id)?.messageCount).toBe(2);
+    // Each conversation's own newest message, count and time, not the table's.
+    const newestAt = async (conversationId: string) =>
+      (await getDb().select().from(messages).where(eq(messages.conversationId, conversationId)).orderBy(desc(messages.createdAt)).limit(1))[0].createdAt;
+    expect(all.find((c) => c.id === a.id)?.lastMessageAt).toEqual(await newestAt(a.id));
+    expect(all.find((c) => c.id === b.id)).toMatchObject({ lastMessage: "latest from b", messageCount: 3, lastMessageAt: await newestAt(b.id) });
     expect((await listConversations({ filter: "flagged" })).map((c) => c.id)).toEqual([a.id]);
     expect((await listConversations({ filter: "human" })).map((c) => c.id)).toEqual([b.id]);
     expect((await listConversations({ filter: "test" })).map((c) => c.id)).toEqual([t.id]);
@@ -62,6 +68,10 @@ describe("admin queries", () => {
     expect(await found("%")).toEqual([percent.id]);
     expect(await found("_")).toEqual([underscore.id]);
     expect(await found("\\")).toEqual([backslash.id]);
+    // A number typed with spaces or dashes matches the stored "+91…" form; other text keeps its spaces.
+    expect(await found("98765 00055")).toEqual([underscore.id]);
+    expect(await found("+91-98765-00066")).toEqual([backslash.id]);
+    expect(await found("100% Seva")).toEqual([percent.id]);
   });
 
   it("returns the detail with messages and turns", async () => {
@@ -92,5 +102,37 @@ describe("admin queries", () => {
       );
     const d = (await getConversationDetail(c.id))!;
     expect(d.messages.map((m) => m.content)).toEqual(Array.from({ length: 500 }, (_, i) => `m${i + 2}`));
+  });
+
+  it("once the cap is hit keeps only the turns the kept messages can show, and below it every turn", async () => {
+    const start = Date.now() - 3_600_000;
+    const at = (seconds: number) => new Date(start + seconds * 1000);
+    const turnAt = async (conversationId: string, seconds: number) =>
+      (await getDb().insert(turns).values({ conversationId, status: "ok", createdAt: at(seconds) }).returning())[0];
+    const long = await createConversation({ isTest: true, phone: "+91TEST_turns" });
+    const early = await turnAt(long.id, 0.5); // sent m0, which is not kept: left out
+    const sender = await turnAt(long.id, 1.5); // older than the oldest kept message, m2, which it sent: kept
+    const later = await turnAt(long.id, 300.5); // newer than the oldest kept message: kept
+    const sentBy = new Map([[0, early.id], [2, sender.id]]);
+    await getDb()
+      .insert(messages)
+      .values(
+        Array.from({ length: 502 }, (_, i) => ({
+          conversationId: long.id,
+          role: sentBy.has(i) ? ("assistant" as const) : ("user" as const),
+          origin: sentBy.has(i) ? ("agent" as const) : ("reporter" as const),
+          content: `m${i}`,
+          turnId: sentBy.get(i) ?? null,
+          createdAt: at(i),
+        }))
+      );
+    const capped = (await getConversationDetail(long.id))!;
+    expect(capped.messages[0].content).toBe("m2");
+    expect(capped.turns.map((t) => t.id)).toEqual([sender.id, later.id]);
+
+    const short = await createConversation({ isTest: true, phone: "+91TEST_short" });
+    const older = await turnAt(short.id, 0.5); // older than every message and sent none: kept, the cap is not hit
+    await storeReporterMessage(short.id, { kind: "text", content: "hi" });
+    expect((await getConversationDetail(short.id))!.turns.map((t) => t.id)).toEqual([older.id]);
   });
 });
