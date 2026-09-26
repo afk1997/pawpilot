@@ -3,6 +3,7 @@ import { guardReply, STALE_HANDLE_NOTE, type GuardDeps } from "@/server/agent/gu
 import { HandleRegistry } from "@/server/agent/handles";
 import type { StructuredReply } from "@/server/agent/types";
 import type { DirectoryAmbulance, MatchType } from "@/server/directory/matcher";
+import { buildHelplineCard } from "@/server/messages/cards";
 import { DISPATCH_CORRECTION_NOTE, TOKEN_CORRECTION_NOTE } from "@/server/messages/system-replies";
 
 const ghatkopar: DirectoryAmbulance = {
@@ -94,6 +95,39 @@ describe("guardReply", () => {
     const g = await guardReply(reply({ reply: `Number: {{AMB:${h}}}` }), deps);
     expect(corrections).toEqual([{ correction: `${TOKEN_CORRECTION_NOTE} ${STALE_HANDLE_NOTE}`, purpose: "token" }]);
     expect(g).toMatchObject({ text: "Number:", staleHandles: [h], unknownHandles: [], scrubbed: false, restored: 0 });
+  });
+
+  it("appends the helpline card when a stale handle leaves an ambulance reply with no number", async () => {
+    const { registry, deps, corrections } = setup({ active: ["r"] });
+    const h = registry.ambulance("g");
+    const g = await guardReply(reply({ reply: `Is number par call karein: {{AMB:${h}}}`, intent: "ambulance", language: "hi" }), deps);
+    expect(corrections).toHaveLength(1);
+    const card = buildHelplineCard("+919999900000", "hi");
+    expect(g).toMatchObject({
+      text: `Is number par call karein:\n\n${card}`,
+      template: `Is number par call karein:\n\n${card.replace("+91 99999 00000", "{{PHONE:helpline}}")}`,
+      staleHandles: [h], restored: 0,
+    });
+  });
+
+  it("appends it too when the corrected reply drops the retired unit but still gives no number", async () => {
+    const { registry, deps } = setup({ active: ["r"], corrected: [reply({ reply: "Which area are you in?", intent: "ambulance" })] });
+    const h = registry.ambulance("g");
+    const g = await guardReply(reply({ reply: `Number: {{AMB:${h}}}`, intent: "ambulance" }), deps);
+    expect(g).toMatchObject({ text: `Which area are you in?\n\n${buildHelplineCard("+919999900000", "en")}`, staleHandles: [] });
+  });
+
+  it("appends no helpline card when a number still reaches the reporter", async () => {
+    const { registry, deps } = setup({ active: ["r"], corrected: [reply({ reply: "Please call our helpline {{PHONE:helpline}}.", intent: "ambulance" })] });
+    const h = registry.ambulance("g");
+    const g = await guardReply(reply({ reply: `Number: {{AMB:${h}}}`, intent: "ambulance" }), deps);
+    expect(g.text).toBe("Please call our helpline +91 99999 00000.");
+    const both = setup({ active: ["r"] });
+    const stale = both.registry.ambulance("g");
+    const live = both.registry.ambulance("r");
+    const g2 = await guardReply(reply({ reply: `Call {{AMB:${live}}} (the other one, {{AMB:${stale}}}, is off duty).`, intent: "ambulance" }), both.deps);
+    expect(g2.text).toContain("+91 98765 00001");
+    expect(g2.text).not.toContain("99999 00000");
   });
 
   it("replaces dispatch language after one correction, keeping the number, its partner label and its token", async () => {

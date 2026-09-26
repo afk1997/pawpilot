@@ -19,6 +19,7 @@ import { formatIst } from "@/server/agent/prompt";
 import { findDigitRuns } from "@/server/agent/scrub";
 import { setFetchForTests } from "@/server/interakt/client";
 import { log } from "@/server/log";
+import { buildHelplineCard } from "@/server/messages/cards";
 import { DISPATCH_CORRECTION_NOTE, TOKEN_CORRECTION_NOTE } from "@/server/messages/system-replies";
 
 let ids: DirectoryIds;
@@ -687,7 +688,7 @@ describe("the Claude turn's time budget, audit totals and failure handling", () 
       expect(await eventsOf("unknown_handle")).toHaveLength(0);
     });
 
-    it("records stale_handle, not unknown_handle, when the correction repeats it", async () => {
+    it("records stale_handle, not unknown_handle, when the correction repeats it, and sends the helpline card instead of an empty call line", async () => {
       const c = await conv();
       const h = await staleHandle(c.id);
       await storeReporterMessage(c.id, { kind: "text", content: "number phir se bhejo" });
@@ -695,7 +696,9 @@ describe("the Claude turn's time budget, audit totals and failure handling", () 
       await runTurn(c.id, { backend });
       expect(backend.calls).toHaveLength(2);
       const [m] = await outbound(c.id);
-      expect(m.content).toBe("Is number par call karein:");
+      const card = buildHelplineCard("+919999900000", "en");
+      expect(m.content).toBe(`Is number par call karein:\n\n${card}`);
+      expect(m.contentTemplate).toBe(`Is number par call karein:\n\n${card.replace("+91 99999 00000", "{{PHONE:helpline}}")}`);
       expect(m.content).not.toContain("70000 00001");
       expect((await eventsOf("stale_handle")).map((e) => e.payload)).toEqual([{ turnId: m.turnId, handles: [h] }]);
       expect(await eventsOf("unknown_handle")).toHaveLength(0);

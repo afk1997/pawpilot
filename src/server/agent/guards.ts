@@ -1,7 +1,7 @@
 import type { DirectoryAmbulance, MatchType } from "../directory/matcher";
 import type { DirectoryClinic } from "../directory/repo";
 import { foldDigits } from "../content/static";
-import { formatIndianPhone, renderNumberForToken } from "../messages/cards";
+import { buildHelplineCard, formatIndianPhone, renderNumberForToken } from "../messages/cards";
 import { callDirectlyLine, DISPATCH_CORRECTION_NOTE, TOKEN_CORRECTION_NOTE } from "../messages/system-replies";
 import { extractTokens, type HandleRegistry } from "./handles";
 import { renderReply, type RenderLookups, type RenderResult } from "./render";
@@ -98,7 +98,8 @@ const appendLine = (text: string, line: string) => (text.trim() === "" ? line : 
  * guard (typed runs, or dropped pieces holding a digit) and a stale handle get one corrective call, then typed runs are
  * stripped; the dispatch guard gets one, whose draft meets the digit guard again, then its sentences are replaced.
  * Every number any draft inserted must reach the reporter (the numbers are code-inserted, so safe): one the final
- * reply lacks goes out again after the call-directly line. needs_human holds if any draft set it, and then no draft
+ * reply lacks goes out again after the call-directly line. An ambulance reply left with no number at all because a
+ * retired unit's handle was dropped gets the helpline card. needs_human holds if any draft set it, and then no draft
  * after it gets a guessed card.
  */
 export async function guardReply(first: StructuredReply, deps: GuardDeps): Promise<GuardedReply> {
@@ -123,6 +124,8 @@ export async function guardReply(first: StructuredReply, deps: GuardDeps): Promi
   };
   const inserted = new Set<string>();
   let needsHuman = false;
+  /** Some draft used the handle of a unit or clinic that is no longer active. */
+  let staleSeen = false;
 
   const draft = async (structured: StructuredReply): Promise<Draft> => {
     needsHuman ||= structured.needs_human;
@@ -144,16 +147,18 @@ export async function guardReply(first: StructuredReply, deps: GuardDeps): Promi
     for (const phone of rendered.inserted) inserted.add(phone);
     // Never the numbers of earlier replies: the transcript masks them, so the model retyping one is a leak.
     const allowed = [...rendered.inserted, ...deps.toolRuns()];
+    const stale = rendered.unknownHandles.filter((dropped) => {
+      const ref = registry.resolve(dropped);
+      return ref !== undefined && gone.has(ref.id);
+    });
+    if (stale.length > 0) staleSeen = true;
     return {
       structured,
       rendered,
       allowed,
       foreign: foreignDigitRuns(rendered.text, allowed),
       digitDrops: rendered.unknownHandles.filter((dropped) => DIGIT_RE.test(dropped)),
-      stale: rendered.unknownHandles.filter((dropped) => {
-        const ref = registry.resolve(dropped);
-        return ref !== undefined && gone.has(ref.id);
-      }),
+      stale,
     };
   };
 
@@ -176,6 +181,15 @@ export async function guardReply(first: StructuredReply, deps: GuardDeps): Promi
     if (corrected) d = await draft(corrected);
   }
   let { text, template } = guarded(d);
+
+  // A retired unit's number was dropped and no draft gave another: an ambulance reply never goes out as "call this
+  // number:" with none, so the helpline card follows. Its number counts as inserted, so the steps below keep it.
+  if (staleSeen && d.structured.intent === "ambulance" && inserted.size === 0) {
+    const card = buildHelplineCard(deps.helplinePhone, d.structured.language);
+    text = appendLine(text, card);
+    template = appendLine(template, card.replace(formatIndianPhone(deps.helplinePhone), "{{PHONE:helpline}}"));
+    inserted.add(deps.helplinePhone);
+  }
 
   // Dispatch guard: one corrective call, whose draft meets the digit guard again, then sentence replacement.
   let replaced = false;
