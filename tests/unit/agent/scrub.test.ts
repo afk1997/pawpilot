@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { DIGIT_RUN_RE, digitsOf, findDigitRuns, foreignDigitRuns, stripRuns, hasDispatchLanguage, replaceDispatchSentences } from "@/server/agent/scrub";
+import { buildAmbulanceCard, buildHelplineCard, buildMultiAmbulanceCard } from "@/server/messages/cards";
+import { callDirectlyLine } from "@/server/messages/system-replies";
 
 describe("digit scrubber", () => {
   it("finds runs of 7+ digits with spaces, dashes and plus", () => {
@@ -11,7 +13,7 @@ describe("digit scrubber", () => {
     expect(foreignDigitRuns(text, ["+917000000001", "917000000007"])).toEqual([]);
   });
   it("strips foreign runs cleanly", () => {
-    expect(stripRuns("Call 9876543210 now.", ["9876543210"])).toBe("Call now.");
+    expect(stripRuns("Call 9876543210 now.", ["9876543210"], [])).toBe("Call now.");
   });
 });
 
@@ -35,7 +37,7 @@ describe("digit scrubber: native numerals", () => {
     const text = "कॉल करें ९८७६५४३२१०";
     const runs = foreignDigitRuns(text, []);
     expect(runs).toEqual(["9876543210"]);
-    expect(stripRuns(text, runs)).toBe("कॉल करें");
+    expect(stripRuns(text, runs, [])).toBe("कॉल करें");
   });
 
   it.each([
@@ -100,7 +102,7 @@ describe("digit scrubber: allowed numbers are masked before runs are read", () =
     const text = "x 1234567 y 1234567 7654321 z";
     const runs = foreignDigitRuns(text, []);
     expect(runs).toEqual(["1234567", "1234567 7654321"]);
-    expect(stripRuns(text, runs)).toBe("x y z");
+    expect(stripRuns(text, runs, [])).toBe("x y z");
   });
 });
 
@@ -113,7 +115,7 @@ describe("digit scrubber: separators", () => {
     const text = `Call ${hidden} now.`;
     const runs = foreignDigitRuns(text, []);
     expect(runs).toHaveLength(1);
-    expect(stripRuns(text, runs)).toBe("Call now.");
+    expect(stripRuns(text, runs, [])).toBe("Call now.");
   });
 
   it("returns runs with plain separators", () => {
@@ -122,7 +124,7 @@ describe("digit scrubber: separators", () => {
 
   it("rewrites separators only between digits, so prose keeps its dashes and line breaks", () => {
     const text = "Stay calm \u2014 the dog is safe.\n\nCall 9876543210 now.\nThanks";
-    expect(stripRuns(text, foreignDigitRuns(text, []))).toBe("Stay calm \u2014 the dog is safe.\n\nCall now.\nThanks");
+    expect(stripRuns(text, foreignDigitRuns(text, []), [])).toBe("Stay calm \u2014 the dog is safe.\n\nCall now.\nThanks");
   });
 
   it("reads runs with a fresh pattern, so a caller's exec on DIGIT_RUN_RE cannot skip any", () => {
@@ -148,5 +150,125 @@ describe("dispatch guard: details", () => {
 
   it("returns folded text", () => {
     expect(replaceDispatchSentences("हम भेज रहे हैं। २४ घंटे खुला।", "R।")).toBe("R। 24 घंटे खुला।");
+  });
+});
+
+const arhamUnit = { city: "Mumbai", area: "Ghatkopar", phone: "+917000000001", operatorName: "Arham Yuva Seva Group", operatorIsArham: true };
+const partnerUnit = { city: "Mumbai", area: "Wadala", phone: "+917000000007", operatorName: "Hope for Indies Trust", operatorIsArham: false };
+
+describe("dispatch guard: vocabulary", () => {
+  it.each([
+    "I'm sending an ambulance.", "I am sending help now.", "I\u2019m sending an ambulance.",
+    "The ambulance is coming to you.", "They are coming to you now.", "They're coming to your location.",
+    "It is on its way.", "The driver is on his way.", "Thank you, they are on the way.",
+    "एम्बुलेंस रास्ते में है।", "एम्बुलेंस आ रही है।", "टीम आ रही है।", "ड्राइवर आ रहा है।", "वे आ रहे हैं, एम्बुलेंस के साथ।",
+    "गा\u0921\u093Cी आ रही है।", "गा\u095Cी आ रही है।",
+    "हमने एम्बुलेंस भेज दी है।", "एम्बुलेंस भेजी है।", "एम्बुलेंस भेजी गई है।", "मैं एम्बुलेंस भेज रहा हूँ।",
+    "आम्ही एम्बुलन्स पाठवली आहे.", "आम्ही टीम पाठवले आहे.", "एम्बुलन्स वाटेत आहे.", "गाडी रस्त्यात आहे.", "मी एम्बुलन्स पाठवत आहे.",
+    "અમે એમ્બ્યુલન્સ મોકલી દીધી છે.", "એમ્બ્યુલન્સ રસ્તામાં છે.",
+  ])("detects %j", (text) => {
+    expect(hasDispatchLanguage(text)).toBe(true);
+  });
+
+  it("reads any horizontal whitespace between words, but never a line break", () => {
+    for (const t of ["We  are sending help", "We are\u00A0sending help", "They are on\u202Fthe\tway", "एम्बुलेंस रास्ते\u00A0में है"]) {
+      expect(hasDispatchLanguage(t)).toBe(true);
+    }
+    // A line break ends a sentence, so words on either side of it never form a phrase.
+    expect(hasDispatchLanguage("We are\nsending help.")).toBe(false);
+  });
+
+  it("keeps real claims whose second-person word is an object or sits before a first-person subject", () => {
+    for (const t of [
+      "हम आप तक एम्बुलेंस भेज रहे हैं।", "हमने आपके लिए एम्बुलेंस भेज दी है।", "तुम्ही सांगितलेल्या ठिकाणी आम्ही एम्बुलन्स पाठवली आहे.",
+      "An ambulance for you is on the way.", "आप रुकिए एम्बुलेंस भेज दी है।", "तुम्ही थांबा रुग्णवाहिका वाटेत आहे.", "आप घबराइए मत वे रास्ते में हैं।",
+    ]) {
+      expect(hasDispatchLanguage(t)).toBe(true);
+    }
+  });
+});
+
+describe("dispatch guard: exclusions", () => {
+  it.each([
+    "We are sending you the driver's number.", "We're sending you the number below.", "I am sending you the details.",
+    "I'm sending you the driver\u2019s contact.", "We are sending the ambulance driver's phone number again.",
+    "They were sending photos.", "were sending a video",
+    "Our dispatch team will call you back.", "Please ask the dispatcher.", "The dispatch-team is busy.",
+    "On the way to the clinic, keep the dog calm.", "Keep it calm on the way to vet.", "on the way to hospital",
+    "Are you on the way to the spot?", "Once you are on the way, call the driver.", "You're already on the way?",
+    "हम ड्राइवर का नंबर भेज रहे हैं।", "मैं आपको नंबर भेज रहा हूँ।", "मी तुम्हाला नंबर पाठवत आहे.", "હું તમને નંબર મોકલી રહ્યો છું.",
+    "आप फोटो भेज रहे हैं।", "आपने जो फोटो भेजी है, वह मिल गई।", "तुम्ही वाटेत आहात का?", "तुम्ही फोटो पाठवले.", "તમે ફોટો મોકલી રહ્યા છો.", "તમે રસ્તામાં છો?",
+    "बारिश आ रही है।", "एम्बुलेंस का नंबर ऊपर है। बारिश आ रही है।",
+    "कृपया फोटो भेज दीजिए।", "चौरास्ते में रुकिए।", "संदेश पाठवल्याबद्दल धन्यवाद.", "पाठवलेली माहिती मिळाली.",
+  ])("ignores %j", (text) => {
+    expect(hasDispatchLanguage(text)).toBe(false);
+  });
+
+  it("leaves text without dispatch language as it was, whatever its punctuation", () => {
+    const text = "Dr. Shah... see arhamalwayscare.org/help?x=1! Wait...what?! ok।ठीक है।\n\n1. Unit\n   +91 70000 00001";
+    expect(replaceDispatchSentences(text, "R.", ["+917000000001"])).toBe(text);
+  });
+
+  it("never flags the replacement line or a card, in any language", () => {
+    for (const lang of ["en", "hi", "mr", "gu"] as const) {
+      expect(hasDispatchLanguage(callDirectlyLine(lang))).toBe(false);
+      expect(hasDispatchLanguage(buildAmbulanceCard(partnerUnit, lang))).toBe(false);
+      expect(hasDispatchLanguage(buildMultiAmbulanceCard([arhamUnit, partnerUnit], lang))).toBe(false);
+      expect(hasDispatchLanguage(buildHelplineCard("+919999900000", lang))).toBe(false);
+    }
+  });
+});
+
+describe("dispatch guard: sentence replacement", () => {
+  const R = "Please call them directly and they will guide you.";
+
+  it("re-appends an allowed number the replaced sentence held, as it was written", () => {
+    expect(replaceDispatchSentences("Call +91 70000 00001, they're on the way!", R, ["+917000000001"])).toBe(`${R} +91 70000 00001`);
+    expect(replaceDispatchSentences("कॉल करें +९१ ७०००० ००००१, एम्बुलेंस रास्ते में है।", "R।", ["+917000000001"])).toBe("R। +91 70000 00001");
+  });
+
+  it("merges adjacent replaced sentences into one replacement", () => {
+    expect(replaceDispatchSentences("We're sending help. They're on the way! Stay calm.", R)).toBe(`${R} Stay calm.`);
+    expect(replaceDispatchSentences("We are sending help.\n\nThey're on the way!\n\nStay calm.", "R.")).toBe("R.\n\nStay calm.");
+  });
+
+  it("ends a sentence only at a terminator followed by whitespace or the end, so URLs and titles stay whole", () => {
+    expect(replaceDispatchSentences("Visit arhamalwayscare.org/help on the way.", "R.")).toBe("R.");
+    expect(replaceDispatchSentences("See arhamalwayscare.org/help. They're on the way!", "R.")).toBe("See arhamalwayscare.org/help. R.");
+    expect(replaceDispatchSentences("Dr. Shah's ambulance is on the way. Stay calm.", "R.")).toBe("R. Stay calm.");
+  });
+
+  it("puts a space between a danda-ended sentence and a replacement that had none", () => {
+    expect(replaceDispatchSentences("शांत रहें।हम भेज रहे हैं।", "R।")).toBe("शांत रहें। R।");
+    expect(replaceDispatchSentences("हम भेज रहे हैं।शांत रहें।", "R।")).toBe("R। शांत रहें।");
+  });
+
+  it("re-appends each allowed number of the merged sentences once, and drops typed digits", () => {
+    const allowed = ["+917000000001", "+917000000007"];
+    const text = "Call +91 70000 00001, we're sending help. They're on the way with +91 70000 00007 and 7000000001! Stay calm.";
+    const out = replaceDispatchSentences(text, "R.", allowed);
+    expect(out).toBe("R. +91 70000 00001 +91 70000 00007 Stay calm.");
+    expect(foreignDigitRuns(out, allowed)).toEqual([]);
+    expect(replaceDispatchSentences("We are sending 9876543210 now.", "R.", allowed)).toBe("R.");
+  });
+
+  it("keeps a multi-card's indents after a replaced sentence", () => {
+    const card = buildMultiAmbulanceCard([arhamUnit, partnerUnit], "en");
+    expect(card).toContain("\n   +91 70000 00001");
+    expect(replaceDispatchSentences(`They're on the way.\n\n${card}`, "R.", ["+917000000001", "+917000000007"])).toBe(`R.\n\n${card}`);
+  });
+});
+
+describe("digit scrubber: allow-list and layout details", () => {
+  it("treats an allowed number glued to a digit or a plus as a foreign run", () => {
+    expect(foreignDigitRuns("Call 0917000000001 now", ["+917000000001"])).toEqual(["0917000000001"]);
+    expect(foreignDigitRuns("Call +7000000001 now", ["+917000000001"])).toEqual(["+7000000001"]);
+  });
+
+  it("collapses the double space a removal leaves but keeps a card's indents", () => {
+    const card = buildMultiAmbulanceCard([arhamUnit, partnerUnit], "en");
+    const text = `Call 9876543210  now.\n\n${card}`;
+    const allowed = ["+917000000001", "+917000000007"];
+    expect(stripRuns(text, foreignDigitRuns(text, allowed), allowed)).toBe(`Call now.\n\n${card}`);
   });
 });
