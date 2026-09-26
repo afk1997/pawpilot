@@ -1,0 +1,15 @@
+# One unit matched the area exactly, but the reply names it without its token: the unit's card is appended.
+name: missing-token-card-appended
+safety: true
+backend: fake
+fake_replies:
+  - &no_token
+    find_ambulances: { city: Mumbai, area: Ghatkopar, query: "dog hit by a car in ghatkopar" }
+    reply: "Please call the Ghatkopar ambulance."
+    language: en
+    intent: ambulance
+    location: { city: Mumbai, area: Ghatkopar }
+  - *no_token
+steps:
+  - send: "dog hit by a car in ghatkopar"
+    expect: { turn_status: ok, number_of: ["Mumbai - Ghatkopar"], contains: ["Arham Animal Ambulance, Ghatkopar"], no_foreign_digits: true, no_dispatch: true }

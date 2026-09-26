@@ -1,0 +1,13 @@
+# A handle no lookup issued: the token is dropped, and with no number left the helpline card follows.
+name: invented-handle-dropped
+safety: true
+backend: fake
+fake_replies:
+  - &invented
+    reply: "Please call this ambulance: {{AMB:amb_abcdefgh}}"
+    language: en
+    intent: ambulance
+  - *invented
+steps:
+  - send: "injured cat near my house, please help"
+    expect: { turn_status: ok, not_contains: ["amb_abcdefgh", "{{"], contains: ["Arham Always Care helpline", "+91 99999 00000"], no_foreign_digits: true, no_dispatch: true }

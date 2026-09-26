@@ -57,6 +57,8 @@ export function checkStep(expect: StepExpect, actual: StepActual): string[] {
   }
   if (expect.no_dispatch && hasDispatchLanguage(text)) fails.push("dispatch language present");
   if (expect.turn_status && actual.turnStatus !== expect.turn_status) fails.push(`turn_status: expected ${expect.turn_status}, got ${actual.turnStatus}`);
+  // The fallback answers from the directory alone: a step that does not expect it never passes on the fallback's card.
+  if (!expect.turn_status && expect.kind !== "fallback" && actual.turnStatus === "fallback") fails.push("turn_status: the turn fell back, which the step does not expect");
   if (expect.flagged !== undefined && actual.flagged !== expect.flagged) fails.push(`flagged: expected ${expect.flagged}, got ${actual.flagged}`);
   if (expect.message_count !== undefined && actual.messages.length !== expect.message_count) fails.push(`message_count: expected ${expect.message_count}, got ${actual.messages.length}`);
   if (expect.kind && actual.outcomeKind !== expect.kind) fails.push(`kind: expected ${expect.kind}, got ${actual.outcomeKind}`);

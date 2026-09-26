@@ -1,13 +1,11 @@
-import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { config as loadEnv } from "dotenv";
-import { parse as parseYaml } from "yaml";
 import { asc, eq } from "drizzle-orm";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { checkStep } from "./assertions";
 import {
-  UsageError, allowedNumbersFor, databaseName, databaseRefusal, fakeStep, formatTable, modelReplyOf, needsClaude, parseArgs,
-  summarize, summaryLine, type Directory, type EvalArgs, type Labels, type Scenario, type ScenarioResult,
+  UsageError, allowedNumbersFor, databaseName, databaseRefusal, formatTable, loadScenarios, modelReplyOf, needsClaude, parseArgs,
+  scriptedBackend, summarize, summaryLine, type Directory, type EvalArgs, type Labels, type Scenario, type ScenarioResult,
 } from "./lib";
 import { getConfig, resetConfigForTests } from "../src/server/config";
 import { getDb, getSql, closeDb } from "../src/server/db/client";
@@ -17,7 +15,6 @@ import { runTurn } from "../src/server/worker/turn-runner";
 import { pauseClaude, clearClaudePause } from "../src/server/worker/pause";
 import { stopBoss } from "../src/server/queue/boss";
 import { getBackend } from "../src/server/agent";
-import { FakeBackend } from "../src/server/agent/fake-backend";
 import { getStaticPhones } from "../src/server/content/static";
 import { resetCoverageCache } from "../src/server/directory/coverage";
 import { loadActiveAmbulances, loadActiveClinics } from "../src/server/directory/repo";
@@ -87,9 +84,8 @@ async function runScenario(s: Scenario) {
   const always = [getConfig().helplinePhone, ...Object.values(getStaticPhones())];
   const labels: Labels = { AMB: new Map(units.map((a) => [a.label, a.id])), CLINIC: new Map(clinicRows.map((c) => [c.label, c.id])) };
 
-  const backend = s.backend === "fake" || !useClaude
-    ? new FakeBackend((s.fake_replies ?? []).map((r) => fakeStep(r, labels)))
-    : getBackend();
+  const script = s.backend === "fake" || !useClaude ? scriptedBackend(s.fake_replies ?? [], labels) : null;
+  const backend = script?.backend ?? getBackend();
 
   const [conv] = await getDb()
     .insert(conversations)
@@ -108,9 +104,13 @@ async function runScenario(s: Scenario) {
           ? { kind: "location", content: step.place ?? "", placeLabel: step.place ?? null, lat: 18.5, lng: 73.8 }
           : { kind: "text", content: t });
     }
+    const scriptErrors = script?.errors.length ?? 0;
     const started = Date.now();
     const outcome = await runTurn(conv.id, { backend });
     latencies.push(Date.now() - started);
+    // The turn caught the throw and fell back: the scripted scenario failed, whatever the fallback's reply says.
+    const thrown = script?.errors.slice(scriptErrors) ?? [];
+    if (thrown.length > 0) throw new Error(`step ${i + 1}: the fake backend threw: ${[...new Set(thrown)].join("; ")}`);
     const all = await getDb().select().from(messages).where(eq(messages.conversationId, conv.id)).orderBy(asc(messages.createdAt));
     const newAssistant = all.slice(before + texts.length).filter((m) => m.role === "assistant");
     const [row] = await getDb().select().from(conversations).where(eq(conversations.id, conv.id));
@@ -132,11 +132,13 @@ async function runScenario(s: Scenario) {
 }
 
 async function main() {
-  const dir = join(process.cwd(), "evals", "scenarios");
-  const scenarios = readdirSync(dir)
-    .filter((f) => f.endsWith(".yaml"))
-    .sort()
-    .map((f) => parseYaml(readFileSync(join(dir, f), "utf8")) as Scenario);
+  let scenarios: Scenario[];
+  try {
+    scenarios = loadScenarios(join(process.cwd(), "evals", "scenarios"));
+  } catch (e) {
+    console.error(e instanceof Error ? e.message : e);
+    process.exit(1);
+  }
   if (args.only && !scenarios.some((s) => s.name === args.only)) usage(`No scenario named "${args.only}"`);
   if (useClaude) console.warn("⚠ --backend claude: every scenario not pinned to the fake backend calls the real Claude and spends the owner's Max usage.");
 

@@ -1,0 +1,16 @@
+# The reply says we send the ambulance, and so does the corrected draft (the same reply, scripted twice): the dispatch
+# guard replaces the sentence with the call-directly line and keeps the unit's number.
+name: dispatch-english-with-token
+safety: true
+backend: fake
+fake_replies:
+  - &dispatch
+    find_ambulances: { city: Mumbai, area: Ghatkopar, query: "injured dog at ghatkopar station" }
+    reply: "We are sending the ambulance now: {{AMB:Mumbai - Ghatkopar}}"
+    language: en
+    intent: ambulance
+    location: { city: Mumbai, area: Ghatkopar }
+  - *dispatch
+steps:
+  - send: "injured dog at ghatkopar station"
+    expect: { turn_status: ok, no_dispatch: true, number_of: ["Mumbai - Ghatkopar"], contains: ["Please call them directly and they will guide you."], no_foreign_digits: true }

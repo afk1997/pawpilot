@@ -1,7 +1,12 @@
 import { describe, it, expect } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
-  UsageError, allowedNumbersFor, databaseName, databaseRefusal, fakeStep, formatTable, modelReplyOf, needsClaude, parseArgs,
-  resolveLabelTokens, summarize, summaryLine, type Labels, type ScenarioResult,
+  UnscriptedCallError, UsageError, allowedNumbersFor, databaseName, databaseRefusal, fakeStep, formatTable, loadScenarios,
+  modelReplyOf, needsClaude, parseArgs, parseScenario, resolveLabelTokens, scriptedBackend, summarize, summaryLine,
+  type Labels, type ScenarioResult,
 } from "../../../evals/lib";
 import { HandleRegistry } from "@/server/agent/handles";
 import type { ToolContext } from "@/server/agent/tools";
@@ -165,5 +170,78 @@ describe("formatTable", () => {
       "alpha     yes     PASS    12, 9 ms",
       `b${" ".repeat(17)}SKIP    -`,
     ]);
+  });
+});
+
+describe("parseScenario", () => {
+  const valid = "name: x\nfake_replies:\n  - { reply: Hi., intent: smalltalk }\nsteps:\n  - send: hi\n    expect: { message_count: 1 }\n";
+  it("reads a valid scenario", () => {
+    expect(parseScenario("x.yaml", valid)).toEqual({ name: "x", fake_replies: [{ reply: "Hi.", intent: "smalltalk" }], steps: [{ send: "hi", expect: { message_count: 1 } }] });
+  });
+  it("fails an unknown key with the file name and the key's path", () => {
+    expect(() => parseScenario("03-x.yaml", "name: x\nsteps:\n  - send: hi\n    expect: { containz: [a] }\n")).toThrow('03-x.yaml: steps.0.expect: Unrecognized key: "containz"');
+    expect(() => parseScenario("x.yaml", "name: x\nsafty: true\nsteps:\n  - send: hi\n")).toThrow('x.yaml: (top level): Unrecognized key: "safty"');
+    expect(() => parseScenario("x.yaml", "name: x\nfake_replies:\n  - { reply: Hi., find_ambulance: { query: q } }\nsteps:\n  - send: hi\n")).toThrow('x.yaml: fake_replies.0: Unrecognized key: "find_ambulance"');
+  });
+  it("refuses a safety scenario that only runs on Claude, and fake_replies on a claude-only one", () => {
+    expect(() => parseScenario("x.yaml", "name: x\nsafety: true\nbackend: claude\nsteps:\n  - send: hi\n")).toThrow("x.yaml: backend: a safety scenario must run on the fake backend");
+    expect(() => parseScenario("x.yaml", "name: x\nbackend: claude\nfake_replies:\n  - { reply: Hi. }\nsteps:\n  - send: hi\n")).toThrow("x.yaml: fake_replies: a backend: claude scenario never uses fake_replies");
+  });
+  it("refuses a step that sends nothing or two things, and a place without a pin", () => {
+    expect(() => parseScenario("x.yaml", "name: x\nsteps:\n  - expect: { message_count: 1 }\n")).toThrow("x.yaml: steps.0: a step sends exactly one of send, send_burst or send_kind");
+    expect(() => parseScenario("x.yaml", "name: x\nsteps:\n  - { send: hi, send_burst: [hi, hello] }\n")).toThrow("x.yaml: steps.0: a step sends exactly one of send, send_burst or send_kind");
+    expect(() => parseScenario("x.yaml", "name: x\nsteps:\n  - { send: hi, place: Pune }\n")).toThrow("x.yaml: steps.0.place: place goes only with send_kind: location");
+  });
+  it("refuses an invalid regex, an unknown language or intent, a scenario without steps and invalid YAML", () => {
+    expect(() => parseScenario("x.yaml", "name: x\nsteps:\n  - send: hi\n    expect: { regex: \"(\" }\n")).toThrow("x.yaml: steps.0.expect.regex: not a valid regular expression");
+    expect(() => parseScenario("x.yaml", "name: x\nlanguage: ta\nsteps:\n  - send: hi\n")).toThrow("x.yaml: language:");
+    expect(() => parseScenario("x.yaml", "name: x\nsteps:\n  - send: hi\n    expect: { intent: rescue }\n")).toThrow("x.yaml: steps.0.expect.intent:");
+    expect(() => parseScenario("x.yaml", "name: x\nsteps: []\n")).toThrow("x.yaml: steps:");
+    expect(() => parseScenario("x.yaml", "name: x\nsteps: [\n")).toThrow("x.yaml: not valid YAML");
+  });
+});
+
+describe("loadScenarios", () => {
+  it("reads every scenario under evals/scenarios", () => {
+    const scenarios = loadScenarios(fileURLToPath(new URL("../../../evals/scenarios", import.meta.url)));
+    expect(scenarios).toHaveLength(27);
+    expect(new Set(scenarios.map((s) => s.name)).size).toBe(27);
+    expect(scenarios.filter((s) => s.backend === "claude").map((s) => s.name)).toEqual(["donate", "volunteer", "menu-tap-ambulance"]);
+  });
+  it("lists every invalid file and every reused name in one error", () => {
+    const dir = mkdtempSync(join(tmpdir(), "evals-"));
+    try {
+      writeFileSync(join(dir, "01-a.yaml"), "name: a\nsteps:\n  - send: hi\n");
+      writeFileSync(join(dir, "02-b.yaml"), "name: a\nsteps:\n  - send: hi\n");
+      writeFileSync(join(dir, "03-c.yaml"), "name: c\nstep: []\n");
+      writeFileSync(join(dir, "notes.txt"), "not a scenario");
+      expect(() => loadScenarios(dir)).toThrow(/02-b\.yaml: name "a" is already used by 01-a\.yaml\n03-c\.yaml: /);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("scriptedBackend", () => {
+  it("answers each call with the next scripted reply, then throws for a call with none left", async () => {
+    const { backend, errors } = scriptedBackend([{ reply: "One." }, { reply: "Two." }], labels);
+    const input = turnInput(toolContext(new HandleRegistry("conv-1")));
+    const replies: string[] = [];
+    for (let i = 0; i < 2; i++) {
+      const r = await backend.runTurn(input);
+      if (r.ok) replies.push(r.structured.reply);
+    }
+    expect(replies).toEqual(["One.", "Two."]);
+    await expect(backend.runTurn(input)).rejects.toThrow(UnscriptedCallError);
+    await expect(backend.runTurn(input)).rejects.toThrow("no fake_replies left");
+    expect(errors).toHaveLength(2);
+  });
+  it("throws on the first call without a script, and records a step that throws", async () => {
+    const empty = scriptedBackend([], labels);
+    await expect(empty.backend.runTurn(turnInput(toolContext(new HandleRegistry("conv-1"))))).rejects.toThrow(UnscriptedCallError);
+    expect(empty.errors).toEqual(["the fake backend was called with no fake_replies left"]);
+    const noContext = scriptedBackend([{ reply: "One." }], labels);
+    await expect(noContext.backend.runTurn(turnInput())).rejects.toThrow("tool context");
+    expect(noContext.errors).toEqual(["the fake backend got no tool context"]);
   });
 });

@@ -1,40 +1,140 @@
-import { okReply } from "../src/server/agent/fake-backend";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { parse as parseYaml } from "yaml";
+import { z } from "zod";
+import { FakeBackend, okReply } from "../src/server/agent/fake-backend";
 import { findAmbulancesImpl, findClinicsImpl, getInfoImpl } from "../src/server/agent/tools";
 import type { HandleMap } from "../src/server/agent/handles";
-import type { StructuredReply, TurnInput, TurnResult } from "../src/server/agent/types";
+import type { LLMBackend, StructuredReply, TurnInput, TurnResult } from "../src/server/agent/types";
 import type { InfoTopic } from "../src/server/content/static";
-import type { Language } from "../src/server/types";
+import { INTENTS, LANGUAGES } from "../src/server/types";
+import type { TurnOutcome } from "../src/server/worker/turn-runner";
 import type { StepExpect } from "./assertions";
+
+const OUTCOME_KINDS = ["noop", "locked", "human_mode", "welcome", "menu", "audio_only", "fallback", "ok", "failed"] as const satisfies readonly TurnOutcome["kind"][];
+const INFO_TOPICS = ["donate", "volunteer", "about", "faq", "human_emergency", "helpline"] as const satisfies readonly InfoTopic[];
+
+const isRegExp = (source: string) => {
+  try {
+    new RegExp(source, "i");
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** StepExpect, strictly: an unknown or misspelt check fails the file instead of passing unchecked. */
+const StepExpectSchema: z.ZodType<StepExpect> = z.strictObject({
+  contains: z.array(z.string()).optional(),
+  not_contains: z.array(z.string()).optional(),
+  regex: z.string().refine(isRegExp, "not a valid regular expression").optional(),
+  language: z.enum(LANGUAGES).optional(),
+  intent: z.enum(INTENTS).optional(),
+  number_of: z.array(z.string()).optional(),
+  no_foreign_digits: z.boolean().optional(),
+  no_dispatch: z.boolean().optional(),
+  turn_status: z.enum(["ok", "fallback"]).optional(),
+  flagged: z.boolean().optional(),
+  message_count: z.number().int().min(0).optional(),
+  kind: z.enum(OUTCOME_KINDS).optional(),
+});
+
+const lookupPlace = z.string().nullable().optional();
 
 /**
  * One scripted backend call. The lookup keys run those tools first, as the model would. In `reply`, {{AMB:<label>}} and
  * {{CLINIC:<label>}} name a fixture unit or clinic by its label (resolveLabelTokens).
  */
-export interface FakeReply extends Partial<StructuredReply> {
-  find_ambulances?: { city?: string | null; area?: string | null; query: string };
-  find_clinics?: { city?: string | null };
-  get_info?: { topic: InfoTopic };
+const FakeReplySchema = z.strictObject({
+  reply: z.string(),
+  language: z.enum(LANGUAGES).optional(),
+  intent: z.enum(INTENTS).optional(),
+  location: z.strictObject({ city: z.string().nullable(), area: z.string().nullable() }).optional(),
+  needs_human: z.boolean().optional(),
+  notes: z.string().nullable().optional(),
+  find_ambulances: z.strictObject({ city: lookupPlace, area: lookupPlace, query: z.string() }).optional(),
+  find_clinics: z.strictObject({ city: lookupPlace }).optional(),
+  get_info: z.strictObject({ topic: z.enum(INFO_TOPICS) }).optional(),
+});
+
+const StepSchema = z
+  .strictObject({
+    send: z.string().optional(),
+    send_burst: z.array(z.string()).min(1).optional(),
+    send_kind: z.enum(["audio", "location"]).optional(),
+    place: z.string().optional(),
+    expect: StepExpectSchema.optional(),
+  })
+  .superRefine((step, ctx) => {
+    if ([step.send, step.send_burst, step.send_kind].filter((v) => v !== undefined).length !== 1) {
+      ctx.addIssue({ code: "custom", message: "a step sends exactly one of send, send_burst or send_kind" });
+    }
+    if (step.place !== undefined && step.send_kind !== "location") {
+      ctx.addIssue({ code: "custom", path: ["place"], message: "place goes only with send_kind: location" });
+    }
+  });
+
+const ScenarioSchema = z
+  .strictObject({
+    name: z.string().min(1),
+    safety: z.boolean().optional(),
+    language: z.enum(LANGUAGES).nullable().optional(),
+    first_contact: z.boolean().optional(),
+    /** "fake": always the scripted backend. "claude": its assertions need the real model, so a fake run skips it. */
+    backend: z.enum(["fake", "claude"]).optional(),
+    /** The fake backend's script, one reply per backend call; a claude run ignores it. */
+    fake_replies: z.array(FakeReplySchema).optional(),
+    pause_claude: z.boolean().optional(),
+    steps: z.array(StepSchema).min(1),
+  })
+  .superRefine((s, ctx) => {
+    if (s.safety && s.backend === "claude") {
+      ctx.addIssue({ code: "custom", path: ["backend"], message: "a safety scenario must run on the fake backend: script it with fake_replies instead" });
+    }
+    if (s.backend === "claude" && s.fake_replies !== undefined) {
+      ctx.addIssue({ code: "custom", path: ["fake_replies"], message: "a backend: claude scenario never uses fake_replies" });
+    }
+  });
+
+export type FakeReply = z.infer<typeof FakeReplySchema>;
+export type Step = z.infer<typeof StepSchema>;
+export type Scenario = z.infer<typeof ScenarioSchema>;
+
+/** One scenario file, validated: every problem is reported with the file name and the path of the offending key. */
+export function parseScenario(file: string, text: string): Scenario {
+  let raw: unknown;
+  try {
+    raw = parseYaml(text);
+  } catch (e) {
+    throw new Error(`${file}: not valid YAML: ${e instanceof Error ? e.message.split("\n")[0] : String(e)}`);
+  }
+  const parsed = ScenarioSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new Error(parsed.error.issues.map((i) => `${file}: ${i.path.length > 0 ? i.path.join(".") : "(top level)"}: ${i.message}`).join("\n"));
+  }
+  return parsed.data;
 }
 
-export interface Step {
-  send?: string;
-  send_burst?: string[];
-  send_kind?: "audio" | "location";
-  place?: string;
-  expect?: StepExpect;
-}
-
-export interface Scenario {
-  name: string;
-  safety?: boolean;
-  language?: Language | null;
-  first_contact?: boolean;
-  /** "fake": always the scripted backend. "claude": its assertions need the real model, so a fake run skips it. */
-  backend?: "fake" | "claude";
-  /** The fake backend's script, one reply per backend call; a claude run ignores it. */
-  fake_replies?: FakeReply[];
-  pause_claude?: boolean;
-  steps: Step[];
+/** Every .yaml scenario in `dir`, in file order. One error lists each invalid file and each name used twice. */
+export function loadScenarios(dir: string): Scenario[] {
+  const scenarios: Scenario[] = [];
+  const errors: string[] = [];
+  const fileOf = new Map<string, string>();
+  for (const file of readdirSync(dir).filter((f) => f.endsWith(".yaml")).sort()) {
+    let s: Scenario;
+    try {
+      s = parseScenario(file, readFileSync(join(dir, file), "utf8"));
+    } catch (e) {
+      errors.push(e instanceof Error ? e.message : String(e));
+      continue;
+    }
+    const other = fileOf.get(s.name);
+    if (other !== undefined) errors.push(`${file}: name "${s.name}" is already used by ${other}`);
+    else fileOf.set(s.name, file);
+    scenarios.push(s);
+  }
+  if (errors.length > 0) throw new Error(`Invalid scenarios:\n${errors.join("\n")}`);
+  return scenarios;
 }
 
 /** A bad command line: the runner prints it with the usage and exits 2. */
@@ -120,8 +220,40 @@ export function fakeStep(r: FakeReply, labels: Labels): (input: TurnInput) => Pr
     if (find_ambulances) await findAmbulancesImpl(ctx, find_ambulances);
     if (find_clinics) await findClinicsImpl(ctx, find_clinics);
     if (get_info) getInfoImpl(ctx, get_info);
-    return okReply({ ...structured, reply: resolveLabelTokens(structured.reply ?? "", labels, ctx.registry.toJSON()) });
+    return okReply({ ...structured, reply: resolveLabelTokens(structured.reply, labels, ctx.registry.toJSON()) });
   };
+}
+
+/** A backend call a scenario's fake_replies has no reply left for. */
+export class UnscriptedCallError extends Error {
+  name = "UnscriptedCallError";
+  constructor() {
+    super("the fake backend was called with no fake_replies left");
+  }
+}
+
+/**
+ * The fake backend of a scenario: each call takes the next scripted reply, in order, and a call with none left throws
+ * UnscriptedCallError. The turn catches whatever a call throws and falls back, so every throw is also recorded in
+ * `errors`, for the runner to fail the step instead of judging the fallback.
+ */
+export function scriptedBackend(replies: FakeReply[], labels: Labels): { backend: LLMBackend; errors: string[] } {
+  const errors: string[] = [];
+  const recorded = (step: (input: TurnInput) => Promise<TurnResult>) => async (input: TurnInput) => {
+    try {
+      return await step(input);
+    } catch (e) {
+      errors.push(e instanceof Error ? e.message : String(e));
+      throw e;
+    }
+  };
+  const exhausted = (): never => {
+    const e = new UnscriptedCallError();
+    errors.push(e.message);
+    throw e;
+  };
+  // FakeBackend repeats its last step, so the script ends with the one that throws.
+  return { backend: new FakeBackend([...replies.map((r) => recorded(fakeStep(r, labels))), exhausted]), errors };
 }
 
 /** The phone numbers of the active directory, by unit or clinic id. */

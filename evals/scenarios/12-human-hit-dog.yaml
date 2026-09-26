@@ -1,6 +1,10 @@
-# The model decides needs_human; a script would only assert itself.
 name: human-word-not-escalation
-backend: claude
+fake_replies:
+  - find_ambulances: { city: Mumbai, area: Chembur, query: "a human hit the dog in Chembur" }
+    reply: "Please call the Chembur ambulance right away: {{AMB:Mumbai - Chembur}}. Keep the dog calm and away from traffic."
+    language: en
+    intent: ambulance
+    location: { city: Mumbai, area: Chembur }
 steps:
   - send: "a human hit the dog in Chembur, it is bleeding"
     expect: { intent: ambulance, number_of: ["Mumbai - Chembur"], flagged: false, no_foreign_digits: true, no_dispatch: true }

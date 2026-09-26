@@ -37,7 +37,7 @@ For real WhatsApp traffic locally, expose port 3000 (e.g. ngrok) and point the I
 | `npm run db:generate` | generate a migration after editing `src/server/db/schema.ts` |
 | `npm run migrate` | apply migrations to `DATABASE_URL` (neither the app nor the worker migrates at start) |
 | `npm run ingest:ambulances` | load `ambulances-clinics.csv` (or the path given after `--`) into `DATABASE_URL` |
-| `npm run eval` | the 22 conversation scenarios on the scripted fake backend, skipping the 5 that need the real model; `-- --backend claude` runs them on Claude and spends Max usage; `-- --only <name>` runs the one whose YAML `name:` matches. Uses `TEST_DATABASE_URL`; since it truncates every table, it refuses (exit 2) unless the database it connects to is named `*_test` (`-- --allow-db` overrides). Exits 1 when any scenario fails |
+| `npm run eval` | the 27 conversation scenarios on the scripted fake backend, skipping the 3 that need the real model; `-- --backend claude` runs them on Claude and spends Max usage; `-- --only <name>` runs the one whose YAML `name:` matches. Every scenario file is checked against a strict schema first, and an unknown key fails the run. Uses `TEST_DATABASE_URL`; since it truncates every table, it refuses (exit 2) unless the database it connects to is named `*_test` (`-- --allow-db` overrides). Exits 1 when any scenario fails |
 | `npm test` | all tests (needs the dev Postgres; uses the `arham_test` database; the Claude smoke test is skipped) |
 | `npm run test:unit` | `tests/unit` only (still needs the dev Postgres: the global setup migrates `arham_test`) |
 | `npm run test:watch` | vitest in watch mode |
