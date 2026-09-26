@@ -1,4 +1,5 @@
 import { openLockConnection } from "../db/client";
+import type { Message } from "../db/schema";
 import { detectLanguage } from "../lang";
 import { audioNotSupported } from "../messages/system-replies";
 import { enqueueTurn } from "../queue/boss";
@@ -7,7 +8,7 @@ import { gatherPending } from "./gather";
 import { claimWelcome, classifyPending, sendMenu, sendWelcome } from "./first-contact";
 import { runFallbackTurn, pendingText } from "./fallback";
 import { deliverText } from "./deliver";
-import { createTurn, markAnswered, updateConversation } from "./persist";
+import { createTurn, finishTurn, markAnswered, updateConversation } from "./persist";
 import type { Language } from "../types";
 
 export interface TurnDeps {
@@ -69,6 +70,18 @@ async function requeueIfPending(conversationId: string): Promise<boolean> {
   return false;
 }
 
+/**
+ * A reply sent without the model (welcome, menu, voice-note line). Its turn is created first, so the message carries
+ * the turn's id, and stays "failed" until the send returns: a reply that was not delivered leaves it "failed" with
+ * error "delivery_failed". Returns the turn's id.
+ */
+async function systemTurn(conversationId: string, model: string, send: (turnId: string) => Promise<Message>): Promise<string> {
+  const turn = await createTurn({ conversationId, status: "failed", model });
+  const message = await send(turn.id);
+  await finishTurn(turn.id, message.deliveryStatus === "failed" ? { error: "delivery_failed" } : { status: "ok" });
+  return turn.id;
+}
+
 async function runTurnLocked(conversationId: string): Promise<TurnOutcome> {
   const gathered = await gatherPending(conversationId);
   if (!gathered || gathered.pending.length === 0) return { kind: "noop" };
@@ -82,7 +95,7 @@ async function runTurnLocked(conversationId: string): Promise<TurnOutcome> {
   let welcomeJustSent = false;
 
   if (await claimWelcome(conversation.id)) {
-    await sendWelcome(conversation, lang);
+    const welcomeTurnId = await systemTurn(conversation.id, "system:welcome", (id) => sendWelcome(conversation, lang, id));
     // A burst with no real content ("hi", a sticker, a voice note) detects as English only by default,
     // so it does not decide the language; the first message with real content does.
     if (!(cls.allGreeting || cls.allAudio) || lang !== "en") {
@@ -92,32 +105,30 @@ async function runTurnLocked(conversationId: string): Promise<TurnOutcome> {
     conversation = { ...conversation, welcomedAt: new Date() };
     welcomeJustSent = true;
     if (cls.allGreeting) {
-      const turn = await createTurn({ conversationId: conversation.id, status: "ok", model: "system:welcome" });
-      await markAnswered(pending.map((m) => m.id), turn.id);
-      return { kind: "welcome", turnId: turn.id, requeued: await requeueIfPending(conversation.id) };
+      await markAnswered(pending.map((m) => m.id), welcomeTurnId);
+      return { kind: "welcome", turnId: welcomeTurnId, requeued: await requeueIfPending(conversation.id) };
     }
   }
 
   if (cls.allMenu) {
-    await sendMenu(conversation, lang);
-    const turn = await createTurn({ conversationId: conversation.id, status: "ok", model: "system:menu" });
-    await markAnswered(pending.map((m) => m.id), turn.id);
-    return { kind: "menu", turnId: turn.id, requeued: await requeueIfPending(conversation.id) };
+    const turnId = await systemTurn(conversation.id, "system:menu", (id) => sendMenu(conversation, lang, id));
+    await markAnswered(pending.map((m) => m.id), turnId);
+    return { kind: "menu", turnId, requeued: await requeueIfPending(conversation.id) };
   }
 
   if (cls.allAudio) {
-    const turn = await createTurn({ conversationId: conversation.id, status: "ok", model: "system:audio" });
-    await deliverText(conversation, { text: audioNotSupported(lang), origin: "system", turnId: turn.id });
-    await markAnswered(pending.map((m) => m.id), turn.id);
-    return { kind: "audio_only", turnId: turn.id, requeued: await requeueIfPending(conversation.id) };
+    const turnId = await systemTurn(conversation.id, "system:audio", (id) =>
+      deliverText(conversation, { text: audioNotSupported(lang), origin: "system", turnId: id })
+    );
+    await markAnswered(pending.map((m) => m.id), turnId);
+    return { kind: "audio_only", turnId, requeued: await requeueIfPending(conversation.id) };
   }
 
   if (cls.allGreeting && !welcomeJustSent) {
     // Already welcomed; a bare greeting later gets a short line from Claude in Task 21. Until then, the menu.
-    await sendMenu(conversation, lang);
-    const turn = await createTurn({ conversationId: conversation.id, status: "ok", model: "system:menu" });
-    await markAnswered(pending.map((m) => m.id), turn.id);
-    return { kind: "menu", turnId: turn.id, requeued: await requeueIfPending(conversation.id) };
+    const turnId = await systemTurn(conversation.id, "system:menu", (id) => sendMenu(conversation, lang, id));
+    await markAnswered(pending.map((m) => m.id), turnId);
+    return { kind: "menu", turnId, requeued: await requeueIfPending(conversation.id) };
   }
 
   log.info({ conversationId, welcomeJustSent }, "running fallback turn (no backend yet)");

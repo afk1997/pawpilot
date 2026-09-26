@@ -16,20 +16,24 @@ export async function claimWelcome(conversationId: string): Promise<boolean> {
   return rows.length === 1;
 }
 
-export async function sendWelcome(conversation: Conversation, lang: Language): Promise<Message> {
+/** `turnId`: the system turn that sends it, stored on the message. */
+export async function sendWelcome(conversation: Conversation, lang: Language, turnId: string | null = null): Promise<Message> {
   const r = await deliverList(conversation, {
     list: { body: welcomeText(lang), buttonLabel: MENU_BUTTON_LABEL[lang], sectionTitle: MENU_SECTION_TITLE[lang], rows: menuRows(lang) },
     fallbackText: welcomeText(lang),
     origin: "system",
+    turnId,
   });
   return r.message;
 }
 
-export async function sendMenu(conversation: Conversation, lang: Language): Promise<Message> {
+/** `turnId`: the system turn that sends it, stored on the message. */
+export async function sendMenu(conversation: Conversation, lang: Language, turnId: string | null = null): Promise<Message> {
   const r = await deliverList(conversation, {
     list: { body: menuText(lang), buttonLabel: MENU_BUTTON_LABEL[lang], sectionTitle: MENU_SECTION_TITLE[lang], rows: menuRows(lang) },
     fallbackText: menuText(lang),
     origin: "system",
+    turnId,
   });
   return r.message;
 }

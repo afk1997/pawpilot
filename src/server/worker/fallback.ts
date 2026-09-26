@@ -1,6 +1,6 @@
 import type { Conversation, Message, Turn } from "../db/schema";
 import { getConfig } from "../config";
-import { detectLanguage } from "../lang";
+import { detectLanguage, isGreetingOnly } from "../lang";
 import { log } from "../log";
 import { loadActiveAmbulances } from "../directory/repo";
 import { matchAmbulances } from "../directory/matcher";
@@ -55,7 +55,9 @@ export async function runFallbackTurn(input: { conversation: Conversation; pendi
   await markAnswered(pending.map((m) => m.id), turn.id);
   const finish = { error: reason, structuredOutput: { matched, matchType: match.match, sent }, latencyMs: 0 };
   await finishTurn(turn.id, finish);
-  if (conversation.language == null) await updateConversation(conversation.id, { language: lang });
+  // A burst with no real content (a greeting, a sticker, a caption-less photo) detects as English only by default,
+  // so it does not decide the language; the first message with real content does.
+  if (conversation.language == null && !isGreetingOnly(text)) await updateConversation(conversation.id, { language: lang });
   await flagConversation(conversation.id, "claude_unavailable");
   // Best effort: the reply and the turn are already recorded, so a failing events insert must not fail the turn.
   try {

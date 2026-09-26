@@ -204,6 +204,29 @@ describe("worker helpers", () => {
     expect(r.message).toMatchObject({ kind: "interactive", deliveryStatus: "test_skipped", content: "plain" });
   });
 
+  it("stores the turn id on every outbound row it is given: text, list, a list's text fallback and a test conversation's list", async () => {
+    const c = await createConversation({ phone: "+919876543221" });
+    const t = await createTurn({ conversationId: c.id, status: "ok" });
+    let calls = 0;
+    // The second request (the first list) is rejected, so that list goes out as text.
+    setFetchForTests((async () => {
+      calls += 1;
+      return calls === 2 ? new Response("{}", { status: 400 }) : new Response(JSON.stringify({ id: `wa-${calls}` }), { status: 201 });
+    }) as typeof fetch);
+    const list = { body: "b", buttonLabel: "Options", rows: [{ id: "menu:ambulance", title: "A" }] };
+    const text = await deliverText(c, { text: "a", origin: "agent", turnId: t.id });
+    const listAsText = await deliverList(c, { list, fallbackText: "plain", origin: "system", turnId: t.id });
+    const sentList = await deliverList(c, { list, fallbackText: "plain", origin: "system", turnId: t.id });
+    const untagged = await deliverText(c, { text: "b", origin: "agent" });
+    expect(listAsText.usedList).toBe(false);
+    expect([text, listAsText.message, sentList.message, untagged].map((m) => m.turnId)).toEqual([t.id, t.id, t.id, null]);
+    const testConv = await createConversation({ isTest: true, phone: "+91TEST_turnid" });
+    const tt = await createTurn({ conversationId: testConv.id, status: "ok" });
+    const skipped = await deliverList(testConv, { list, fallbackText: "plain", origin: "system", turnId: tt.id });
+    const [row] = await getDb().select().from(messages).where(eq(messages.id, skipped.message.id));
+    expect([row.deliveryStatus, row.turnId]).toEqual(["test_skipped", tt.id]);
+  });
+
   it("stores no provider id for a failed send, even when the error body carries one", async () => {
     const c = await createConversation({ phone: "+919876543214" });
     setFetchForTests((async () => new Response(JSON.stringify({ id: "err-1", message: "rejected" }), { status: 400 })) as typeof fetch);

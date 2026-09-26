@@ -114,6 +114,8 @@ export const messages = pgTable(
     deliveryStatus: text("delivery_status"),
     error: text("error"),
     answeredTurnId: uuid("answered_turn_id").references(() => turns.id, { onDelete: "set null" }),
+    /** The turn that sent this assistant message; null for reporter messages. */
+    turnId: uuid("turn_id").references(() => turns.id, { onDelete: "set null" }),
     createdAt: ts("created_at").notNull().defaultNow(),
   },
   (t) => [

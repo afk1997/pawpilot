@@ -23,7 +23,7 @@ async function persistOutbound(
       providerMessageId: send?.ok && send.messageId ? `out:${send.messageId}` : null,
       deliveryStatus: send === null ? "test_skipped" : send.ok ? "sent" : "failed",
       error: send && !send.ok ? send.error ?? `status=${send.status}` : null,
-      // input.turnId is accepted but not stored yet: Task 21 adds messages.turn_id and stores it here.
+      turnId: input.turnId ?? null,
     })
     .returning();
   await updateConversation(conversation.id, { lastOutboundAt: new Date() });
@@ -54,18 +54,19 @@ export async function deliverText(
   return row;
 }
 
-/** Sends a WhatsApp list; falls back to plain text when the list is rejected. */
+/** Sends a WhatsApp list; falls back to plain text when the list is rejected. Either row carries `turnId`. */
 export async function deliverList(
   conversation: Conversation,
-  input: { list: InteractiveListSpec; fallbackText: string; origin: MessageOrigin }
+  input: { list: InteractiveListSpec; fallbackText: string; origin: MessageOrigin; turnId?: string | null }
 ): Promise<{ message: Message; usedList: boolean }> {
+  const row = { text: input.fallbackText, origin: input.origin, turnId: input.turnId, kind: "interactive" as const };
   if (conversation.isTest) {
-    const message = await persistOutbound(conversation, { text: input.fallbackText, origin: input.origin, kind: "interactive" }, null);
+    const message = await persistOutbound(conversation, row, null);
     return { message, usedList: true };
   }
   const listSend = await sendInteractiveList(conversation.phone, input.list);
   if (listSend.ok) {
-    const message = await persistOutbound(conversation, { text: input.fallbackText, origin: input.origin, kind: "interactive" }, listSend);
+    const message = await persistOutbound(conversation, row, listSend);
     return { message, usedList: true };
   }
   log.warn({ conversationId: conversation.id, status: listSend.status }, "list send failed, falling back to text");
@@ -75,6 +76,6 @@ export async function deliverList(
   } catch {
     log.warn({ conversationId: conversation.id }, "list_send_failed event not recorded");
   }
-  const message = await deliverText(conversation, { text: input.fallbackText, origin: input.origin });
+  const message = await deliverText(conversation, { text: input.fallbackText, origin: input.origin, turnId: input.turnId });
   return { message, usedList: false };
 }

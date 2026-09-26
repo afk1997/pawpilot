@@ -87,6 +87,49 @@ describe("runTurn v1", () => {
     expect(out[0].origin).toBe("system");
   });
 
+  it("links the welcome, the menu and the voice-note line to the system turns that sent them", async () => {
+    const c = await conv();
+    await storeReporterMessage(c.id, { kind: "text", content: "hi" });
+    const welcome = await runTurn(c.id);
+    await storeReporterMessage(c.id, { kind: "text", content: "menu" });
+    const menu = await runTurn(c.id);
+    await storeReporterMessage(c.id, { kind: "audio", content: "", mediaUrl: "https://x/a.ogg" });
+    const audio = await runTurn(c.id);
+    expect([welcome.kind, menu.kind, audio.kind]).toEqual(["welcome", "menu", "audio_only"]);
+    expect((await assistant(c.id)).map((m) => m.turnId)).toEqual([welcome.turnId, menu.turnId, audio.turnId]);
+    const rows = await getDb().select().from(turns).where(eq(turns.conversationId, c.id)).orderBy(asc(turns.createdAt));
+    expect(rows.map((t) => [t.id, t.model, t.status, t.error])).toEqual([
+      [welcome.turnId, "system:welcome", "ok", null],
+      [menu.turnId, "system:menu", "ok", null],
+      [audio.turnId, "system:audio", "ok", null],
+    ]);
+  });
+
+  it("marks a system turn failed when its reply was not delivered, and still answers the burst", async () => {
+    setFetchForTests((async () => new Response(JSON.stringify({ message: "rejected" }), { status: 400 })) as typeof fetch);
+    try {
+      const c = await createConversation({ phone: "+919876500994" });
+      await storeReporterMessage(c.id, { kind: "text", content: "hi" });
+      const welcome = await runTurn(c.id);
+      await storeReporterMessage(c.id, { kind: "text", content: "menu" });
+      const menu = await runTurn(c.id);
+      expect([welcome.kind, menu.kind]).toEqual(["welcome", "menu"]);
+      const rows = await getDb().select().from(turns).where(eq(turns.conversationId, c.id)).orderBy(asc(turns.createdAt));
+      expect(rows.map((t) => [t.id, t.status, t.error])).toEqual([
+        [welcome.turnId, "failed", "delivery_failed"],
+        [menu.turnId, "failed", "delivery_failed"],
+      ]);
+      expect((await byContent("hi")).answeredTurnId).toBe(welcome.turnId);
+      expect((await byContent("menu")).answeredTurnId).toBe(menu.turnId);
+      expect((await assistant(c.id)).map((m) => [m.deliveryStatus, m.turnId])).toEqual([
+        ["failed", welcome.turnId],
+        ["failed", menu.turnId],
+      ]);
+    } finally {
+      setFetchForTests(null);
+    }
+  });
+
   it("stays silent in human mode and leaves messages pending", async () => {
     const c = await conv();
     await getDb().update(conversations).set({ mode: "human", welcomedAt: new Date() }).where(eq(conversations.id, c.id));

@@ -171,6 +171,27 @@ describe("runFallbackTurn", () => {
     expect(t.structuredOutput).toEqual({ matched: 1, matchType: "area", sent: "unit" });
   });
 
+  it.each([
+    ["a bare greeting", { kind: "text", content: "hi" }],
+    ["a Devanagari greeting", { kind: "text", content: "नमस्ते 🙏" }],
+    ["a sticker", { kind: "sticker", content: "" }],
+    ["a caption-less photo", { kind: "image", content: "", mediaUrl: "https://x/p.jpg" }],
+  ] as const)("leaves the language unset after %s, so a later real message decides it", async (_label, message) => {
+    const c = await testConversation();
+    await storeReporterMessage(c.id, message);
+    const r = await fallbackOn(c.id);
+    expect(r.message.content).toContain("+91 99999 00000");
+    expect(r.conv.language).toBeNull();
+  });
+
+  it("stores the detected language once the burst has real text beside a greeting", async () => {
+    const c = await testConversation();
+    await storeReporterMessage(c.id, { kind: "text", content: "hi" });
+    await storeReporterMessage(c.id, { kind: "text", content: "सूरत में गाय घायल है" });
+    const r = await fallbackOn(c.id);
+    expect(r.conv.language).toBe("hi");
+  });
+
   it("marks the pending messages answered", async () => {
     const r = await fallbackFor("Surat");
     const rows = await getDb().select().from(messages).where(eq(messages.conversationId, r.conv.id));
