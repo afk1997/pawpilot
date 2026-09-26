@@ -3,6 +3,7 @@ import { and, eq, notInArray } from "drizzle-orm";
 import { getDb, type Db } from "../db/client";
 import { ambulances, clinics, operators } from "../db/schema";
 import { levenshtein } from "./fuzzy";
+import { findDigitRuns, maskDigitRuns } from "../agent/scrub";
 
 export interface CsvRow {
   Type: string; Name: string; City: string; Area: string; State: string; Phone: string;
@@ -43,6 +44,8 @@ function operatorName(raw: string): string {
 const AMBULANCE_PHONE = /^\+91[6-9]\d{9}$/;
 const CLINIC_PHONE = /^\+91[1-9]\d{9}$/;
 const REQUIRED_FIELDS = ["Name", "City", "State", "Operated By"] as const;
+/** Every text cell: a phone-shaped number in one is a mistake directoryWarnings names (it is not a unit's number). */
+const TEXT_FIELDS = ["Name", "City", "Area", "State", "Area of Operation", "Category", "Operated By"] as const;
 
 export function normalizePhone(raw: string): string {
   const digits = (raw ?? "").replace(/\D/g, "");
@@ -68,6 +71,13 @@ export function isPartnerNameLeak(area: string, operator: string): boolean {
   return a === o || a.includes(o) || o.includes(a);
 }
 
+/** How a line names a row: kind and Name, a number in the Name masked, or the City when there is no Name. */
+function rowLabel(r: CsvRow, kind: "Ambulance" | "Clinic"): string {
+  const name = (r.Name ?? "").trim();
+  if (!name) return `${kind} with no Name (City "${(r.City ?? "").trim()}")`;
+  return `${kind} "${findDigitRuns(name).length > 0 ? maskDigitRuns(name, "[number]") : name}"`;
+}
+
 export function parseDirectoryCsv(text: string): DirectoryRows {
   // bom: an Excel "CSV UTF-8" export starts with U+FEFF, which would otherwise hide the Type column.
   const records = parse(text, { columns: true, skip_empty_lines: true, trim: true, bom: true }) as CsvRow[];
@@ -90,7 +100,7 @@ export function validateDirectoryRows(rows: DirectoryRows): string[] {
 
   const check = (r: CsvRow, kind: "Ambulance" | "Clinic") => {
     const name = (r.Name ?? "").trim();
-    const rowName = name ? `${kind} "${name}"` : `${kind} with no Name (City "${(r.City ?? "").trim()}")`;
+    const rowName = rowLabel(r, kind);
     const problems = REQUIRED_FIELDS.filter((field) => !(r[field] ?? "").trim()).map((field) => `${field} is empty`);
 
     const digits = (r.Phone ?? "").replace(/\D/g, "").length;
@@ -123,10 +133,27 @@ export function validateDirectoryRows(rows: DirectoryRows): string[] {
 }
 
 /**
+ * Rows that are safe to ingest but hold a phone-shaped number (in any script) in a text cell, one line per row naming
+ * the cells, never the digits. Tool output and the prompt's coverage list drop such a run before the model sees it,
+ * but code-built cards and partner labels show the unit's area, city and operator as written.
+ */
+export function directoryWarnings(rows: DirectoryRows): string[] {
+  const warnings: string[] = [];
+  const check = (r: CsvRow, kind: "Ambulance" | "Clinic") => {
+    const cells = TEXT_FIELDS.filter((field) => findDigitRuns(r[field] ?? "").length > 0);
+    if (cells.length === 0) return;
+    warnings.push(`${rowLabel(r, kind)}: ${cells.join(", ")} ${cells.length === 1 ? "holds" : "hold"} a phone-shaped number: put phone numbers only in the Phone column`);
+  };
+  for (const r of rows.ambulances) check(r, "Ambulance");
+  for (const r of rows.clinics) check(r, "Clinic");
+  return warnings;
+}
+
+/**
  * Makes the directory match the file, in one transaction: upserts operators by name and
  * ambulances and clinics by label, then deactivates every active ambulance or clinic the
  * file no longer lists (a listed row is re-activated). Throws before writing anything when
- * the file fails validateDirectoryRows.
+ * the file fails validateDirectoryRows; returns directoryWarnings' lines with the counts.
  */
 export async function ingestDirectory(rows: DirectoryRows, db: Db = getDb()) {
   const errors = validateDirectoryRows(rows);
@@ -186,6 +213,7 @@ export async function ingestDirectory(rows: DirectoryRows, db: Db = getDb()) {
       .returning({ label: clinics.label });
 
     return {
+      warnings: directoryWarnings(rows),
       operators: names.size,
       ambulancesInserted, ambulancesUpdated, ambulancesDeactivated: deactivatedAmbulances.length,
       clinicsInserted, clinicsUpdated, clinicsDeactivated: deactivatedClinics.length,

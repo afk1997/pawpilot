@@ -19,8 +19,9 @@ async function main() {
   console.log(`Ingesting into ${url.replace(/:\/\/.*@/, "://***@")}`);
   const sql = postgres(url, { max: 1 });
   try {
-    const { deactivatedLabels, ...counts } = await ingestDirectory(rows, drizzle(sql, { schema }));
+    const { deactivatedLabels, warnings, ...counts } = await ingestDirectory(rows, drizzle(sql, { schema }));
     console.log(counts);
+    for (const warning of warnings) console.warn(`Warning: ${warning}`);
     // A row whose Type or Name cell was mistyped deactivates the unit it used to be: name every one switched off.
     for (const [kind, labels] of Object.entries(deactivatedLabels)) {
       if (labels.length > 0) console.log(`Deactivated ${kind} (no longer in the file): ${labels.join("; ")}`);

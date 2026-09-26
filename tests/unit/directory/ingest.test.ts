@@ -1,7 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
-  parseDirectoryCsv, normalizePhone, parseAreasCovered, isPartnerNameLeak, validateDirectoryRows, isArhamName, type CsvRow,
+  parseDirectoryCsv, normalizePhone, parseAreasCovered, isPartnerNameLeak, validateDirectoryRows, directoryWarnings, isArhamName,
+  type CsvRow,
 } from "@/server/directory/ingest";
+import { findDigitRuns } from "@/server/agent/scrub";
 
 describe("ingest helpers", () => {
   it("normalizes phones to E.164", () => {
@@ -134,10 +136,33 @@ describe("validateDirectoryRows", () => {
     ]);
   });
 
+  it("accepts a phone-shaped number in a text cell (directoryWarnings names it instead)", () => {
+    expect(validateDirectoryRows({ ambulances: [row({ "Area of Operation": "Ghatkopar, call 98765 43210" })], clinics: [] })).toEqual([]);
+  });
+
   it("refuses a file with no ambulance rows; a file with no clinic rows is fine", () => {
     expect(validateDirectoryRows({ ambulances: [], clinics: [clinic()] })).toEqual([
       "no ambulance rows (check the header row and the Type column)",
     ]);
     expect(validateDirectoryRows({ ambulances: [row()], clinics: [] })).toEqual([]);
+  });
+});
+
+describe("directoryWarnings", () => {
+  it("names each row and text cell holding a phone-shaped number, in any script, without its digits", () => {
+    const warnings = directoryWarnings({
+      ambulances: [
+        row({ "Area of Operation": "Ghatkopar, call 98765 43210" }),
+        row({ Name: "Unit 98765-43211", Area: "Malad ९८७६५४३२१२", Category: "Animal Ambulance 7000000009", "Operated By": "Blue Cross +91 70000 00008" }),
+        row({ Name: "Clean", City: "Pune", Area: "Sector 21", "Area of Operation": "Sector 21, Sector 22" }),
+      ],
+      clinics: [clinic({ City: "Surat 7000000007", State: "Gujarat 7000000006" })],
+    });
+    expect(warnings).toEqual([
+      'Ambulance "Mumbai - Ghatkopar": Area of Operation holds a phone-shaped number',
+      'Ambulance "Unit [number]": Name, Area, Category, Operated By hold a phone-shaped number',
+      'Clinic "Arham Clinic Surat": City, State hold a phone-shaped number',
+    ].map((w) => `${w}: put phone numbers only in the Phone column`));
+    expect(findDigitRuns(warnings.join("\n"))).toEqual([]);
   });
 });

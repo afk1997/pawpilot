@@ -7,6 +7,7 @@ import { seedDirectory } from "../helpers/fixtures";
 import { loadActiveAmbulances, loadActiveClinics, getAmbulancesByIds, getClinicsByIds } from "@/server/directory/repo";
 import { ingestDirectory, parseDirectoryCsv } from "@/server/directory/ingest";
 import { getCoverageSummary, resetCoverageCache } from "@/server/directory/coverage";
+import { findDigitRuns } from "@/server/agent/scrub";
 
 describe("directory repo", () => {
   beforeEach(async () => { await resetDb(); resetCoverageCache(); });
@@ -45,6 +46,14 @@ describe("directory repo", () => {
     await getDb().update(ambulances).set({ active: true }).where(eq(ambulances.id, ids.bengaluru));
     resetCoverageCache();
     expect(await getCoverageSummary()).toBe(s1);
+  });
+
+  it("keeps a phone-shaped run typed into a unit's areas covered out of the summary the prompt gets", async () => {
+    const ids = await seedDirectory();
+    await getDb().update(ambulances).set({ areasCovered: ["Bengaluru", "Call 98765 43210"] }).where(eq(ambulances.id, ids.bengaluru));
+    const summary = await getCoverageSummary();
+    expect(findDigitRuns(summary)).toEqual([]);
+    expect(summary).toContain("- Bengaluru: whole city (1 unit) (also covers Call)");
   });
 
   it("ingests a CSV idempotently", async () => {
@@ -138,6 +147,15 @@ describe("directory ingest safeguards", () => {
       ["Mumbai - Malad", "Arham Yuva Seva Group", true],
     ]);
     expect((await snapshot()).operators).toEqual([{ name: "Arham Yuva Seva Group", isArham: true }]);
+  });
+
+  it("ingests a file whose text cells hold a phone-shaped number, and returns the warnings naming them", async () => {
+    const summary = await ingestDirectory(rowsOf(GHATKOPAR.replace('"Ghatkopar, Vikhroli"', '"Ghatkopar, call 98765 43210"'), MALAD));
+    expect(summary).toMatchObject({ ambulancesInserted: 2 });
+    expect(summary.warnings).toEqual([
+      'Ambulance "Mumbai - Ghatkopar": Area of Operation holds a phone-shaped number: put phone numbers only in the Phone column',
+    ]);
+    expect((await ingestDirectory(rowsOf(GHATKOPAR, MALAD))).warnings).toEqual([]);
   });
 
   it("names the units and clinics it deactivated", async () => {
