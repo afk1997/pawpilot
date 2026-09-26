@@ -229,6 +229,66 @@ describe("runTurn v1", () => {
     expect(await language()).toBe("hi");
   });
 
+  it("closes its lock connection after every turn: answered, locked out, or with a failed unlock", async () => {
+    const lockSessions = async () => {
+      const [{ n }] = await getSql()<{ n: number }[]>`
+        select count(*)::int as n from pg_stat_activity where application_name = ${dbClient.LOCK_APPLICATION_NAME}`;
+      return n;
+    };
+    /** A closed client's backend takes a moment to exit. */
+    const settled = async () => {
+      for (let i = 0; i < 40 && (await lockSessions()) > 0; i++) await new Promise((r) => setTimeout(r, 50));
+      return lockSessions();
+    };
+    // Answered: the lock session is there while the reply is sent, and gone after.
+    const answered = await createConversation({ phone: "+919876500991", welcomedAt: new Date() });
+    await storeReporterMessage(answered.id, { kind: "text", content: "Surat" });
+    let during = -1;
+    duringFirstSend(async () => {
+      during = await lockSessions();
+    });
+    try {
+      expect((await runTurn(answered.id)).kind).toBe("ok");
+    } finally {
+      setFetchForTests(null);
+    }
+    expect(during).toBe(1);
+    expect(await settled()).toBe(0);
+    // Locked out: another session holds the conversation's lock.
+    const locked = await conv();
+    await storeReporterMessage(locked.id, { kind: "text", content: "Surat" });
+    const holder = await getSql().reserve();
+    try {
+      await holder`select pg_advisory_lock(hashtext(${locked.id})::bigint)`;
+      expect((await runTurn(locked.id)).kind).toBe("locked");
+      expect(await settled()).toBe(0);
+    } finally {
+      await holder`select pg_advisory_unlock(hashtext(${locked.id})::bigint)`;
+      holder.release();
+    }
+    // The unlock query fails.
+    const failing = await conv();
+    await getDb().update(conversations).set({ welcomedAt: new Date() }).where(eq(conversations.id, failing.id));
+    await storeReporterMessage(failing.id, { kind: "text", content: "Surat" });
+    const open = dbClient.openLockConnection;
+    vi.spyOn(dbClient, "openLockConnection").mockImplementationOnce(() => {
+      const conn = open();
+      const unlockFails = async (strings: TemplateStringsArray, ...values: never[]) => {
+        const rows = await conn(strings, ...values);
+        if (strings.join("").includes("pg_advisory_unlock")) throw new Error("connection lost while unlocking");
+        return rows;
+      };
+      return Object.assign(unlockFails, { end: conn.end }) as unknown as typeof conn;
+    });
+    vi.spyOn(log, "warn").mockImplementation(() => undefined);
+    try {
+      expect((await runTurn(failing.id)).kind).toBe("ok");
+    } finally {
+      vi.restoreAllMocks();
+    }
+    expect(await settled()).toBe(0);
+  });
+
   it("returns the turn's outcome, releasing the lock, when the advisory unlock query fails", async () => {
     const c = await conv();
     await getDb().update(conversations).set({ welcomedAt: new Date() }).where(eq(conversations.id, c.id));

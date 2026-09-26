@@ -5,7 +5,8 @@ import { HandleRegistry } from "./handles";
 import { loadActiveAmbulances, loadActiveClinics } from "../directory/repo";
 import { matchAmbulances, normalize, type DirectoryAmbulance, type MatchResult, type MatchType } from "../directory/matcher";
 import { ambulanceDisplayName } from "../messages/cards";
-import { getStaticInfo, PHONE_RUN_RE, type InfoContent, type InfoTopic } from "../content/static";
+import { getStaticInfo, type InfoContent, type InfoTopic } from "../content/static";
+import { asciiDigits, PHONE_RUN_RE } from "../digits";
 import { log, safeErrorFields } from "../log";
 
 export interface ToolCallRecord {
@@ -58,19 +59,6 @@ export interface FindClinicsOutput {
   city_matched: boolean;
 }
 
-const DECIMAL_DIGIT = /\p{Nd}/u;
-
-/**
- * The value of a decimal digit in any script. Unicode encodes every decimal digit set as a contiguous 0–9 run, so
- * the value is the distance from the start of the run (mod 10 where sets sit back to back, as the math digits do).
- */
-function digitValue(ch: string): number {
-  const cp = ch.codePointAt(0) as number;
-  let start = cp;
-  while (start > 0 && DECIMAL_DIGIT.test(String.fromCodePoint(start - 1))) start--;
-  return (cp - start) % 10;
-}
-
 /**
  * The form a phone number cannot hide from: every decimal digit as ASCII (Devanagari, Gujarati, Bengali, Tamil,
  * Telugu, Kannada, fullwidth, …); invisible characters dropped (soft hyphen, zero-width space, word joiner, and
@@ -78,8 +66,7 @@ function digitValue(ch: string): number {
  * every dash variant as "-".
  */
 function normalizeForScrub(s: string): string {
-  return s
-    .replace(/\p{Nd}/gu, (ch) => (ch <= "9" ? ch : String(digitValue(ch))))
+  return asciiDigits(s)
     .replace(/[\u00AD\u200B\u2060]/g, "")
     .replace(/(?<=\d)[\u200C\u200D]+|[\u200C\u200D]+(?=\d)/g, "")
     .replace(/\s+/g, " ")
@@ -87,8 +74,8 @@ function normalizeForScrub(s: string): string {
 }
 
 /**
- * The digit guard on tool output: normalizes (normalizeForScrub), then removes phone-shaped runs (the shared
- * PHONE_RUN_RE), then collapses the double spaces a removal leaves. `removed` says whether a run was taken out.
+ * The digit guard on tool output: normalizes (normalizeForScrub), then removes phone-shaped runs (PHONE_RUN_RE, from
+ * src/server/digits.ts), then collapses the double spaces a removal leaves. `removed` says whether a run was taken out.
  */
 export function scrubToolText(s: string): { text: string; removed: boolean } {
   let removed = false;

@@ -463,15 +463,28 @@ describe("the Claude turn's guards, audit and context", () => {
     await runTurn(c.id, { backend });
     const t = await lastTurn(c.id);
     const calls = t.toolCalls as { name: string; input: unknown; output: unknown; durationMs: number; error?: unknown }[];
-    expect(calls.map((x) => x.name)).toEqual(["find_ambulances", "Bash", "mcp__arham__find_clinics"]);
+    // This app's tools go by their own names, as the calls they made do; any other tool keeps its full name.
+    expect(calls.map((x) => x.name)).toEqual(["find_ambulances", "Bash", "find_clinics"]);
     expect(calls.slice(1)).toEqual([
       { name: "Bash", input: null, output: null, durationMs: 0, error: { errorClass: "SdkRejected" } },
-      { name: "mcp__arham__find_clinics", input: null, output: null, durationMs: 0, error: { errorClass: "SdkRejected" } },
+      { name: "find_clinics", input: null, output: null, durationMs: 0, error: { errorClass: "SdkRejected" } },
     ]);
     expect(t.usage).toMatchObject({ input_tokens: 10, extraUsage: true });
     // Extra usage allowed (no pause asked for): an event says it was spent, and Claude keeps running.
     expect((await eventsOf("claude_extra_usage")).map((e) => e.payload)).toEqual([{ turnId: t.id }]);
     expect(await isClaudePaused()).toBe(false);
+  });
+
+  it("records a tool use that got no result and no call as unanswered, not as refused", async () => {
+    const c = await conv();
+    await storeReporterMessage(c.id, { kind: "text", content: "surat" });
+    const backend = new FakeBackend([
+      withToolUses(okReply({ reply: "Please call {{PHONE:helpline}}." }), [{ name: "mcp__arham__find_ambulances", isError: false }]),
+    ]);
+    await runTurn(c.id, { backend });
+    expect((await lastTurn(c.id)).toolCalls).toEqual([
+      { name: "find_ambulances", input: null, output: null, durationMs: 0, error: { errorClass: "Unanswered" } },
+    ]);
   });
 
   it("keeps the tool calls on a turn that fell back", async () => {
@@ -750,7 +763,8 @@ describe("the Claude turn's time budget, audit totals and failure handling", () 
     expect(JSON.stringify(evs.map((e) => e.payload))).not.toMatch(/98765|43210/);
   });
 
-  describe("a handle whose unit was deactivated after it was shared", () => {    const staleHandle = async (conversationId: string) => {
+  describe("a handle whose unit was deactivated after it was shared", () => {
+    const staleHandle = async (conversationId: string) => {
       const h = makeHandle("ambulance", conversationId, ids.ghatkopar);
       const old = await createTurn({ conversationId, status: "ok" });
       await finishTurn(old.id, { handles: { [h]: { kind: "ambulance", id: ids.ghatkopar } } });

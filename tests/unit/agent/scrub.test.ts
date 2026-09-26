@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { DIGIT_RUN_RE, digitsOf, findDigitRuns, foreignDigitRuns, maskDigitRuns, stripRuns, hasDispatchLanguage, replaceDispatchSentences } from "@/server/agent/scrub";
+import { digitsOf, findDigitRuns, foreignDigitRuns, maskDigitRuns, stripRuns, hasDispatchLanguage, replaceDispatchSentences } from "@/server/agent/scrub";
+import { DIGIT_RUN_RE } from "@/server/digits";
 import { buildAmbulanceCard, buildHelplineCard, buildMultiAmbulanceCard, partnerSuffix } from "@/server/messages/cards";
 import { callDirectlyLine } from "@/server/messages/system-replies";
 

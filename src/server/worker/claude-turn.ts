@@ -55,21 +55,23 @@ async function note(conversationId: string, kind: string, payload: Record<string
 }
 
 /**
- * Audit records for the tool uses of one attempt that reached no tool: the SDK refused them before the call. Uses are
- * matched to the calls the tools recorded in that attempt by name and order; the CLI's StructuredOutput is skipped.
+ * Audit records for the tool uses of one attempt that reached no tool. Uses are matched to the calls the tools recorded
+ * in that attempt by name and order; the CLI's StructuredOutput is skipped. A use whose result was an error was refused
+ * by the SDK before the call ("SdkRejected"); one with no call and no error result was never answered ("Unanswered": a
+ * turn cut off mid-call, say). This app's tools go by their own names, as their recorded calls do.
  */
-function refusedToolUses(uses: ObservedToolUse[], recorded: ToolCallRecord[]): ToolCallRecord[] {
+function unrecordedToolUses(uses: ObservedToolUse[], recorded: ToolCallRecord[]): ToolCallRecord[] {
   const unmatched = new Map<string, number>();
   for (const c of recorded) unmatched.set(c.name, (unmatched.get(c.name) ?? 0) + 1);
-  const refused: ToolCallRecord[] = [];
+  const unrecorded: ToolCallRecord[] = [];
   for (const use of uses) {
     if (use.name === STRUCTURED_OUTPUT_TOOL) continue;
     const name = use.name.startsWith(MCP_PREFIX) ? use.name.slice(MCP_PREFIX.length) : use.name;
     const left = unmatched.get(name) ?? 0;
     if (left > 0) unmatched.set(name, left - 1);
-    else refused.push({ name: use.name, input: null, output: null, durationMs: 0, error: { errorClass: "SdkRejected" } });
+    else unrecorded.push({ name, input: null, output: null, durationMs: 0, error: { errorClass: use.isError ? "SdkRejected" : "Unanswered" } });
   }
-  return refused;
+  return unrecorded;
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -128,7 +130,7 @@ export async function runClaudeTurn(input: {
   // The audit, filled as the turn goes and kept on the turn row whichever way it ends.
   let registry: HandleRegistry | null = null;
   let toolContext: ToolContext | null = null;
-  const refused: ToolCallRecord[] = [];
+  const unrecorded: ToolCallRecord[] = [];
   let usage: Record<string, unknown> | null = null;
   let backendCalls = 0;
   let extraUsage = false;
@@ -138,7 +140,7 @@ export async function runClaudeTurn(input: {
    */
   let limitPause: { until: Date | null; extraUsage: boolean } | null = null;
   const audit = () => ({
-    toolCalls: [...(toolContext?.calls ?? []), ...refused],
+    toolCalls: [...(toolContext?.calls ?? []), ...unrecorded],
     handles: registry?.toJSON() ?? null,
     usage: backendCalls === 0 ? null : { ...usage, backendCalls, ...(extraUsage && { extraUsage: true }) },
     latencyMs: Math.round(nowMs() - startedMs),
@@ -206,7 +208,7 @@ export async function runClaudeTurn(input: {
         r = { ok: false, kind: "TRANSIENT", message: `backend threw ${fields.errorClass}`, retryAfter: null, latencyMs: Math.round(nowMs() - callStartedMs), sessionId: null };
       }
       backendCalls += 1;
-      refused.push(...refusedToolUses(r.toolUses ?? [], ctx.calls.slice(before)));
+      unrecorded.push(...unrecordedToolUses(r.toolUses ?? [], ctx.calls.slice(before)));
       if (r.ok) {
         usage = sumUsage(usage, r.usage);
         if (r.extraUsage && !extraUsage) {

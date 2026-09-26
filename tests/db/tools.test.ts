@@ -7,7 +7,7 @@ import { getDb } from "@/server/db/client";
 import { ambulances, clinics } from "@/server/db/schema";
 import * as repo from "@/server/directory/repo";
 import * as staticContent from "@/server/content/static";
-import { PHONE_RUN_RE } from "@/server/content/static";
+import { PHONE_RUN_RE } from "@/server/digits";
 import { log } from "@/server/log";
 import { LANGUAGES } from "@/server/types";
 import { HandleRegistry } from "@/server/agent/handles";

@@ -1,5 +1,6 @@
 import raw from "@/content/static.json";
 import { LANGUAGES, type Language } from "../types";
+import { PHONE_RUN_RE } from "../digits";
 
 export type InfoTopic = "donate" | "volunteer" | "about" | "faq" | "human_emergency" | "helpline";
 export type InfoContent = Record<string, string | { question: string; answer: string }[]>;
@@ -9,11 +10,6 @@ type Localized = Record<string, Record<string, string> | string>;
 const isFilled = (v: unknown): v is string => typeof v === "string" && v.trim().length > 0 && !v.trim().toUpperCase().startsWith("TODO");
 /** A field whose whole value is one phone number: 7+ digits, at most one space or hyphen between two digits. */
 const PHONE_RE = /^\+?\d(?:[ -]?\d){6,}$/;
-/**
- * A phone number inside a string; it never runs across a line break or a spaced hyphen. Match it against
- * foldDigits output so native numerals count. Global: String.replace resets it on each call.
- */
-export const PHONE_RUN_RE = /\+?\d(?:[ -]?\d){6,}/g;
 
 /**
  * Maps Devanagari (U+0966–096F) and Gujarati (U+0AE6–0AEF) numerals to ASCII 0–9. Each numeral is one
@@ -57,6 +53,7 @@ function phoneTokenizer(topic: string, phones: Record<string, string>) {
   const text = (value: string): string => {
     let out = "";
     let last = 0;
+    // PHONE_RUN_RE over foldDigits output, so native numerals count; it never runs across a line break or a spaced hyphen.
     for (const m of foldDigits(value).matchAll(PHONE_RUN_RE)) {
       out += `${value.slice(last, m.index)}{{PHONE:${embeddedKey(compactPhone(m[0]))}}}`;
       last = m.index + m[0].length;

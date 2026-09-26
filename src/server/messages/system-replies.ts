@@ -39,15 +39,6 @@ export function fallbackNoMatch(lang: Language): string {
   }, lang);
 }
 
-/** First line of a fallback reply when the place was found but has more units than a card lists. */
-export function fallbackHelplineIntro(lang: Language): string {
-  return pick({
-    en: "Please call our helpline:",
-    hi: "कृपया हमारी हेल्पलाइन पर कॉल करें:",
-    mr: "कृपया आमच्या हेल्पलाइनवर कॉल करा:",
-    gu: "કૃપા કરીને અમારી હેલ્પલાઇન પર કૉલ કરો:",
-  }, lang);
-}
 
 /** Replacement for a sentence that contained dispatch language. */
 export function callDirectlyLine(lang: Language): string {

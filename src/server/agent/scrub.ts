@@ -1,5 +1,6 @@
 import { partnerSuffix } from "../messages/cards";
 import { LANGUAGES } from "../types";
+import { asciiDigits, DIGIT_RUN_RE } from "../digits";
 
 /**
  * The last code guards on a reply before it is sent (spec §5.9 steps 3 and 5). The digit scrubber finds phone-shaped
@@ -8,31 +9,8 @@ import { LANGUAGES } from "../types";
  * numerals, invisible characters and unusual separators cannot hide a number; text it returns is in that form.
  */
 
-/**
- * A phone-shaped run: 7+ digits, an optional leading "+", at most one space, line break or "-" between two digits.
- *
- * Known residuals, each read as short groups and so never as a run: groups joined by a dot, slash, comma or spaced
- * hyphen ("98765.43210", "98765/43210", "98,765,43,210", "98765 - 43210"); a parenthesised group ("(98765) 43210");
- * the letter O written for a zero ("98765 432O0"); words between the groups ("98765 then 43210"); and a number split
- * across sentences or lines ("98765. 43210", "98765 \n43210", "98765\n\n43210").
- */
-export const DIGIT_RUN_RE = /\+?\d(?:[\s-]?\d){6,}/g;
-/** The fewest digits a DIGIT_RUN_RE match holds. */
+/** The fewest digits a DIGIT_RUN_RE (src/server/digits.ts, with its known residuals) match holds. */
 const MIN_RUN_DIGITS = 7;
-
-const DECIMAL_DIGIT = /\p{Nd}/u;
-
-/**
- * The value of a decimal digit in any script. Unicode encodes every decimal digit set as a contiguous 0–9 run, so the
- * value is the distance from the start of the run (mod 10 where sets sit back to back, as the math digits do). Mirrors
- * tools.ts, which this module does not import: it stays free of the SDK and the database.
- */
-function digitValue(ch: string): number {
-  const cp = ch.codePointAt(0) as number;
-  let start = cp;
-  while (start > 0 && DECIMAL_DIGIT.test(String.fromCodePoint(start - 1))) start--;
-  return (cp - start) % 10;
-}
 
 /**
  * The form every function here reads: every decimal digit as ASCII (Devanagari, Gujarati, Bengali, fullwidth, …);
@@ -41,8 +19,7 @@ function digitValue(ch: string): number {
  * "-". Separators change only between digits, so prose keeps its dashes, indentation and line breaks.
  */
 function normalizeDigits(s: string): string {
-  return s
-    .replace(/\p{Nd}/gu, (ch) => (ch <= "9" ? ch : String(digitValue(ch))))
+  return asciiDigits(s)
     .replace(/[\u00AD\u200B\u2060]/g, "")
     .replace(/(?<=\d)[\u200C\u200D]+|[\u200C\u200D]+(?=\d)/g, "")
     .replace(/(?<=\d)[^\S\n]+(?=\d)/g, " ")
