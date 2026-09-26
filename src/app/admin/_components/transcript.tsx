@@ -8,26 +8,27 @@ import { usePolling } from "./polling";
 
 type Detail = { conversation: { id: string; phone: string; name: string | null; language: string | null; mode: string; flagged: boolean; flagReason: string | null; isTest: boolean }; messages: Msg[]; turns: TurnRow[] };
 
-export function Transcript({ id, apiBase = "/api/admin/conversations", pollMs = 3000 }: { id: string; apiBase?: string; pollMs?: number }) {
+/** `backHref` is where the back arrow and the back link go: the page that lists this conversation. */
+export function Transcript({ id, apiBase = "/api/admin/conversations", pollMs = 3000, backHref = "/admin" }: { id: string; apiBase?: string; pollMs?: number; backHref?: string }) {
   // Keyed by the conversation, so another id starts from nothing and answers still due for the old one are dropped.
-  return <ConversationTranscript key={`${apiBase}/${id}`} url={`${apiBase}/${id}`} pollMs={pollMs} />;
+  return <ConversationTranscript key={`${apiBase}/${id}`} url={`${apiBase}/${id}`} pollMs={pollMs} backHref={backHref} />;
 }
 
-function BackLink() {
-  return <Link href="/admin" className="text-xs text-emerald-400 hover:text-emerald-300">← Back to conversations</Link>;
+function BackLink({ href }: { href: string }) {
+  return <Link href={href} className="text-xs text-emerald-400 hover:text-emerald-300">← Back to conversations</Link>;
 }
 
-function ConversationTranscript({ url, pollMs }: { url: string; pollMs: number }) {
+function ConversationTranscript({ url, pollMs, backHref }: { url: string; pollMs: number; backHref: string }) {
   const { data: d, lastOkAt, error, notFound } = usePolling<Detail>(url, pollMs);
-  if (notFound) return <div className="space-y-3 p-6 text-sm"><p>Conversation not found</p><BackLink /></div>;
+  if (notFound) return <div className="space-y-3 p-6 text-sm"><p>Conversation not found</p><BackLink href={backHref} /></div>;
   const banner = error && <div role="alert" title={error.reason} className="border-b border-red-500/20 bg-red-500/10 px-6 py-2 text-xs text-red-300">{staleMessage(lastOkAt, error.at)}</div>;
-  if (!d) return error ? <div>{banner}<div className="p-6"><BackLink /></div></div> : <div className="p-6 text-xs text-white/40">Loading…</div>;
+  if (!d) return error ? <div>{banner}<div className="p-6"><BackLink href={backHref} /></div></div> : <div className="p-6 text-xs text-white/40">Loading…</div>;
   const turnsById = new Map(d.turns.map((t) => [t.id, t]));
   const c = d.conversation;
   return (
     <div className="flex h-full flex-col">
       <header className="flex items-center gap-3 border-b border-white/10 px-6 py-3 text-sm">
-        <Link href="/admin" className="text-white/40 hover:text-white">←</Link>
+        <Link href={backHref} className="text-white/40 hover:text-white">←</Link>
         <span className="font-medium">{c.name ?? c.phone}</span>
         <span className="text-xs text-white/40">{c.phone} · {c.language ?? "?"} · {c.mode}{c.flagged ? ` · flagged${c.flagReason ? `: ${flagLabel(c.flagReason)}` : ""}` : ""}</span>
       </header>

@@ -1,16 +1,15 @@
 import { isAdminRequest, unauthorized } from "@/server/admin/auth";
+import { UUID_RE } from "@/server/admin/ids";
 import { getConversationDetail } from "@/server/admin/queries";
 import { log, safeErrorFields } from "@/server/log";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   if (!isAdminRequest(request)) return unauthorized();
   const { id } = await params;
-  if (!UUID.test(id)) return Response.json({ error: "not found" }, { status: 404 });
+  if (!UUID_RE.test(id)) return Response.json({ error: "not found" }, { status: 404 });
   try {
     const detail = await getConversationDetail(id);
     if (!detail) return Response.json({ error: "not found" }, { status: 404 });
