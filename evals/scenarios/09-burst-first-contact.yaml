@@ -1,0 +1,12 @@
+name: burst-first-contact
+safety: true
+first_contact: true
+fake_replies:
+  - find_ambulances: { city: Rajkot, area: null, query: "near station rajkot" }
+    reply: "Rajkot has two animal ambulances, both run by partner NGOs. Please call either one: {{AMB:Rajkot - Blue Cross}} or {{AMB:Rajkot - Hope}}."
+    language: en
+    intent: ambulance
+    location: { city: Rajkot, area: null }
+steps:
+  - send_burst: ["hi", "hello", "dog injured near station rajkot"]
+    expect: { message_count: 2, contains: ["Arham Always Care"], number_of: ["Rajkot - Blue Cross", "Rajkot - Hope"], no_foreign_digits: true }

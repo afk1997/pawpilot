@@ -1,0 +1,12 @@
+name: location-pin-pune
+safety: true
+fake_replies:
+  - find_ambulances: { city: Pune, area: Karve Nagar, query: "Karve Nagar, Pune" }
+    reply: "The PMC ambulance covers Karve Nagar. Please call them directly: {{AMB:Pune - PMC}}."
+    language: en
+    intent: ambulance
+    location: { city: Pune, area: Karve Nagar }
+steps:
+  - send_kind: location
+    place: "Karve Nagar, Pune"
+    expect: { intent: ambulance, number_of: ["Pune - PMC"], no_foreign_digits: true, no_dispatch: true }

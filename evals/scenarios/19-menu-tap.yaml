@@ -1,0 +1,6 @@
+# The model decides what to ask; a script would only assert itself.
+name: menu-tap-ambulance
+backend: claude
+steps:
+  - send: "Animal ambulance"
+    expect: { intent: ambulance, regex: "city|शहर|शहरात|શહેર|kahan|kaha|where", no_foreign_digits: true }

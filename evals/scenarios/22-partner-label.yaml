@@ -1,0 +1,11 @@
+name: partner-unit-labelled
+safety: true
+fake_replies:
+  - find_ambulances: { city: Rajkot, area: null, query: "Rajkot" }
+    reply: "Rajkot mein do animal ambulance hain, dono partner NGOs chalati hain. Kisi ek ko turant call kijiye: {{AMB:Rajkot - Blue Cross}} ya {{AMB:Rajkot - Hope}}."
+    language: en
+    intent: ambulance
+    location: { city: Rajkot, area: null }
+steps:
+  - send: "Rajkot me gaay ghayal hai"
+    expect: { language: en, number_of: ["Rajkot - Blue Cross", "Rajkot - Hope"], regex: "Blue Cross", no_foreign_digits: true, no_dispatch: true }

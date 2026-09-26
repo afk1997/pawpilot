@@ -1,0 +1,6 @@
+# The model decides needs_human; a script would only assert itself.
+name: human-word-not-escalation
+backend: claude
+steps:
+  - send: "a human hit the dog in Chembur, it is bleeding"
+    expect: { intent: ambulance, number_of: ["Mumbai - Chembur"], flagged: false, no_foreign_digits: true, no_dispatch: true }

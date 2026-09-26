@@ -1,0 +1,5 @@
+name: voice-note-please-type
+language: hi
+steps:
+  - send_kind: audio
+    expect: { kind: audio_only, contains: ["वॉइस नोट"], message_count: 1 }

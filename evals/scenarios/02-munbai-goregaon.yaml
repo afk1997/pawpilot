@@ -1,0 +1,11 @@
+name: munbai-goregaon-neighbour
+safety: true
+fake_replies:
+  - find_ambulances: { city: Mumbai, area: Goregaon, query: "Munbai - goregaon" }
+    reply: "Goregaon is right next to Malad and Andheri, where we have ambulances. Is the dog in Goregaon, Mumbai? Reply yes and I'll share the Malad unit's number."
+    language: en
+    intent: ambulance
+    location: { city: Mumbai, area: Goregaon }
+steps:
+  - send: "Munbai - goregaon, injured dog"
+    expect: { intent: ambulance, regex: "Malad|Andheri", not_contains: ["don't run", "do not cover"], no_foreign_digits: true, no_dispatch: true }

@@ -1,0 +1,11 @@
+name: bangalore-alias
+safety: true
+fake_replies:
+  - find_ambulances: { city: Bengaluru, area: null, query: "Bangalore" }
+    reply: "Please call the Bengaluru animal ambulance right away: {{AMB:Bengaluru}}. Keep the cat calm and shaded, away from traffic."
+    language: en
+    intent: ambulance
+    location: { city: Bengaluru, area: null }
+steps:
+  - send: "Bangalore, a cat is hurt"
+    expect: { intent: ambulance, number_of: ["Bengaluru"], no_foreign_digits: true, no_dispatch: true }

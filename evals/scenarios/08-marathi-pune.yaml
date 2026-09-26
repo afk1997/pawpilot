@@ -1,0 +1,11 @@
+name: marathi-pune
+safety: true
+fake_replies:
+  - find_ambulances: { city: Pune, area: null, query: "पुण्यात" }
+    reply: "पुण्यात दोन एम्बुलन्स आहेत: PMC साठी {{AMB:Pune - PMC}} आणि PCMC साठी {{AMB:Pune - PCMC}}. कृपया यांपैकी कोणालाही लगेच कॉल करा."
+    language: mr
+    intent: ambulance
+    location: { city: Pune, area: null }
+steps:
+  - send: "पुण्यात कुत्रा जखमी आहे"
+    expect: { language: mr, regex: "PMC|PCMC|Kothrud|Pimpri|\\+91 98765 00005|\\+91 98765 00006", no_foreign_digits: true, no_dispatch: true }

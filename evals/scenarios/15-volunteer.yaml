@@ -1,0 +1,6 @@
+# The model writes the volunteer reply from get_info; a script would only assert itself.
+name: volunteer
+backend: claude
+steps:
+  - send: "how can I volunteer with you?"
+    expect: { intent: volunteer, contains: ["alwayscare.org/volunteer"], not_contains: ["TODO"], no_foreign_digits: true }

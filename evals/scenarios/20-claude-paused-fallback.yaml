@@ -1,0 +1,6 @@
+name: claude-paused-fallback
+safety: true
+pause_claude: true
+steps:
+  - send: "Ghatkopar"
+    expect: { kind: fallback, turn_status: fallback, number_of: ["Mumbai - Ghatkopar"], flagged: true, no_foreign_digits: true }

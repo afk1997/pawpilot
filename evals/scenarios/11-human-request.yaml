@@ -1,0 +1,8 @@
+# The model decides needs_human; a script would only assert itself.
+name: human-request-flags
+backend: claude
+steps:
+  - send: "I want to talk to a human person please"
+    expect: { contains: ["+91 99999 00000"], flagged: true, no_foreign_digits: true }
+  - send: "surat, injured dog"
+    expect: { number_of: ["Surat"], no_foreign_digits: true }

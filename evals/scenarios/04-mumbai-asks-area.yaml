@@ -1,0 +1,18 @@
+name: mumbai-asks-area-then-answers
+safety: true
+fake_replies:
+  - find_ambulances: { city: Mumbai, area: null, query: "I'm in Mumbai" }
+    reply: "Which area of Mumbai is the dog in? We have ambulances in Andheri, Bandra, Chembur, Ghatkopar, Malad and Mulund."
+    language: en
+    intent: ambulance
+    location: { city: Mumbai, area: null }
+  - find_ambulances: { city: Mumbai, area: Andheri, query: "Andheri" }
+    reply: "Please call the Andheri ambulance directly: {{AMB:Mumbai - Andheri}}."
+    language: en
+    intent: ambulance
+    location: { city: Mumbai, area: Andheri }
+steps:
+  - send: "I'm in Mumbai, dog hit by car"
+    expect: { intent: ambulance, regex: "Andheri|Bandra|Chembur|Ghatkopar|Malad|Mulund", no_foreign_digits: true, message_count: 1 }
+  - send: "Andheri"
+    expect: { number_of: ["Mumbai - Andheri"], no_foreign_digits: true, no_dispatch: true }
