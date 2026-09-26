@@ -21,7 +21,7 @@ import { isClaudePaused, pauseClaude, recordOkTurn } from "./pause";
 import { runFallbackTurn } from "./fallback";
 
 /** The wall-clock budget for a turn's backend calls, less a reserve for rendering, the send or the fallback. */
-const TURN_BUDGET_MS = 100_000;
+export const TURN_BUDGET_MS = 100_000;
 const TURN_RESERVE_MS = 10_000;
 /** A call with less time than this left is skipped: it would likely time out, and the fallback is quicker. */
 const MIN_CALL_MS = 15_000;

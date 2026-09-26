@@ -7,6 +7,8 @@ import { recordEvent } from "../inbound/store";
 import { heartbeat } from "./pause";
 import { flagConversation } from "./persist";
 import { runTurn, type TurnOutcome } from "./turn-runner";
+import { TURN_BUDGET_MS } from "./claude-turn";
+import { SEND_TIMEOUT_MS } from "../interakt/client";
 import { closeDb, getDb } from "../db/client";
 import { conversations, events, messages } from "../db/schema";
 
@@ -17,6 +19,14 @@ import { conversations, events, messages } from "../db/schema";
  * turns fail fast. New inbound messages still get fresh jobs from the webhook; only the sweep stops.
  */
 const SWEEP_FAILED_TURN_CAP = 3;
+
+/**
+ * How long a stop waits for in-flight turns: a Claude turn's whole budget, its Interakt send and a margin for the
+ * database work around them (145 s). pg-boss then fails what is still running and the job is retried on the next
+ * worker, so a turn cut off between its send and its bookkeeping could reach the reporter twice. The container's
+ * stop grace period must be longer than this (README, deploy notes).
+ */
+export const GRACEFUL_STOP_MS = TURN_BUDGET_MS + SEND_TIMEOUT_MS + 30_000;
 
 /**
  * Backstop for turns the queue never ran: a message that landed on a debounce-slot boundary, or an
@@ -139,8 +149,8 @@ export async function startWorker(opts: { concurrency?: number; heartbeatMs?: nu
       clearInterval(sweepTimer);
       // A sweep still enqueueing after stopBoss would start a fresh pg-boss through getBoss().
       await sweeping;
-      // Longer than a Claude turn's 45 s default timeout, so an in-flight turn finishes instead of being failed.
-      await stopBoss({ timeoutMs: 60_000 });
+      // Long enough for an in-flight turn to finish instead of being failed and retried (GRACEFUL_STOP_MS).
+      await stopBoss({ timeoutMs: GRACEFUL_STOP_MS });
     },
   };
 }

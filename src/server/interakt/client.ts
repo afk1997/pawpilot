@@ -56,7 +56,7 @@ export function splitPhone(phone: string): { countryCode: string; phoneNumber: s
 }
 
 /** Caps a stalled Interakt call; Node's fetch would otherwise wait minutes, past the turn job's expiry. */
-const SEND_TIMEOUT_MS = 15_000;
+export const SEND_TIMEOUT_MS = 15_000;
 
 /**
  * Node's fetch rejects network failures as TypeError("fetch failed") and keeps the reason in `cause`. That cause can be

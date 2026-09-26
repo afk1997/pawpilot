@@ -11,7 +11,9 @@ import { getConfig, resetConfigForTests } from "@/server/config";
 import { log } from "@/server/log";
 import { storeReporterMessage } from "@/server/inbound/store";
 import { enqueueTurn, getBoss, stopBoss, TURN_QUEUE } from "@/server/queue/boss";
-import { runWorkerProcess, startWorker, sweepUnanswered } from "@/server/worker/start";
+import { GRACEFUL_STOP_MS, runWorkerProcess, startWorker, sweepUnanswered } from "@/server/worker/start";
+import { TURN_BUDGET_MS } from "@/server/worker/claude-turn";
+import { SEND_TIMEOUT_MS } from "@/server/interakt/client";
 import * as turnRunner from "@/server/worker/turn-runner";
 import { getWorkerState } from "@/server/worker/pause";
 import { createTurn } from "@/server/worker/persist";
@@ -273,7 +275,12 @@ describe("startWorker", () => {
     }
   });
 
-  it("caps concurrency at WORKER_CONCURRENCY, takes LOG_LEVEL from config and gives in-flight turns 60 s on stop", async () => {
+  it("gives an in-flight turn its whole budget, a send and a margin to finish on stop: 145 s", () => {
+    expect(GRACEFUL_STOP_MS).toBe(TURN_BUDGET_MS + SEND_TIMEOUT_MS + 30_000);
+    expect(GRACEFUL_STOP_MS).toBe(145_000);
+  });
+
+  it("caps concurrency at WORKER_CONCURRENCY, takes LOG_LEVEL from config and passes the graceful stop window to pg-boss", async () => {
     const work = vi.spyOn(PgBoss.prototype, "work");
     const stop = vi.spyOn(PgBoss.prototype, "stop");
     const envLevel = process.env.LOG_LEVEL;
@@ -289,7 +296,7 @@ describe("startWorker", () => {
         expect.any(Function)
       );
       expect(log.level).toBe("fatal");
-      expect(stop).toHaveBeenCalledWith({ graceful: true, timeout: 60_000 });
+      expect(stop).toHaveBeenCalledWith({ graceful: true, timeout: GRACEFUL_STOP_MS });
     } finally {
       work.mockRestore();
       stop.mockRestore();
