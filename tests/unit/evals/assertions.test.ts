@@ -3,7 +3,7 @@ import { checkStep } from "../../../evals/assertions";
 
 const actual = (content: string, extra: Partial<Parameters<typeof checkStep>[1]> = {}) => ({
   messages: [{ content }], turnStatus: "ok", structured: { reply: content, language: "hi" as const, intent: "ambulance" as const, location: { city: null, area: null }, needs_human: false, notes: null },
-  flagged: false, outcomeKind: "ok", knownNumbers: new Map([["Mumbai - Ghatkopar", "+917000000001"]]), allDirectoryNumbers: ["+917000000001"], ...extra,
+  flagged: false, outcomeKind: "ok", knownNumbers: new Map([["Mumbai - Ghatkopar", "+917000000001"]]), allowedNumbers: ["+917000000001"], ...extra,
 });
 
 describe("checkStep", () => {

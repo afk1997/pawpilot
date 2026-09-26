@@ -4,91 +4,51 @@ import { config as loadEnv } from "dotenv";
 import { parse as parseYaml } from "yaml";
 import { asc, eq } from "drizzle-orm";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
-import { checkStep, type StepExpect } from "./assertions";
+import { checkStep } from "./assertions";
+import {
+  UsageError, allowedNumbersFor, databaseName, databaseRefusal, fakeStep, formatTable, modelReplyOf, needsClaude, parseArgs,
+  summarize, summaryLine, type Directory, type EvalArgs, type Labels, type Scenario, type ScenarioResult,
+} from "./lib";
 import { getConfig, resetConfigForTests } from "../src/server/config";
-import { getDb, closeDb } from "../src/server/db/client";
+import { getDb, getSql, closeDb } from "../src/server/db/client";
 import { conversations, messages, turns } from "../src/server/db/schema";
 import { storeReporterMessage } from "../src/server/inbound/store";
 import { runTurn } from "../src/server/worker/turn-runner";
 import { pauseClaude, clearClaudePause } from "../src/server/worker/pause";
 import { stopBoss } from "../src/server/queue/boss";
 import { getBackend } from "../src/server/agent";
-import { FakeBackend, okReply } from "../src/server/agent/fake-backend";
-import { findAmbulancesImpl, findClinicsImpl, getInfoImpl } from "../src/server/agent/tools";
-import { getStaticPhones, type InfoTopic } from "../src/server/content/static";
+import { FakeBackend } from "../src/server/agent/fake-backend";
+import { getStaticPhones } from "../src/server/content/static";
 import { resetCoverageCache } from "../src/server/directory/coverage";
 import { loadActiveAmbulances, loadActiveClinics } from "../src/server/directory/repo";
 import { log } from "../src/server/log";
 import { resetDb } from "../tests/helpers/db";
 import { seedDirectory } from "../tests/helpers/fixtures";
-import type { StructuredReply, TurnInput, TurnResult } from "../src/server/agent/types";
-import type { Language } from "../src/server/types";
-
-/**
- * One scripted backend call. The lookup keys run those tools first, as the model would. In `reply`, {{AMB:<label>}} and
- * {{CLINIC:<label>}} name a fixture unit or clinic by its label and become the handle a lookup issued for it (in this
- * turn or an earlier one); a label no lookup issued stays as written, so the reply drops it like an invented handle.
- */
-interface FakeReply extends Partial<StructuredReply> {
-  find_ambulances?: { city?: string | null; area?: string | null; query: string };
-  find_clinics?: { city?: string | null };
-  get_info?: { topic: InfoTopic };
-}
-
-interface Step {
-  send?: string;
-  send_burst?: string[];
-  send_kind?: "audio" | "location";
-  place?: string;
-  expect?: StepExpect;
-}
-interface Scenario {
-  name: string;
-  safety?: boolean;
-  language?: Language | null;
-  first_contact?: boolean;
-  /** "fake": always the scripted backend. "claude": its assertions need the real model, so a fake run skips it. */
-  backend?: "fake" | "claude";
-  /** The fake backend's script, one reply per backend call (the last repeats); a claude run ignores it. */
-  fake_replies?: FakeReply[];
-  pause_claude?: boolean;
-  steps: Step[];
-}
-interface Result {
-  name: string;
-  safety: boolean;
-  status: "PASS" | "FAIL" | "SKIP";
-  failures: string[];
-  latencies: number[];
-}
-
-const args = process.argv.slice(2);
 
 function usage(problem: string): never {
   console.error(`${problem}\nUsage: npm run eval [-- --only <name>] [--backend fake|claude] [--allow-db]`);
   process.exit(2);
 }
 
-/** The value after `name`, or null when the flag is absent. */
-function flag(name: string): string | null {
-  const at = args.indexOf(name);
-  if (at < 0) return null;
-  const value = args[at + 1];
-  if (value === undefined || value.startsWith("--")) usage(`${name} needs a value`);
-  return value;
+function readArgs(): EvalArgs {
+  try {
+    return parseArgs(process.argv.slice(2));
+  } catch (e) {
+    if (e instanceof UsageError) usage(e.message);
+    throw e;
+  }
 }
 
-const only = flag("--only");
-const backendFlag = flag("--backend") ?? "fake";
-if (backendFlag !== "fake" && backendFlag !== "claude") usage(`Unknown backend "${backendFlag}"`);
+const args = readArgs();
 /** The real Claude spends the owner's Max usage, so it runs only when asked for by name. */
-const useClaude = backendFlag === "claude";
+const useClaude = args.backend === "claude";
 
-// Config is read on first use, after this block. log.ts read LOG_LEVEL when it was imported, so its level is set here.
+// Config is read on first use, after this block. log.ts read LOG_LEVEL when it was imported, so its level is set here:
+// errors only by default, since every failure the runner judges is in its own output.
 loadEnv({ path: ".env.local" });
 loadEnv({ path: ".env" });
 process.env.DATABASE_URL = process.env.TEST_DATABASE_URL ?? "postgres://arham:arham@127.0.0.1:5439/arham_test";
-process.env.LOG_LEVEL ??= "warn";
+process.env.LOG_LEVEL ??= "error";
 log.level = process.env.LOG_LEVEL;
 // The fixture helpline the scenarios expect, and an Interakt key that cannot send: eval conversations are test ones,
 // which are never sent, and nothing here may ever reach a real phone.
@@ -100,47 +60,13 @@ process.env.LLM_BACKEND = useClaude ? "claude-code" : "fake";
 if (!useClaude) delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
 resetConfigForTests();
 
-/** The database a connection URL names, or null when it names none or does not parse. */
-function databaseName(url: string): string | null {
-  try {
-    return decodeURIComponent(new URL(url).pathname.slice(1)) || null;
-  } catch {
-    return null;
-  }
-}
-
-// Every scenario truncates every table, so only a test database, unless the caller insists.
-const dbName = databaseName(process.env.DATABASE_URL);
-if (!dbName?.endsWith("_test") && !args.includes("--allow-db")) {
-  console.error(
-    `Refusing to run: the eval truncates every table, and ${dbName ? `database "${dbName}"` : "TEST_DATABASE_URL"} is not a test database (its name must end in _test). ` +
-      "Point TEST_DATABASE_URL at one, or pass --allow-db to run against it anyway."
-  );
+// Every scenario truncates every table: a URL naming another database is refused before any connection. main checks
+// the database actually connected to as well, since the URL's query string can override its path.
+const urlDatabase = databaseName(process.env.DATABASE_URL);
+const urlRefusal = databaseRefusal(urlDatabase, args.allowDb);
+if (urlRefusal) {
+  console.error(urlRefusal);
   process.exit(2);
-}
-
-type Labels = Record<"AMB" | "CLINIC", Map<string, string>>;
-/** A fixture label in a scripted reply: {{AMB:Mumbai - Ghatkopar}}, {{CLINIC:Arham Clinic Surat}}. */
-const LABEL_TOKEN_RE = /\{\{(AMB|CLINIC):([^{}]+)\}\}/g;
-
-/** A FakeBackend step for one scripted reply: its lookups against the turn's tool context, then the reply. */
-function fakeStep(r: FakeReply, labels: Labels) {
-  const { find_ambulances, find_clinics, get_info, ...structured } = r;
-  return async (input: TurnInput): Promise<TurnResult> => {
-    const ctx = input.toolContext;
-    if (!ctx) throw new Error("the fake backend got no tool context");
-    if (find_ambulances) await findAmbulancesImpl(ctx, find_ambulances);
-    if (find_clinics) await findClinicsImpl(ctx, find_clinics);
-    if (get_info) getInfoImpl(ctx, get_info);
-    const issued = Object.entries(ctx.registry.toJSON());
-    const reply = (structured.reply ?? "").replace(LABEL_TOKEN_RE, (raw, kind: "AMB" | "CLINIC", label: string) => {
-      const id = labels[kind].get(label.trim());
-      const handleKind = kind === "AMB" ? "ambulance" : "clinic";
-      const handle = issued.find(([, ref]) => ref.kind === handleKind && ref.id === id)?.[0];
-      return handle ? `{{${kind}:${handle}}}` : raw;
-    });
-    return okReply({ ...structured, reply });
-  };
 }
 
 async function runScenario(s: Scenario) {
@@ -154,8 +80,11 @@ async function runScenario(s: Scenario) {
   const clinicRows = await loadActiveClinics();
   const knownNumbers = new Map(units.map((a) => [a.label, a.phone]));
   for (const c of clinicRows) knownNumbers.set(c.label, c.phone);
-  // Every number the bot may send: the directory's, the helpline and the static content's.
-  const allNumbers = [...knownNumbers.values(), getConfig().helplinePhone, ...Object.values(getStaticPhones())];
+  const directory: Directory = {
+    ambulances: new Map(units.map((a) => [a.id, a.phone])),
+    clinics: new Map(clinicRows.map((c) => [c.id, c.phone])),
+  };
+  const always = [getConfig().helplinePhone, ...Object.values(getStaticPhones())];
   const labels: Labels = { AMB: new Map(units.map((a) => [a.label, a.id])), CLINIC: new Map(clinicRows.map((c) => [c.label, c.id])) };
 
   const backend = s.backend === "fake" || !useClaude
@@ -185,16 +114,16 @@ async function runScenario(s: Scenario) {
     const all = await getDb().select().from(messages).where(eq(messages.conversationId, conv.id)).orderBy(asc(messages.createdAt));
     const newAssistant = all.slice(before + texts.length).filter((m) => m.role === "assistant");
     const [row] = await getDb().select().from(conversations).where(eq(conversations.id, conv.id));
-    const turnRows = await getDb().select().from(turns).where(eq(turns.conversationId, conv.id)).orderBy(asc(turns.createdAt));
-    const lastTurn = turnRows[turnRows.length - 1] ?? null;
+    // The turn this step's runTurn reported, never another step's.
+    const [turn = null] = outcome.turnId ? await getDb().select().from(turns).where(eq(turns.id, outcome.turnId)) : [];
     const fails = checkStep(step.expect ?? {}, {
       messages: newAssistant.map((m) => ({ content: m.content })),
-      turnStatus: lastTurn?.status ?? null,
-      structured: (lastTurn?.structuredOutput as StructuredReply | null) ?? null,
+      turnStatus: turn?.status ?? null,
+      structured: modelReplyOf(turn),
       flagged: row.flagged,
       outcomeKind: outcome.kind,
       knownNumbers,
-      allDirectoryNumbers: allNumbers,
+      allowedNumbers: allowedNumbersFor(turn, directory, always),
     });
     for (const f of fails) failures.push(`step ${i + 1}: ${f}`);
     if (fails.length) failures.push(`step ${i + 1} reply: ${newAssistant.map((m) => m.content).join(" ⏎ ").slice(0, 300)}`);
@@ -202,51 +131,53 @@ async function runScenario(s: Scenario) {
   return { failures, latencies };
 }
 
-function printTable(results: Result[]) {
-  const rows = [
-    ["scenario", "safety", "result", "turn latency"],
-    ...results.map((r) => [r.name, r.safety ? "yes" : "", r.status, r.latencies.length ? `${r.latencies.join(", ")} ms` : "-"]),
-  ];
-  const widths = rows[0].map((_, col) => Math.max(...rows.map((row) => row[col].length)));
-  console.log("");
-  for (const row of rows) console.log(row.map((cell, col) => cell.padEnd(widths[col])).join("  ").trimEnd());
-}
-
 async function main() {
-  if (useClaude) console.warn("⚠ --backend claude: every scenario not pinned to the fake backend calls the real Claude and spends the owner's Max usage.");
-  await migrate(getDb(), { migrationsFolder: "src/server/db/migrations" });
   const dir = join(process.cwd(), "evals", "scenarios");
-  const files = readdirSync(dir).filter((f) => f.endsWith(".yaml")).sort();
-  const results: Result[] = [];
-  for (const f of files) {
-    const s = parseYaml(readFileSync(join(dir, f), "utf8")) as Scenario;
-    if (only && s.name !== only) continue;
+  const scenarios = readdirSync(dir)
+    .filter((f) => f.endsWith(".yaml"))
+    .sort()
+    .map((f) => parseYaml(readFileSync(join(dir, f), "utf8")) as Scenario);
+  if (args.only && !scenarios.some((s) => s.name === args.only)) usage(`No scenario named "${args.only}"`);
+  if (useClaude) console.warn("⚠ --backend claude: every scenario not pinned to the fake backend calls the real Claude and spends the owner's Max usage.");
+
+  const [{ current_database: connected }] = await getSql()<{ current_database: string }[]>`select current_database()`;
+  const refusal = databaseRefusal(connected, args.allowDb);
+  if (refusal) {
+    console.error(connected === urlDatabase ? refusal : `${refusal} (Connected to "${connected}" although the URL's path names "${urlDatabase}".)`);
+    await closeDb();
+    process.exit(2);
+  }
+  await migrate(getDb(), { migrationsFolder: "src/server/db/migrations" });
+
+  const results: ScenarioResult[] = [];
+  for (const s of scenarios) {
+    if (args.only && s.name !== args.only) continue;
     process.stdout.write(`▶ ${s.name} … `);
-    if (s.backend === "claude" && !useClaude) {
+    if (needsClaude(s, useClaude)) {
       console.log("SKIP (needs claude)");
       results.push({ name: s.name, safety: !!s.safety, status: "SKIP", failures: [], latencies: [] });
       continue;
     }
-    const { failures, latencies } = await runScenario(s);
-    const status = failures.length === 0 ? "PASS" : "FAIL";
-    results.push({ name: s.name, safety: !!s.safety, status, failures, latencies });
+    let run: { failures: string[]; latencies: number[] };
+    try {
+      run = await runScenario(s);
+    } catch (e) {
+      // A scenario that throws fails on its own: the rest still run and the table still prints.
+      run = { failures: [`error: ${e instanceof Error ? e.message : String(e)}`], latencies: [] };
+    }
+    const status = run.failures.length === 0 ? "PASS" : "FAIL";
+    results.push({ name: s.name, safety: !!s.safety, status, ...run });
     console.log(status);
-    for (const line of failures) console.log(`    ${line}`);
+    for (const line of run.failures) console.log(`    ${line}`);
   }
-  if (only && results.length === 0) usage(`No scenario named "${only}"`);
-  printTable(results);
-  const ran = results.filter((r) => r.status !== "SKIP");
-  const all = ran.flatMap((r) => r.latencies).sort((a, b) => a - b);
-  const pct = (p: number) => (all.length ? all[Math.min(all.length - 1, Math.floor((p / 100) * all.length))] : 0);
-  const passed = ran.filter((r) => r.status === "PASS").length;
-  const skipped = results.length - ran.length;
-  const safetyFailed = ran.filter((r) => r.safety && r.status === "FAIL").length;
-  console.log(
-    `\n${passed}/${ran.length} scenarios passed${skipped ? ` · ${skipped} skipped (need claude)` : ""} · safety failures: ${safetyFailed} · turn latency P50 ${pct(50)} ms, P95 ${pct(95)} ms`
-  );
+
+  console.log("");
+  for (const line of formatTable(results)) console.log(line);
+  const summary = summarize(results);
+  console.log(`\n${summaryLine(summary)}`);
   await stopBoss();
   await closeDb();
-  process.exit(passed === ran.length ? 0 : 1);
+  process.exit(summary.exitCode);
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

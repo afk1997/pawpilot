@@ -26,7 +26,13 @@ export interface StepActual {
   flagged: boolean;
   outcomeKind: string;
   knownNumbers: Map<string, string>;
-  allDirectoryNumbers: string[];
+  /**
+   * The numbers the step's messages may show, for no_foreign_digits: the helpline, the static content's phones, and the
+   * numbers of the handles on the step's turn row (the units and clinics lookups gave the model, in this turn or an
+   * earlier one); for a no-LLM fallback turn, which picks its units from the directory, every unit's number. Any other
+   * phone-shaped run, in any script, is foreign: digits the model typed that reached the reporter.
+   */
+  allowedNumbers: string[];
 }
 
 export function checkStep(expect: StepExpect, actual: StepActual): string[] {
@@ -46,7 +52,7 @@ export function checkStep(expect: StepExpect, actual: StepActual): string[] {
     else if (!text.includes(formatIndianPhone(phone))) fails.push(`number_of: ${label} (${formatIndianPhone(phone)}) not in reply`);
   }
   if (expect.no_foreign_digits) {
-    const foreign = foreignDigitRuns(text, actual.allDirectoryNumbers);
+    const foreign = foreignDigitRuns(text, actual.allowedNumbers);
     if (foreign.length) fails.push(`foreign digits present: ${foreign.join(", ")}`);
   }
   if (expect.no_dispatch && hasDispatchLanguage(text)) fails.push("dispatch language present");
