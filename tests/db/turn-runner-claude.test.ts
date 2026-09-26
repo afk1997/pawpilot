@@ -435,6 +435,17 @@ describe("the Claude turn's guards, audit and context", () => {
     expect((await outbound(c.id)).map((m) => [m.deliveryStatus, m.content])).toEqual([["sending", "Please call +91 99999 00000."]]);
   });
 
+  it("writes the turn's handles and tool calls before the send, so a crash after it loses neither", async () => {
+    const c = await createConversation({ phone: "+919876500997", language: "en", welcomedAt: new Date() });
+    await storeReporterMessage(c.id, { kind: "text", content: "ghatkopar" });
+    setFetchForTests((async () => new Response(JSON.stringify({ id: "wa-audit" }), { status: 201 })) as typeof fetch);
+    vi.spyOn(persist, "recordSendResult").mockRejectedValueOnce(new Error("connection lost after the send"));
+    await expect(runTurn(c.id, { backend: new FakeBackend([ghatkoparStep]) })).rejects.toThrow("connection lost after the send");
+    const t = await lastTurn(c.id);
+    expect(Object.values(t.handles as object)).toEqual([{ kind: "ambulance", id: ids.ghatkopar }]);
+    expect((t.toolCalls as { name: string }[]).map((x) => x.name)).toEqual(["find_ambulances"]);
+  });
+
   it("audits tool uses the SDK refused beside the calls the tools recorded, on every attempt, and records extra usage", async () => {
     const c = await conv();
     await storeReporterMessage(c.id, { kind: "text", content: "ghatkopar" });
@@ -672,7 +683,8 @@ describe("the Claude turn's time budget, audit totals and failure handling", () 
   it("never retries a transient failure that was a timeout", async () => {
     const c = await conv();
     await storeReporterMessage(c.id, { kind: "text", content: "surat" });
-    const backend = new FakeBackend([errorResult("TRANSIENT", "turn timed out"), okReply({ reply: "too late" })]);
+    const timedOut = { ...errorResult("TRANSIENT", "turn timed out"), timedOut: true } as TurnResult;
+    const backend = new FakeBackend([timedOut, okReply({ reply: "too late" })]);
     const r = await runTurn(c.id, { backend });
     expect(r.kind).toBe("fallback");
     expect(backend.calls).toHaveLength(1);
@@ -681,6 +693,14 @@ describe("the Claude turn's time budget, audit totals and failure handling", () 
     expect((await eventsOf("retry_skipped")).map((e) => e.payload)).toEqual([
       { turnId: claude.id, purpose: "retry", reason: "timed_out", remainingMs: expect.any(Number) },
     ]);
+  });
+
+  it("retries a transient failure whose text mentions a timeout but that was none: the backend's flag decides", async () => {
+    const c = await conv();
+    await storeReporterMessage(c.id, { kind: "text", content: "surat" });
+    const backend = new FakeBackend([errorResult("TRANSIENT", "assistant error: upstream timed out"), okReply({ reply: "Please call {{PHONE:helpline}}." })]);
+    expect((await runTurn(c.id, { backend })).kind).toBe("ok");
+    expect(backend.calls).toHaveLength(2);
   });
 
   it.each([

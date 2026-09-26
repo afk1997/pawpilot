@@ -124,9 +124,16 @@ describe("POST /api/webhook", () => {
       [{ eventType: "message_received", reason: "no_phone" }, "webhook ignored"],
       [{ eventType: "message_received", reason: "missing_fields" }, "webhook ignored"],
     ]);
+    // Each is also an event, with no conversation, so a pilot query sees the messages that will never be answered.
+    const unusable = await getDb().select().from(events).where(eq(events.kind, "inbound_unusable"));
+    expect(unusable.map((e) => [e.conversationId, e.payload])).toEqual([
+      [null, { eventType: "message_received", reason: "no_phone" }],
+      [null, { eventType: "message_received", reason: "missing_fields" }],
+    ]);
     warn.mockClear();
     await POST(signed({ type: "message_api_delivered", data: {} }));
     expect(warn).not.toHaveBeenCalled();
+    expect(await getDb().select().from(events).where(eq(events.kind, "inbound_unusable"))).toHaveLength(2);
   });
 
   it("refuses phones that belong to a test conversation", async () => {
@@ -208,11 +215,36 @@ describe("POST /api/webhook", () => {
     expect(res.status).toBe(500);
     expect(await res.json()).toEqual({ status: "error" });
     expect(error).toHaveBeenCalledWith(
-      { phone: maskPhone(phone), providerMessageId: "m1", code: "57P01", pgMessage: "terminating connection due to administrator command" },
+      { phone: maskPhone(phone), providerMessageId: "m1", stage: "store", code: "57P01", pgMessage: "terminating connection due to administrator command" },
       "webhook inbound failed"
     );
     const logged = JSON.stringify([error, ...others].map((spy) => spy.mock.calls));
     for (const leak of ["7003705584", "dog injured", "Failed query", "already exists"]) expect(logged).not.toContain(leak);
+  });
+
+  it("names the stage when the message was stored but its turn could not be queued", async () => {
+    vi.spyOn(queue, "enqueueTurn").mockRejectedValueOnce(Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }));
+    const error = vi.spyOn(log, "error").mockImplementation(() => undefined);
+    const res = await POST(signed(inbound("m7", "dog injured")));
+    expect(res.status).toBe(500);
+    expect(error).toHaveBeenCalledWith(
+      { phone: maskPhone("+917003705584"), providerMessageId: "m7", stage: "enqueue", code: "ECONNREFUSED" },
+      "webhook inbound failed"
+    );
+    // Stored: the worker's sweep answers it, and Interakt's retry is a duplicate.
+    expect(await getDb().select().from(messages)).toHaveLength(1);
+  });
+
+  it("queues the turn before recording an unknown content type", async () => {
+    // A type no other test sends: the route remembers the types it recorded for the life of the process.
+    const poll = inbound("m8", "which one?");
+    poll.data.message.message_content_type = "Poll";
+    const enqueue = vi.spyOn(queue, "enqueueTurn");
+    const record = vi.spyOn(store, "recordEvent");
+    expect((await (await POST(signed(poll))).json()).status).toBe("queued");
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(record).toHaveBeenCalledWith("unknown_payload", expect.objectContaining({ contentType: "Poll" }), expect.any(String));
+    expect(enqueue.mock.invocationCallOrder[0]).toBeLessThan(record.mock.invocationCallOrder[0]);
   });
 
   it("still answers queued, and logs it, when the turn is deduplicated", async () => {

@@ -5,7 +5,7 @@ import { buildHelplineCard, formatIndianPhone, renderNumberForToken } from "../m
 import { callDirectlyLine, DISPATCH_CORRECTION_NOTE, staleHandleNote, TOKEN_CORRECTION_NOTE } from "../messages/system-replies";
 import { extractTokens, type HandleRegistry } from "./handles";
 import { renderReply, type RenderLookups, type RenderResult } from "./render";
-import { foreignDigitRuns, hasDispatchLanguage, replaceDispatchSentences, stripRuns } from "./scrub";
+import { findDigitRuns, foreignDigitRuns, hasDispatchLanguage, replaceDigitRuns, replaceDispatchSentences, sameNumber, stripRuns } from "./scrub";
 import type { StructuredReply } from "./types";
 
 /**
@@ -215,6 +215,16 @@ export async function guardReply(first: StructuredReply, deps: GuardDeps): Promi
     inserted.add(deps.helplinePhone);
   }
 
+  /** The template's form of a number code inserted: its token, or a marker when it has none. */
+  const tokenFor = (phone: string) => {
+    const seen = rows.get(phone);
+    if (seen?.kind === "ambulance") return `{{AMB:${registry.ambulance(seen.row.id)}}}`;
+    if (seen?.kind === "clinic") return `{{CLINIC:${registry.clinic(seen.row.id)}}}`;
+    if (phone === deps.helplinePhone) return "{{PHONE:helpline}}";
+    const key = Object.keys(deps.staticPhones).find((k) => deps.staticPhones[k] === phone);
+    return key === undefined ? "[number sent]" : `{{PHONE:${key}}}`;
+  };
+
   // Every number a draft inserted reaches the reporter: one the reply lacks goes out again, its token in the template.
   const lost = [...inserted].filter((phone) => !text.includes(formatIndianPhone(phone)));
   if (lost.length > 0) {
@@ -222,17 +232,18 @@ export async function guardReply(first: StructuredReply, deps: GuardDeps): Promi
       const seen = rows.get(phone);
       return seen?.kind === "ambulance" ? renderNumberForToken(seen.row, lang) : formatIndianPhone(phone);
     };
-    const tokenFor = (phone: string) => {
-      const seen = rows.get(phone);
-      if (seen?.kind === "ambulance") return `{{AMB:${registry.ambulance(seen.row.id)}}}`;
-      if (seen?.kind === "clinic") return `{{CLINIC:${registry.clinic(seen.row.id)}}}`;
-      if (phone === deps.helplinePhone) return "{{PHONE:helpline}}";
-      const key = Object.keys(deps.staticPhones).find((k) => deps.staticPhones[k] === phone);
-      return key === undefined ? "[number sent]" : `{{PHONE:${key}}}`;
-    };
     const line = callDirectlyLine(lang);
     text = appendLine(text, [line, ...lost.map(numberFor)].join(" "));
     template = appendLine(template, [line, ...lost.map(tokenFor)].join(" "));
+  }
+
+  // The template feeds the next transcript, which must never show digits: a run the model typed that the guards allowed
+  // (an inserted number it retyped, a run from this turn's tools) goes in as that number's token, or as a marker.
+  if (findDigitRuns(template).length > 0) {
+    template = replaceDigitRuns(template, (run) => {
+      const phone = [...inserted].find((p) => sameNumber(p, run));
+      return phone === undefined ? "[number sent]" : tokenFor(phone);
+    });
   }
 
   const dropped = d.rendered.unknownHandles;

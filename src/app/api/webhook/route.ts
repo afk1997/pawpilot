@@ -52,14 +52,20 @@ export async function POST(request: Request) {
   const parsed = parseInteraktPayload(payload);
   if (parsed.kind === "ignored") {
     const fields = { eventType: parsed.eventType, reason: parsed.reason };
-    if (UNUSABLE_MESSAGE_REASONS.includes(parsed.reason)) log.warn(fields, "webhook ignored");
-    else log.info(fields, "webhook ignored");
+    if (UNUSABLE_MESSAGE_REASONS.includes(parsed.reason)) {
+      log.warn(fields, "webhook ignored");
+      await recordUnusable(fields);
+    } else {
+      log.info(fields, "webhook ignored");
+    }
     return Response.json({ status: "ignored", reason: parsed.reason, event_type: parsed.eventType });
   }
   const m = parsed.message;
 
   // A DrizzleQueryError carries the query's values (phone, name, text) in its message and params; if it escaped,
-  // Next would print it to stderr unmasked. Failures are logged as a hand-picked summary and answered 500 so Interakt retries.
+  // Next would print it to stderr unmasked. Failures are logged as a hand-picked summary, with the stage that failed,
+  // and answered 500 so Interakt retries.
+  let stage: "upsert" | "store" | "enqueue" = "upsert";
   try {
     const conversation = await upsertConversationByPhone({ phone: m.fromPhone, name: m.fromName });
     if (conversation.isTest) {
@@ -67,6 +73,7 @@ export async function POST(request: Request) {
       return Response.json({ status: "ignored_test_conv" });
     }
 
+    stage = "store";
     const stored = await storeReporterMessage(conversation.id, {
       providerMessageId: m.providerMessageId,
       kind: m.kind,
@@ -82,15 +89,29 @@ export async function POST(request: Request) {
       return Response.json({ status: "duplicate" });
     }
 
-    await recordUnknownContentType(m.rawContentType, payload, conversation.id);
-
+    // Stored: a failure from here on is answered by the worker's sweep, and Interakt's retry is a duplicate.
+    stage = "enqueue";
     const jobId = await enqueueTurn(conversation.id);
     if (jobId === null) log.info({ conversationId: conversation.id }, "turn deduplicated");
+    // Telemetry only once the turn is queued, so it never delays the reply.
+    await recordUnknownContentType(m.rawContentType, payload, conversation.id);
     log.info({ conversationId: conversation.id, kind: m.kind, phone: maskPhone(m.fromPhone) }, "inbound queued");
     return Response.json({ status: "queued", conversationId: conversation.id, messageId: stored.id });
   } catch (err) {
-    log.error({ phone: maskPhone(m.fromPhone), providerMessageId: m.providerMessageId, ...errorSummary(err) }, "webhook inbound failed");
+    log.error({ phone: maskPhone(m.fromPhone), providerMessageId: m.providerMessageId, stage, ...errorSummary(err) }, "webhook inbound failed");
     return Response.json({ status: "error" }, { status: 500 });
+  }
+}
+
+/**
+ * A reporter's message the route cannot use (no sender phone, no message id) is never answered: an event without a
+ * conversation makes it visible, with the event type and the reason only. Never fails the webhook.
+ */
+async function recordUnusable(fields: { eventType: string; reason: string }): Promise<void> {
+  try {
+    await recordEvent("inbound_unusable", fields);
+  } catch (err) {
+    log.warn({ reason: fields.reason, ...errorSummary(err) }, "inbound_unusable event not recorded");
   }
 }
 

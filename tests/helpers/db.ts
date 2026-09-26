@@ -3,7 +3,14 @@ import { getDb, getSql } from "@/server/db/client";
 import { conversations } from "@/server/db/schema";
 import type { Language } from "@/server/types";
 
+/** resetDb truncates every table: it refuses a database that is not a test one, such as a mistyped TEST_DATABASE_URL. */
+export function assertTestDatabase(name: string): void {
+  if (!name.endsWith("_test")) throw new Error(`resetDb refuses database "${name}": its name must end in _test`);
+}
+
 export async function resetDb(): Promise<void> {
+  const [{ name }] = await getSql()<{ name: string }[]>`select current_database() as name`;
+  assertTestDatabase(name);
   await getSql().unsafe(
     "truncate table messages, turns, events, conversations, clinics, ambulances, operators, worker_state restart identity cascade"
   );

@@ -4,7 +4,9 @@ import { resetDb, createConversation } from "../helpers/db";
 import { getSql } from "@/server/db/client";
 import { resetConfigForTests } from "@/server/config";
 import { log } from "@/server/log";
-import { getBoss, stopBoss, enqueueTurn, TURN_QUEUE, type TurnJobData } from "@/server/queue/boss";
+import { getBoss, stopBoss, enqueueTurn, warmBoss, TURN_QUEUE, type TurnJobData } from "@/server/queue/boss";
+import * as bossModule from "@/server/queue/boss";
+import { register } from "@/instrumentation";
 
 /** pg-boss throttles on 3 s slots of the database clock. */
 async function dbSlot(): Promise<{ index: number; msLeft: number }> {
@@ -55,6 +57,54 @@ describe("queue", () => {
     await expect(getBoss("worker")).rejects.toThrow("pg-boss already started in app role");
     await starting;
     await expect(getBoss("worker")).rejects.toThrow("pg-boss already started in app role");
+  });
+
+  it("forgets an instance whose stop failed, so the next call starts a fresh one", async () => {
+    const first = await getBoss();
+    const failing = vi.spyOn(first, "stop").mockRejectedValueOnce(new Error("stop failed"));
+    await expect(stopBoss()).rejects.toThrow("stop failed");
+    failing.mockRestore();
+    const second = await getBoss();
+    expect(second).not.toBe(first);
+    await first.stop({ graceful: false });
+  });
+
+  it("warms the app's pg-boss in the background, logging a failed start with its class and code only", async () => {
+    warmBoss();
+    const warmed = await getBoss();
+    expect(await warmed.getQueue(TURN_QUEUE)).not.toBeNull();
+    await stopBoss();
+    const databaseUrl = process.env.DATABASE_URL;
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
+    process.env.DATABASE_URL = "postgres://arham:arham@127.0.0.1:1/arham_test"; // nothing listens on port 1
+    resetConfigForTests();
+    try {
+      warmBoss();
+      await vi.waitFor(() => expect(warn).toHaveBeenCalledWith(expect.objectContaining({ code: "ECONNREFUSED" }), "pg-boss warm-up failed"));
+    } finally {
+      warn.mockRestore();
+      process.env.DATABASE_URL = databaseUrl;
+      resetConfigForTests();
+    }
+  });
+
+  it("warms pg-boss from instrumentation only in the Node server, never in a build, a test or the edge runtime", async () => {
+    const warm = vi.spyOn(bossModule, "warmBoss").mockImplementation(() => undefined);
+    try {
+      await register();
+      vi.stubEnv("NEXT_RUNTIME", "edge");
+      await register();
+      vi.stubEnv("NEXT_RUNTIME", "nodejs");
+      vi.stubEnv("NEXT_PHASE", "phase-production-build");
+      await register();
+      expect(warm).not.toHaveBeenCalled();
+      vi.stubEnv("NEXT_PHASE", "phase-production-server");
+      await register();
+      expect(warm).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllEnvs();
+      warm.mockRestore();
+    }
   });
 
   it("retries after a failed start instead of memoizing the failure", async () => {

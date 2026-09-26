@@ -70,6 +70,11 @@ export function maskDigitRuns(text: string, marker: string): string {
   return normalizeDigits(text).replace(new RegExp(DIGIT_RUN_RE), marker);
 }
 
+/** The text as the scrubber reads it, with every run replaced by what `replace` returns for it. */
+export function replaceDigitRuns(text: string, replace: (run: string) => string): string {
+  return normalizeDigits(text).replace(new RegExp(DIGIT_RUN_RE), (run) => replace(run));
+}
+
 /** One optional separator between two digits, as DIGIT_RUN_RE reads them. */
 const SEP = "[\\s-]?";
 
@@ -230,6 +235,11 @@ const SENTENCE_RE = new RegExp(
 function numberKey(number: string): string {
   const digits = digitsOf(number);
   return digits.length === 12 && digits.startsWith("91") ? digits.slice(2) : digits;
+}
+
+/** The same number in any written form: "+91 70000 00001", "91-70000-00001" and "7000000001" are one. */
+export function sameNumber(a: string, b: string): boolean {
+  return numberKey(a) === numberKey(b);
 }
 
 function escapeRegExp(s: string): string {

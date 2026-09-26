@@ -78,7 +78,7 @@ It must pass: a Hinglish Ghatkopar request comes back as an ambulance reply with
 - Logout is `DELETE /api/admin/login`, which clears the cookie. There is no button yet; from the browser console: `fetch("/api/admin/login", { method: "DELETE" })`.
 - Login allows 5 failures per client address per 15 minutes, and 50 across all addresses. The address is the first entry of the proxy-supplied `X-Forwarded-For` header (without one, every client shares the bucket `unknown`), and the counts live in the app's memory.
 - `/admin` lists conversations (filters all, flagged, human, test; search by phone or name) and shows each transcript with its turns: status, model, latency, intent, location, notes, error, tool calls, usage and the scrub flag.
-- Flags: `claude_unavailable` (the fallback answered), `needs_human` (Claude set it: the reporter wants a person, cannot reach a driver, or the bot cannot help), `send_failed` (Interakt refused a send) or `turn_failed` (see Sweep). The first reason sticks, and flags can be cleared only in the database for now.
+- Flags: `claude_unavailable` (the fallback answered), `needs_human` (Claude set it: the reporter wants a person, cannot reach a driver, or the bot cannot help), `send_failed` (Interakt refused a send) or `turn_failed` (see Sweep). `needs_human` and `send_failed` replace `claude_unavailable`, which a Claude pause puts on every conversation; any other reason already set sticks. Flags can be cleared only in the database for now.
 - `/test-chat` (same login) creates `is_test` conversations with `+91TEST_…` phones that go through the real queue and worker; their replies are stored with `delivery_status = test_skipped` and never reach Interakt.
 
 ## Static content

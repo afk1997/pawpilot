@@ -1,4 +1,4 @@
-import { desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import type { HandleMap } from "../agent/handles";
 import { getDb, type Db } from "../db/client";
 import { conversations, messages, turns, type Conversation, type Message, type NewTurn, type Turn } from "../db/schema";
@@ -50,16 +50,26 @@ export async function updateConversation(
 }
 
 /**
- * Flags a conversation for the dispatcher in one DB-side update. A reason already
- * on a flagged conversation (a dispatcher's, say) is kept, even one set after the
- * caller read the row.
+ * How much a flag reason says, for the ones code sets: a reporter who wants a person, or a reply that did not go out,
+ * says more than "the fallback answered", which a Claude pause puts on every conversation. Any other reason (a
+ * dispatcher's, turn_failed) is never replaced.
+ */
+const FLAG_RANK: Record<string, number> = { claude_unavailable: 0, needs_human: 1, send_failed: 1 };
+
+/**
+ * Flags a conversation for the dispatcher in one DB-side update. A reason already on a flagged conversation is kept,
+ * even one set after the caller read the row, unless FLAG_RANK ranks it below the new one.
  */
 export async function flagConversation(id: string, reason: string): Promise<void> {
+  const outranked = Object.keys(FLAG_RANK).filter((r) => FLAG_RANK[r] < (FLAG_RANK[reason] ?? -1));
+  const keep = outranked.length === 0
+    ? eq(conversations.flagged, true)
+    : and(eq(conversations.flagged, true), not(inArray(conversations.flagReason, outranked)));
   await getDb()
     .update(conversations)
     .set({
       flagged: true,
-      flagReason: sql`case when ${conversations.flagged} then ${conversations.flagReason} else ${reason} end`,
+      flagReason: sql`case when ${keep} then ${conversations.flagReason} else ${reason} end`,
       updatedAt: sql`now()`,
     })
     .where(eq(conversations.id, id));

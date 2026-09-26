@@ -49,4 +49,11 @@ describe("inbound store", () => {
     const [row] = await getDb().select().from(messages).where(eq(messages.conversationId, c.id));
     expect([row.content, row.mediaUrl, row.placeLabel]).toEqual(["near the gate", "https://example.test/a.jpg", "Gate 2"]);
   });
+
+  it("strips U+0000 from the provider id and the interactive id too", async () => {
+    const c = await upsertConversationByPhone({ phone: "+919876543210", name: null });
+    await storeReporterMessage(c.id, { providerMessageId: "m\u00001", kind: "interactive", content: "Donate", interactiveId: "menu:\u0000donate" });
+    const [row] = await getDb().select().from(messages).where(eq(messages.conversationId, c.id));
+    expect([row.providerMessageId, row.interactiveId]).toEqual(["m1", "menu:donate"]);
+  });
 });

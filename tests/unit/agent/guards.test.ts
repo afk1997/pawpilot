@@ -81,6 +81,18 @@ describe("guardReply", () => {
     expect(g).toMatchObject({ text: "We have helped 12345678 animals.", scrubbed: false });
   });
 
+  it("stores a number the model retyped as its token and any other allowed run as a marker, never as digits", async () => {
+    const { registry, deps, corrections } = setup({ toolRuns: ["12345678"] });
+    const h = registry.ambulance("r");
+    const g = await guardReply(reply({ reply: `Call {{AMB:${h}}}, that is 98765 00001. We have helped 12345678 animals.` }), deps);
+    expect(corrections).toEqual([]);
+    expect(g).toMatchObject({
+      text: "Call +91 98765 00001 (operated by Blue Cross), that is 98765 00001. We have helped 12345678 animals.",
+      template: `Call {{AMB:${h}}}, that is {{AMB:${h}}}. We have helped [number sent] animals.`,
+      scrubbed: false,
+    });
+  });
+
   it("reports only handle-shaped drops, counts the ones holding digits, and keeps dropped syntax apart", async () => {
     const written = "Call {{AMB:amb_pppppppp}} or {{AMB:amb_zzzzzzzz}} or {AMB:x} or {{PHONE:98765}} now.";
     const { deps, corrections } = setup({ corrected: [reply({ reply: written })] });

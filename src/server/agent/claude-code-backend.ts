@@ -191,7 +191,7 @@ function validReply(obs: StreamObservation): boolean {
 function classify(obs: StreamObservation): TurnResult {
   const sessionId = obs.result?.session_id ?? null;
   const toolUses = obs.toolUses ?? [];
-  const fail = (kind: BackendErrorKind, message: string, retryAfter: Date | null = null): TurnResult =>
+  const fail = (kind: BackendErrorKind, message: string, retryAfter: Date | null = null): Extract<TurnResult, { ok: false }> =>
     ({ ok: false, kind, message: truncate(message, MESSAGE_MAX), retryAfter, latencyMs: obs.latencyMs, sessionId, toolUses });
 
   // The turn was aborted at init, before the model ran: nothing else in the observation counts.
@@ -221,7 +221,7 @@ function classify(obs: StreamObservation): TurnResult {
   // "Claude Code returned an error result: …", so a throw or an abort decides the class only when no result arrived.
   if (!r) {
     if (obs.thrown) return fail("TRANSIENT", obs.thrown);
-    if (obs.aborted) return fail("TRANSIENT", "turn timed out");
+    if (obs.aborted) return { ...fail("TRANSIENT", "turn timed out"), timedOut: true };
     return fail("TRANSIENT", "no result message from the SDK");
   }
 

@@ -110,6 +110,13 @@ describe("verifyInteraktSignature", () => {
     expect(await verifyInteraktSignature(body, "sha256=deadbeef", { secret, mode: "hmac" })).toBe(false);
     expect(await verifyInteraktSignature(body, null, { secret, mode: "hmac" })).toBe(false);
   });
+  it("reads the hex in either case, and refuses a wrong signature of the right length", async () => {
+    expect(await verifyInteraktSignature(body, sig.toUpperCase(), { secret, mode: "hmac" })).toBe(true);
+    expect(await verifyInteraktSignature(body, `sha256=${sig.slice(7).toUpperCase()}`, { secret, mode: "hmac" })).toBe(true);
+    const sameLength = "sha256=" + createHmac("sha256", "other-secret").update(body).digest("hex");
+    expect(sameLength.length).toBe(sig.length);
+    expect(await verifyInteraktSignature(body, sameLength, { secret, mode: "hmac" })).toBe(false);
+  });
   it("accepts anything when mode is off", async () => {
     expect(await verifyInteraktSignature(body, null, { secret, mode: "off" })).toBe(true);
   });

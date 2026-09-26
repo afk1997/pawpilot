@@ -90,7 +90,7 @@ describe("runFallbackTurn", () => {
   });
 
   it("delivers a single card for a unique match in the reporter's language", async () => {
-    const r = await fallbackFor("ghatkopar me kutta ghayal hai");
+    const r = await fallbackFor("घाटकोपर में कुत्ता घायल है");
     expect(r.message.content).toContain("Arham Animal Ambulance, Ghatkopar");
     expect(r.message.content).toContain("+91 70000 00001");
     expect(r.message.content).toContain("कृपया उन्हें तुरंत कॉल करें");
@@ -99,6 +99,13 @@ describe("runFallbackTurn", () => {
     expect(r.conv.flagged).toBe(true);
     expect(r.conv.flagReason).toBe("claude_unavailable");
     expect(r.conv.language).toBe("hi");
+  });
+
+  it("answers Latin-script Hinglish in English, the language Claude reports for it", async () => {
+    const r = await fallbackFor("ghatkopar me kutta ghayal hai");
+    expect(r.message.content).toContain("Arham Animal Ambulance, Ghatkopar\n+91 70000 00001");
+    expect(r.message.content).toContain("Please call them right away.");
+    expect(r.conv.language).toBe("en");
   });
 
   it("finds a Gujarati-script city and answers in Gujarati", async () => {

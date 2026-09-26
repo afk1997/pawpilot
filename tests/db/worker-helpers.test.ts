@@ -10,7 +10,7 @@ import { HandleRegistry } from "@/server/agent/handles";
 import { seedDirectory } from "../helpers/fixtures";
 import { deliverText, deliverList, resendFailedReplies } from "@/server/worker/deliver";
 import { getWorkerState } from "@/server/worker/pause";
-import { createTurn, finishTurn, markAnswered, loadConversationHandles, type HandleMap } from "@/server/worker/persist";
+import { createTurn, finishTurn, flagConversation, markAnswered, loadConversationHandles, type HandleMap } from "@/server/worker/persist";
 import { setFetchForTests } from "@/server/interakt/client";
 import { log } from "@/server/log";
 
@@ -90,6 +90,21 @@ describe("worker helpers", () => {
     };
     expect(await flagOf(fresh.id)).toEqual([true, "send_failed"]);
     expect(await flagOf(flagged.id)).toEqual([true, "needs_human"]);
+  });
+
+  it("lets needs_human and send_failed replace claude_unavailable, and keeps any other reason already set", async () => {
+    const reasonAfter = async (...reasons: string[]) => {
+      const c = await createConversation();
+      for (const reason of reasons) await flagConversation(c.id, reason);
+      const [row] = await getDb().select().from(conversations).where(eq(conversations.id, c.id));
+      return [row.flagged, row.flagReason];
+    };
+    expect(await reasonAfter("claude_unavailable", "needs_human")).toEqual([true, "needs_human"]);
+    expect(await reasonAfter("claude_unavailable", "send_failed", "claude_unavailable")).toEqual([true, "send_failed"]);
+    expect(await reasonAfter("needs_human", "send_failed", "claude_unavailable")).toEqual([true, "needs_human"]);
+    expect(await reasonAfter("send_failed", "needs_human")).toEqual([true, "send_failed"]);
+    expect(await reasonAfter("turn_failed", "needs_human")).toEqual([true, "turn_failed"]);
+    expect(await reasonAfter("dispatcher: call back at 6", "needs_human", "send_failed")).toEqual([true, "dispatcher: call back at 6"]);
   });
 
   it("still flags a failed send when the outbound_failed event cannot be recorded", async () => {

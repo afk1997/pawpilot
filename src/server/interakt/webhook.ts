@@ -170,7 +170,7 @@ export function parseInteraktPayload(raw: unknown): ParseOutcome {
   };
 }
 
-/** `Interakt-Signature: sha256=<hex>` = HMAC-SHA256(secret, raw body bytes). */
+/** `Interakt-Signature: sha256=<hex>` = HMAC-SHA256(secret, raw body bytes); the header is read in either case. */
 export async function verifyInteraktSignature(
   rawBody: string,
   signatureHeader: string | null,
@@ -180,7 +180,7 @@ export async function verifyInteraktSignature(
   if (!opts.secret) return false;
   if (!signatureHeader) return false;
   const expected = "sha256=" + createHmac("sha256", opts.secret).update(rawBody, "utf8").digest("hex");
-  const a = Buffer.from(signatureHeader);
+  const a = Buffer.from(signatureHeader.trim().toLowerCase());
   const b = Buffer.from(expected);
   return a.length === b.length && timingSafeEqual(a, b);
 }

@@ -32,8 +32,6 @@ const TRANSCRIPT_LIMIT = 30;
 const SHORT_TRANSCRIPT_LIMIT = 10;
 /** Why a backend call is made: the first, the retry of a failed one, or a guard's correction. */
 type CallPurpose = "first" | "retry" | CorrectionPurpose;
-/** A TRANSIENT failure that took its whole timeout; retrying it would spend the budget again. */
-const TIMED_OUT_RE = /timed out/i;
 /** The SDK's name for this app's tools: mcp__arham__find_ambulances for find_ambulances. */
 const MCP_PREFIX = `mcp__${SERVER_NAME}__`;
 /** The tool the CLI adds to carry the structured reply; not a call the model made. */
@@ -229,7 +227,8 @@ export async function runClaudeTurn(input: {
     // The first call, and one retry for INVALID_OUTPUT (shorter transcript) or a TRANSIENT failure that was no timeout.
     let res = await call(promptFor(TRANSCRIPT_LIMIT, null), "first");
     if (!res) return { kind: "fallback", reason: "claude_budget", message: "no time left for a backend call" };
-    if (!res.ok && res.kind === "TRANSIENT" && TIMED_OUT_RE.test(res.message)) {
+    // A failure that took its whole timeout: retrying it would spend the budget again.
+    if (!res.ok && res.kind === "TRANSIENT" && res.timedOut) {
       const remainingMs = Math.round(deadlineMs - nowMs());
       await note(conversationId, "retry_skipped", { turnId: turn.id, purpose: "retry", reason: "timed_out", remainingMs });
     } else if (!res.ok && (res.kind === "INVALID_OUTPUT" || res.kind === "TRANSIENT")) {
@@ -315,6 +314,10 @@ export async function runClaudeTurn(input: {
   if (g.unknownHandles.length > 0) await note(conversationId, "unknown_handle", { turnId: turn.id, handles: g.unknownHandles });
   if (g.staleHandles.length > 0) await note(conversationId, "stale_handle", { turnId: turn.id, handles: g.staleHandles });
 
+  // The audit goes on the turn row before the send as well: a failure after it must not lose the handles the reply
+  // carries (a later turn resolves them) or the tool calls. The full record follows the send.
+  const { toolCalls, handles } = audit();
+  await finishTurn(turn.id, { toolCalls, handles });
   // The burst is marked answered with the reply, before the send: a retry after a crash finds nothing to answer again.
   const message = await deliverText(conversation, {
     text: g.text, template: g.template, origin: "agent", turnId: turn.id, answers: pending.map((m) => m.id),

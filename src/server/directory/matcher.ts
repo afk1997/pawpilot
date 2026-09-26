@@ -60,10 +60,12 @@ const GENERIC_TOKENS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Tier 5 compares only words at least this long, on both sides: shorter words
- * are one edit apart too often ("madad" ≈ "malad", "ghar" ≈ "khar").
+ * Tier 5 compares only reporter words at least this long, since shorter words are one edit apart too often ("madad" ≈
+ * "malad", "ghar" ≈ "khar"), against place names at least FUZZY_PLACE_MIN_LENGTH long, so a six-letter misspelling
+ * still finds a five-letter place ("suratt" → Surat, "malaad" → Malad).
  */
-const FUZZY_MIN_LENGTH = 6;
+const FUZZY_TOKEN_MIN_LENGTH = 6;
+const FUZZY_PLACE_MIN_LENGTH = 5;
 
 /**
  * Tier 4 lets a token match the start of a place word only with this many
@@ -87,12 +89,17 @@ function finish(candidates: DirectoryAmbulance[], match: MatchType): MatchResult
   return { candidates: sorted, match, cityAreas, outOfCoverage: false };
 }
 
-/** Tier 1 — area exact: row.area or any areas_covered equals the needle or one of its tokens. */
+/**
+ * Tier 1 — area exact: row.area or any areas_covered equals the needle, one of its tokens or two adjacent words of it
+ * ("vile parle" in "dog hurt near vile parle station").
+ */
 function areaExact(pool: DirectoryAmbulance[], needle: string): DirectoryAmbulance[] {
   const toks = tokensOf(needle);
+  const words = needle.split(" ");
+  const pairs = words.slice(1).map((w, i) => `${words[i]} ${w}`);
   return pool.filter((r) => {
     const areas = [r.area ?? "", ...r.areasCovered].map(normalize).filter(Boolean);
-    return areas.some((a) => a === needle || toks.includes(a));
+    return areas.some((a) => a === needle || toks.includes(a) || pairs.includes(a));
   });
 }
 
@@ -144,10 +151,10 @@ function broaderMatch(pool: DirectoryAmbulance[], needle: string): MatchResult |
   );
   if (hit.length > 0) return finish(hit, "token");
 
-  // Tier 5 — fuzzy token vs city/area, generic words dropped, FUZZY_MIN_LENGTH on both sides.
-  const fuzzyToks = looseToks.filter((t) => t.length >= FUZZY_MIN_LENGTH);
+  // Tier 5 — fuzzy token vs city/area, generic words dropped, FUZZY_TOKEN_MIN_LENGTH and FUZZY_PLACE_MIN_LENGTH.
+  const fuzzyToks = looseToks.filter((t) => t.length >= FUZZY_TOKEN_MIN_LENGTH);
   hit = pool.filter((r) => {
-    const hay = [r.city, r.area ?? "", ...r.areasCovered].map(normalize).filter((h) => h.length >= FUZZY_MIN_LENGTH);
+    const hay = [r.city, r.area ?? "", ...r.areasCovered].map(normalize).filter((h) => h.length >= FUZZY_PLACE_MIN_LENGTH);
     return fuzzyToks.some((t) => hay.some((h) => fuzzyEqual(t, h)));
   });
   if (hit.length > 0) return finish(hit, "fuzzy");

@@ -62,6 +62,8 @@ export type TurnResult =
       sessionId: string | null;
       /** Only the Claude Code backend fills this. */
       toolUses?: ObservedToolUse[];
+      /** The call ran out its timeout and was aborted: a retry would spend that time again, so none is made. */
+      timedOut?: boolean;
     };
 
 export interface LLMBackend {

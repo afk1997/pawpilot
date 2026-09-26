@@ -2,11 +2,17 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
 import { messages, conversations } from "@/server/db/schema";
-import { resetDb, createConversation } from "../helpers/db";
+import { assertTestDatabase, resetDb, createConversation } from "../helpers/db";
 import { seedDirectory } from "../helpers/fixtures";
 
 describe("schema", () => {
   beforeEach(resetDb);
+
+  it("lets resetDb truncate only a database whose name ends in _test", async () => {
+    expect(() => assertTestDatabase("arham")).toThrow('resetDb refuses database "arham": its name must end in _test');
+    expect(() => assertTestDatabase("arham_test_copy")).toThrow(/must end in _test/);
+    expect(() => assertTestDatabase("arham_test")).not.toThrow();
+  });
 
   it("indexes messages by the turn that sent them and by the turn that answered them", async () => {
     const rows = await getDb().execute<{ indexname: string; indexdef: string }>(

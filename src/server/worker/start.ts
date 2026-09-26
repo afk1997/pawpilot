@@ -14,7 +14,7 @@ import { closeDb, getDb } from "../db/client";
 import { conversations, events, messages } from "../db/schema";
 
 /**
- * With this many `turn_failed` events in the last hour, the sweep flags a conversation for the dispatcher
+ * With this many `turn_failed` events or more in the last hour, the sweep flags a conversation for the dispatcher
  * instead of re-running it. Every failed attempt records one, so in practice a single job that exhausts its
  * three attempts trips the cap, some 15–30 s after its first failure with the queue's retry backoff when the
  * turns fail fast. New inbound messages still get fresh jobs from the webhook; only the sweep stops.

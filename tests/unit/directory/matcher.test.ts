@@ -74,6 +74,13 @@ describe("matchAmbulances", () => {
     expect(ids(r)).toEqual(["andheri", "bandra", "ghatkopar", "malad"]);
   });
 
+  it("fuzzy: a six-letter misspelling finds a five-letter place (suratt, malaad)", () => {
+    const surat = matchAmbulances(rows, { query: "suratt me gaay ghayal hai" });
+    expect([surat.match, ids(surat)]).toEqual(["fuzzy", ["surat"]]);
+    const malad = matchAmbulances(rows, { query: "malaad station ke paas" });
+    expect([malad.match, ids(malad)]).toEqual(["fuzzy", ["malad"]]);
+  });
+
   it("neighbour: Goregaon maps to Malad/Andheri", () => {
     const r = matchAmbulances(rows, { city: "Mumbai", area: "Goregaon", query: "goregaon" });
     expect(r.match).toBe("neighbour");
@@ -224,6 +231,13 @@ describe("matchAmbulances", () => {
       "sab dukaan band hai, kutta ghayal hai", // "band" (closed) starts "Bandra" but is shorter than 5
     ])("a short word inside or at the start of a place name matches nothing: %s", (query) => {
       expect(ids(matchAmbulances(withWords, { query }))).toEqual([]);
+    });
+
+    it("tier area: a two-word area in the reporter's words is an exact match (vile parle)", () => {
+      const r = matchAmbulances(withWords, { query: "dog hurt near vile parle east station" });
+      expect(r.match).toBe("area");
+      expect(ids(r)).toEqual(["lokhandwala"]);
+      expect(matchAmbulances(withWords, { query: "Vile Parle" }).match).toBe("area");
     });
 
     it("a whole place word or a 5+ letter start of one still matches (kandi, parle)", () => {

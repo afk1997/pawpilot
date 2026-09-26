@@ -56,10 +56,13 @@ describe("classifyOutcome", () => {
     expect(classifyOutcome({ ...base, result: success(good, { is_error: true, api_error_status: 429 }) as never })).toMatchObject({ ok: false, kind: "LIMITED" });
     expect(classifyOutcome({ ...base, result: success(good, { is_error: true, api_error_status: 401 }) as never })).toMatchObject({ ok: false, kind: "AUTH" });
   });
-  it("treats abort and thrown errors as transient, and no result as transient", () => {
-    expect(classifyOutcome({ ...base, aborted: true })).toMatchObject({ ok: false, kind: "TRANSIENT" });
-    expect(classifyOutcome({ ...base, thrown: "spawn failed" })).toMatchObject({ ok: false, kind: "TRANSIENT" });
-    expect(classifyOutcome(base)).toMatchObject({ ok: false, kind: "TRANSIENT" });
+  it("treats abort and thrown errors as transient, and no result as transient; only the abort is a timeout", () => {
+    expect(classifyOutcome({ ...base, aborted: true })).toMatchObject({ ok: false, kind: "TRANSIENT", message: "turn timed out", timedOut: true });
+    for (const obs of [{ ...base, thrown: "spawn failed: timed out" }, base]) {
+      const r = classifyOutcome(obs);
+      expect(r).toMatchObject({ ok: false, kind: "TRANSIENT" });
+      expect(r).not.toHaveProperty("timedOut");
+    }
   });
   it("classifies by the result when the SDK also threw or aborted after it", () => {
     // After an error result the child exits non-zero and the SDK throws that result's text again (sdk.mjs readMessages).

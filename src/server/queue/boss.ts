@@ -1,6 +1,6 @@
 import { PgBoss } from "pg-boss";
 import { getConfig } from "../config";
-import { log } from "../log";
+import { log, safeErrorFields } from "../log";
 
 export const TURN_QUEUE = "turn";
 /** The Postgres schema pg-boss keeps its tables in; the health check reads its job table there. */
@@ -71,13 +71,28 @@ export function getBoss(role: "app" | "worker" = "app"): Promise<PgBoss> {
   return starting;
 }
 
-/** Graceful: jobs still running get `timeoutMs` (default 5 s) to finish before pg-boss fails them for a retry. */
+/**
+ * Graceful: jobs still running get `timeoutMs` (default 5 s) to finish before pg-boss fails them for a retry. The
+ * instance is forgotten even when its stop fails, so the next getBoss() starts a fresh one instead of a dead one.
+ */
 export async function stopBoss(opts: { timeoutMs?: number } = {}): Promise<void> {
   if (starting) await starting.catch(() => undefined);
   if (instance) {
-    await instance.stop({ graceful: true, timeout: opts.timeoutMs ?? 5000 });
-    instance = null;
+    try {
+      await instance.stop({ graceful: true, timeout: opts.timeoutMs ?? 5000 });
+    } finally {
+      instance = null;
+    }
   }
+}
+
+/**
+ * Starts the app's pg-boss in the background (instrumentation.ts), so the first webhook after a deploy does not pay
+ * pg-boss's start inside Interakt's 3 s webhook timeout. A failed start is logged (class and code) and never memoized:
+ * the next enqueue starts it again.
+ */
+export function warmBoss(): void {
+  getBoss().catch((err) => log.warn(safeErrorFields(err), "pg-boss warm-up failed"));
 }
 
 /**

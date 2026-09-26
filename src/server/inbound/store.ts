@@ -57,8 +57,8 @@ export async function storeReporterMessage(
       lat: m.lat ?? null,
       lng: m.lng ?? null,
       placeLabel: stripNulOrNull(m.placeLabel),
-      providerMessageId: m.providerMessageId ?? null,
-      interactiveId: m.interactiveId ?? null,
+      providerMessageId: stripNulOrNull(m.providerMessageId),
+      interactiveId: stripNulOrNull(m.interactiveId),
     })
     .onConflictDoNothing({ target: messages.providerMessageId })
     .returning({ id: messages.id });
