@@ -6,13 +6,18 @@ import { enqueueTurn } from "../queue/boss";
 import { log } from "../log";
 import { gatherPending } from "./gather";
 import { claimWelcome, classifyPending, sendMenu, sendWelcome } from "./first-contact";
-import { runFallbackTurn, pendingText } from "./fallback";
+import { pendingText } from "./fallback";
 import { deliverText } from "./deliver";
 import { createTurn, finishTurn, markAnswered, updateConversation } from "./persist";
+import { runClaudeTurn } from "./claude-turn";
+import type { LLMBackend } from "../agent/types";
 import type { Language } from "../types";
 
 export interface TurnDeps {
-  backend?: unknown; // replaced by LLMBackend in Task 21
+  /** The LLM backend; getBackend() when absent. */
+  backend?: LLMBackend;
+  /** The clock for the pause check, the prompt's time and the transcript; the system clock when absent. */
+  now?: () => Date;
 }
 
 export type TurnOutcome = {
@@ -51,9 +56,8 @@ async function withConversationLock<T>(conversationId: string, fn: () => Promise
   }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- deps carries the LLM backend once Task 21 adds the Claude branch
-export async function runTurn(conversationId: string, _deps: TurnDeps = {}): Promise<TurnOutcome> {
-  const result = await withConversationLock(conversationId, () => runTurnLocked(conversationId));
+export async function runTurn(conversationId: string, deps: TurnDeps = {}): Promise<TurnOutcome> {
+  const result = await withConversationLock(conversationId, () => runTurnLocked(conversationId, deps));
   if (result === "locked") {
     await enqueueTurn(conversationId);
     return { kind: "locked", requeued: true };
@@ -82,7 +86,7 @@ async function systemTurn(conversationId: string, model: string, send: (turnId: 
   return turn.id;
 }
 
-async function runTurnLocked(conversationId: string): Promise<TurnOutcome> {
+async function runTurnLocked(conversationId: string, deps: TurnDeps): Promise<TurnOutcome> {
   const gathered = await gatherPending(conversationId);
   if (!gathered || gathered.pending.length === 0) return { kind: "noop" };
   let { conversation } = gathered;
@@ -124,14 +128,9 @@ async function runTurnLocked(conversationId: string): Promise<TurnOutcome> {
     return { kind: "audio_only", turnId, requeued: await requeueIfPending(conversation.id) };
   }
 
-  if (cls.allGreeting && !welcomeJustSent) {
-    // Already welcomed; a bare greeting later gets a short line from Claude in Task 21. Until then, the menu.
-    const turnId = await systemTurn(conversation.id, "system:menu", (id) => sendMenu(conversation, lang, id));
-    await markAnswered(pending.map((m) => m.id), turnId);
-    return { kind: "menu", turnId, requeued: await requeueIfPending(conversation.id) };
-  }
-
-  log.info({ conversationId, welcomeJustSent }, "running fallback turn (no backend yet)");
-  const r = await runFallbackTurn({ conversation, pending, reason: "no_backend" });
-  return { kind: "fallback", turnId: r.turn.id, requeued: await requeueIfPending(conversation.id) };
+  // Everything else goes to Claude, a bare greeting after the welcome included: the prompt answers it with one warm
+  // line, never the menu again.
+  const now = deps.now ?? (() => new Date());
+  const r = await runClaudeTurn({ conversation, pending, lang, welcomeJustSent, backend: deps.backend, now });
+  return { kind: r.outcome, turnId: r.turnId, requeued: await requeueIfPending(conversation.id) };
 }

@@ -12,7 +12,7 @@ export function okReply(partial: Partial<StructuredReply> & { reply: string }): 
   };
 }
 
-export function errorResult(kind: BackendErrorKind, message = kind, retryAfter: Date | null = null): TurnResult {
+export function errorResult(kind: BackendErrorKind, message: string = kind, retryAfter: Date | null = null): TurnResult {
   return { ok: false, kind, message, retryAfter, latencyMs: 1, sessionId: null };
 }
 

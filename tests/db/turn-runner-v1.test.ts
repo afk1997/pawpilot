@@ -13,6 +13,9 @@ import { menuText, welcomeText } from "@/server/messages/welcome";
 import { claimWelcome } from "@/server/worker/first-contact";
 import { runTurn } from "@/server/worker/turn-runner";
 import { getBoss, stopBoss, TURN_QUEUE } from "@/server/queue/boss";
+import { FakeBackend, okReply } from "@/server/agent/fake-backend";
+import { findAmbulancesImpl } from "@/server/agent/tools";
+import type { TurnInput } from "@/server/agent/types";
 
 async function conv(language: "en" | "hi" | "mr" | "gu" | null = null) {
   return createConversation({ isTest: true, phone: `+91TEST_${Math.random().toString(36).slice(2, 9)}`, language });
@@ -59,12 +62,24 @@ describe("runTurn v1", () => {
   it("welcomes then answers a real first message in the same job", async () => {
     const c = await conv();
     await storeReporterMessage(c.id, { kind: "text", content: "dog injured near ghatkopar station" });
-    const r = await runTurn(c.id);
-    expect(r.kind).toBe("fallback");
+    const r = await runTurn(c.id, { backend: new FakeBackend([okReply({ reply: "Ghatkopar ke liye: {{PHONE:helpline}}", intent: "ambulance" })]) });
+    expect(r.kind).toBe("ok");
     const out = await assistant(c.id);
     expect(out).toHaveLength(2);
     expect(out[0].content).toContain("Arham Always Care");
-    expect(out[1].content).toContain("+91 70000 00001");
+    expect(out[1].content).toContain("+91 99999 00000");
+  });
+
+  it("sends a bare greeting after the welcome to the model, which answers it, never the menu", async () => {
+    const c = await conv();
+    await getDb().update(conversations).set({ welcomedAt: new Date() }).where(eq(conversations.id, c.id));
+    await storeReporterMessage(c.id, { kind: "text", content: "hi" });
+    const backend = new FakeBackend([okReply({ reply: "Hello! How can we help you today?", intent: "smalltalk" })]);
+    const r = await runTurn(c.id, { backend });
+    expect(r.kind).toBe("ok");
+    expect(backend.calls).toHaveLength(1);
+    expect(backend.calls[0].prompt).not.toContain("The welcome menu was just sent");
+    expect((await assistant(c.id)).map((m) => [m.kind, m.origin, m.content])).toEqual([["text", "agent", "Hello! How can we help you today?"]]);
   });
 
   it("re-sends the menu for the menu keyword", async () => {
@@ -144,10 +159,10 @@ describe("runTurn v1", () => {
     const c = await conv();
     await getDb().update(conversations).set({ welcomedAt: new Date() }).where(eq(conversations.id, c.id));
     await storeReporterMessage(c.id, { kind: "text", content: "Surat" });
-    await runTurn(c.id);
+    await runTurn(c.id, { backend: new FakeBackend([okReply({ reply: "Which area of Surat are you in?", intent: "ambulance" })]) });
     const t = await getDb().select().from(turns).where(eq(turns.conversationId, c.id));
     expect(t).toHaveLength(1);
-    expect(t[0].status).toBe("fallback");
+    expect(t[0].status).toBe("ok");
   });
 
   it("sends the welcome and the menu as lists in the reporter's language, section title included", async () => {
@@ -204,10 +219,13 @@ describe("runTurn v1", () => {
     expect((await runTurn(c.id)).kind).toBe(firstKind);
     expect(await language()).toBeNull();
     await storeReporterMessage(c.id, { kind: "text", content: "घाटकोपर में कुत्ता घायल है" });
-    expect((await runTurn(c.id)).kind).toBe("fallback");
+    const backend = new FakeBackend([async (input: TurnInput) => {
+      const found = await findAmbulancesImpl(input.toolContext!, { city: "Mumbai", area: "Ghatkopar", query: "घाटकोपर" });
+      return okReply({ reply: `घाटकोपर की एम्बुलेंस का नंबर: {{AMB:${found.candidates[0].handle}}}`, language: "hi", intent: "ambulance" });
+    }]);
+    expect((await runTurn(c.id, { backend })).kind).toBe("ok");
     const reply = (await assistant(c.id)).at(-1)!.content;
-    expect(reply).toContain("आपके इलाके की एनिमल एम्बुलेंस यह रही:");
-    expect(reply).toContain("+91 70000 00001");
+    expect(reply).toBe("घाटकोपर की एम्बुलेंस का नंबर: +91 70000 00001");
     expect(await language()).toBe("hi");
   });
 
@@ -228,13 +246,13 @@ describe("runTurn v1", () => {
     });
     const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
     try {
-      expect((await runTurn(c.id)).kind).toBe("fallback");
+      expect((await runTurn(c.id)).kind).toBe("ok");
       expect(warn).toHaveBeenCalledWith({ conversationId: c.id }, "advisory unlock failed");
     } finally {
       vi.restoreAllMocks();
     }
     await storeReporterMessage(c.id, { kind: "text", content: "Surat" });
-    expect((await runTurn(c.id)).kind).toBe("fallback"); // not "locked"
+    expect((await runTurn(c.id)).kind).toBe("ok"); // not "locked"
   });
 
   it("returns the turn's outcome, without crashing, when the lock connection's backend dies mid-turn", async () => {
@@ -261,7 +279,7 @@ describe("runTurn v1", () => {
         timer = setTimeout(() => reject(new Error(`the turn did not return within 10 s; uncaught: ${uncaught.map(String).join(" | ") || "none"}`)), 10_000);
       });
       const r = await Promise.race([runTurn(c.id), stuck]);
-      expect(r.kind).toBe("fallback");
+      expect(r.kind).toBe("ok");
       expect((await byContent("Surat")).answeredTurnId).toBe(r.turnId);
       expect(warn).toHaveBeenCalledWith({ conversationId: c.id }, "advisory lock lost mid-turn");
     } finally {
@@ -282,7 +300,7 @@ describe("runTurn v1", () => {
       await storeReporterMessage(c.id, { kind: "text", content: "and a cat too" });
     });
     const r = await runTurn(c.id).finally(() => setFetchForTests(null));
-    expect(r).toMatchObject({ kind: "fallback", requeued: true });
+    expect(r).toMatchObject({ kind: "ok", requeued: true });
     const jobs = await (await getBoss()).findJobs(TURN_QUEUE, { key: c.id });
     expect(jobs).toHaveLength(1);
     expect(Math.abs(jobs[0].startAfter.getTime() - jobs[0].createdOn.getTime())).toBeLessThan(1000);
@@ -298,7 +316,7 @@ describe("runTurn v1", () => {
       await getDb().update(conversations).set({ mode: "human" }).where(eq(conversations.id, c.id));
     });
     const r = await runTurn(c.id).finally(() => setFetchForTests(null));
-    expect(r).toMatchObject({ kind: "fallback", requeued: false });
+    expect(r).toMatchObject({ kind: "ok", requeued: false });
     expect((await byContent("and a cat too")).answeredTurnId).toBeNull();
     expect(await (await getBoss()).findJobs(TURN_QUEUE, { key: c.id })).toHaveLength(0);
   });
@@ -331,7 +349,7 @@ describe("runTurn v1", () => {
         timer = setTimeout(() => reject(new Error(`${n} concurrent turns did not finish within 15 s`)), 15_000);
       });
       const outcomes = await Promise.race([Promise.all(ids.map((id) => runTurn(id))), hung]);
-      expect(outcomes.map((o) => o.kind)).toEqual(Array(n).fill("fallback"));
+      expect(outcomes.map((o) => o.kind)).toEqual(Array(n).fill("ok"));
     } finally {
       clearTimeout(timer);
       if (configured === undefined) delete process.env.WORKER_CONCURRENCY;
