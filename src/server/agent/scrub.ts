@@ -128,18 +128,24 @@ export function stripRuns(text: string, runs: string[], allowedNumbers: string[]
 const GAP = String.raw`[^\S\n]+`;
 const WORD_START = String.raw`(?<![\p{L}\p{M}\p{Nd}])`;
 const WORD_END = String.raw`(?![\p{L}\p{M}\p{Nd}])`;
-/** Titles whose dot never ends a sentence ("Dr. Shah"). */
-const TITLE = String.raw`\b(?:Dr|Mr|Mrs|Ms|Smt|Shri|Prof)`;
+/** Titles whose dot never ends a sentence ("Dr. Shah", "डॉ. शाह"). */
+const TITLE = String.raw`(?:\b(?:Dr|Mr|Mrs|Ms|Smt|Shri|Prof)|(?<![\p{L}\p{M}])डॉ)`;
 /**
- * A sentence end: a danda anywhere, or ".", "!" or "?" followed (after any further terminators) by whitespace or the
- * end of the text, so the dot in a URL ("arhamalwayscare.org/help") or after a title ("Dr. Shah") ends nothing.
+ * A sentence end: a danda anywhere, or ".", "!" or "?" followed (after any further terminators) by whitespace, the end
+ * of the text, a WhatsApp closer ("*", "_") or an emoji, so the dot in a URL ("arhamalwayscare.org/help") or after a
+ * title ("Dr. Shah") ends nothing.
  */
-const TERMINATOR = String.raw`(?:।|(?<!${TITLE})[.!?](?=[.!?।]*(?:\s|$)))`;
-/** Any text up to the end of the current sentence (SENTENCE_RE splits at the same places). */
-const SAME_SENTENCE = String.raw`(?:(?!${TERMINATOR})[^\n])*?`;
+const TERMINATOR = String.raw`(?:।|(?<!${TITLE})[.!?](?=[.!?।]*(?:\s|$|[*_]|\p{Extended_Pictographic})))`;
+/** A WhatsApp closer or an emoji (with its modifiers and joiners) after a sentence's terminators: part of that sentence. */
+const CLOSER = String.raw`(?:[*_]|\p{Extended_Pictographic}|\p{Emoji_Modifier}|\uFE0F|\u200D)`;
 const FIRST_PERSON = String.raw`(?:we|I|हम|हमने|मैं|मैंने|आम्ही|मी|અમે|મેં|હું)`;
-/** An ambulance, vehicle or crew, in every script; गाड़ी with ड़ in either encoding, or as Marathi's गाडी. */
-const VEHICLE = String.raw`(?:ambulance|team|driver|एम्बुलेंस|एंबुलेंस|ऐम्बुलेंस|एम्बुलन्स|रुग्णवाहिका|गा(?:\u0921\u093C|\u095C|\u0921)ी|टीम|ड्राइवर|ड्रायव्हर|એમ્બ્યુલન્સ|ગાડી|ટીમ|ડ્રાઇવર)`;
+/**
+ * An ambulance or team that can be the subject of a Hindi, Marathi or Gujarati "is coming" or "on the way" phrase;
+ * गाड़ी with ड़ in either encoding, or as Marathi's गाडी. Never a driver word.
+ */
+const INDIC_VEHICLE = String.raw`(?:एम्बुलेंस|एंबुलेंस|ऐम्बुलेंस|एम्बुलन्स|रुग्णवाहिका|गा(?:\u0921\u093C|\u095C|\u0921)ी|टीम|એમ્બ્યુલન્સ|ગાડી|ટીમ)`;
+/** An ambulance, vehicle, crew or driver, in every script. */
+const VEHICLE = String.raw`(?:ambulance|team|driver|ड्राइवर|ड्रायव्हर|ડ્રાઇવર|${INDIC_VEHICLE})`;
 /**
  * A word between a second-person pronoun and the verb. Never a first-person pronoun or an ambulance word: with one of
  * those between them, the pronoun is not the verb's subject ("आप रुकिए, एम्बुलेंस भेज दी है").
@@ -151,12 +157,25 @@ const HI_POSTPOSITION = String.raw`(?:को|के|की|का|तक|से|
 const SECOND_PERSON = String.raw`(?:you(?:['\u2019]re|['\u2019]ll${GAP}be|${GAP}(?:are|were|will${GAP}be))|(?:are|were)${GAP}you|(?:आप|तुम)(?:ने)?${WORD_END}(?!${GAP}${HI_POSTPOSITION}${WORD_END})|तुम्ही|તમે)${WORD_END}`;
 /** Not within two words after a second-person subject: then the reporter is the one sending or travelling. */
 const NOT_SECOND_PERSON = String.raw`(?<!${WORD_START}${SECOND_PERSON}(?:${GAP}${INNER_WORD}){0,2}${GAP})`;
-/** Not right after the word for a number: "नंबर भेज रहे", "नंबर पाठवत", "નંબર મોકલી" send a number, not an ambulance. */
-const NOT_AFTER_NUMBER = String.raw`(?<!(?:नंबर|नम्बर|क्रमांक|number|નંબર)${GAP})`;
+/** A number, contact or details word in any of the four languages, with whatever is glued to it ("नंबरवर"). */
+const NUMBER_WORD = String.raw`(?:नंबर|नम्बर|क्रमांक|संपर्क|जानकारी|डिटेल्स|विवरण|माहिती|तपशील|નંબર|સંપર્ક|માહિતી|વિગતો|number|contact|details)[^\s।.!?]*`;
+/** One word, never across a sentence end; a phone number with single spaces or hyphens counts as one word. */
+const ONE_WORD = String.raw`(?:\+?\d(?:[ -]?\d)*|[^\s।.!?]+)`;
+/**
+ * Not with a number, contact or details word within the two words before the verb: "नंबर पहले ही भेज दिया",
+ * "नंबर आधीच पाठवला", "નંબર પહેલેથી મોકલી" send a number, not an ambulance.
+ */
+const NOT_AFTER_NUMBER = String.raw`(?<!${NUMBER_WORD}(?:${GAP}${ONE_WORD}){0,2}${GAP})`;
 /** "sending (you) (the) (driver's) number/contact/details": we send numbers, never ambulances. */
 const NOT_SENDING_A_NUMBER = String.raw`(?!${GAP}(?:you${GAP})?(?:(?:the|his|her|their|its|this|that|our)${GAP})?(?:(?:driver|ambulance|unit|helpline|clinic)(?:['\u2019]s)?${GAP}){0,2}(?:phone${GAP})?(?:numbers?|contacts?|details)\b)`;
-/** Hindi "आ रही/रहे/रहा है" (is coming): dispatch language only in a sentence that names a VEHICLE. */
-const HI_COMING = String.raw`${WORD_START}आ${GAP}रह[ीेा]${GAP}है`;
+/** An INDIC_VEHICLE word right before the phrase that follows: the ambulance or team is that phrase's subject. */
+const VEHICLE_SUBJECT = String.raw`${WORD_START}${INDIC_VEHICLE}${WORD_END}${GAP}`;
+/** Hindi "आ रही/रहा/रहे है/हैं" (is coming), after an optional "to you" ("आपके पास", "आप तक", "आपकी ओर/तरफ़"). */
+const HI_COMING = String.raw`(?:(?:आपके${GAP}पास|आप${GAP}तक|आपकी${GAP}(?:ओर|तर(?:फ\u093C?|\u095E)))${GAP})?आ${GAP}रह[ीाे]${GAP}(?:हैं|है)${WORD_END}`;
+/** "On the way": Hindi रास्ते में, Marathi रस्त्यात and वाटेत, Gujarati રસ્તામાં (each also means "in the road"). */
+const ROAD = String.raw`(?:रास्ते${GAP}में|रस्त्यात|वाटेत|રસ્તામાં)${WORD_END}`;
+/** Not with a clinic, hospital or doctor word within the two words before: the way to a clinic, not an ambulance's. */
+const NOT_CLINIC_ROUTE = String.raw`(?<!(?:क्लिनिक|अस्पताल|हॉस्पिटल|डॉक्टर|दवाखान्या|रुग्णालय|હોસ્પિટલ|દવાખાને)[^\s।.!?]*${GAP}(?:[^\s।.!?]+${GAP})?)`;
 
 const DISPATCH_PATTERNS = [
   // English: we're/I'm sending, on the/its/their… way (not "on the way to the clinic"), is/are coming to you, dispatch(ed).
@@ -164,23 +183,24 @@ const DISPATCH_PATTERNS = [
   String.raw`${NOT_SECOND_PERSON}\bon${GAP}(?:the${GAP}way\b(?!${GAP}to${GAP}(?:the${GAP})?(?:clinic|vet|hospital))|(?:their|its|his|her|our)${GAP}way\b)`,
   String.raw`(?:\b(?:is|are)|['\u2019](?:s|re))${GAP}coming${GAP}to${GAP}your?\b`,
   String.raw`\bdispatch(?:ed|ing)?\b(?![^\S\n]*-?[^\S\n]*team\b)`,
-  // Hindi: भेज रहे/रहा/रही, भेज दी/दिया, भेजी (गई) है, भेजा (गया) है, रास्ते में, and आ रही/रहे/रहा है beside a vehicle or crew.
+  // Hindi, Marathi and Gujarati "is coming" and "on the way", precision first: only with an ambulance or team word right
+  // before, so "दिक्कत आ रही है", "कुत्ता रास्ते में घायल है" or a driver or pronoun subject never fire.
+  String.raw`${VEHICLE_SUBJECT}${HI_COMING}`,
+  String.raw`${VEHICLE_SUBJECT}${NOT_CLINIC_ROUTE}${ROAD}`,
+  // Hindi sending: भेज रहे/रहा/रही, भेज दी/दिया, भेजी (गई) है, भेजा (गया) है.
   String.raw`${NOT_SECOND_PERSON}${NOT_AFTER_NUMBER}${WORD_START}(?:भेज${GAP}(?:रह[ेाी]|(?:दी|दिया)${WORD_END})|भेजी${GAP}(?:गई${GAP})?है|भेजा${GAP}(?:गया${GAP})?है)`,
-  String.raw`${NOT_SECOND_PERSON}${WORD_START}रास्ते${GAP}में${WORD_END}`,
-  String.raw`${VEHICLE}${SAME_SENTENCE}${HI_COMING}|${HI_COMING}${SAME_SENTENCE}${VEHICLE}`,
-  // Marathi: पाठवत आहोत/आहे, पाठवली/पाठवले/पाठवला, वाटेत, रस्त्यात.
+  // Marathi sending: पाठवत आहोत/आहे, पाठवली/पाठवले/पाठवला.
   String.raw`${NOT_SECOND_PERSON}${NOT_AFTER_NUMBER}${WORD_START}पाठव(?:त${GAP}आह(?:ोत|े)|ल[ीेा]${WORD_END})`,
-  String.raw`${NOT_SECOND_PERSON}${WORD_START}(?:वाटेत|रस्त्यात)${WORD_END}`,
-  // Gujarati: મોકલી રહ્યા/રહ્યો/રહી, મોકલી દીધી/દીધો/દીધું, રસ્તામાં.
+  // Gujarati sending: મોકલી રહ્યા/રહ્યો/રહી, મોકલી દીધી/દીધો/દીધું.
   String.raw`${NOT_SECOND_PERSON}${NOT_AFTER_NUMBER}${WORD_START}મોકલી${GAP}(?:રહ(?:્યા|્યો|ી)|દીધ[ીોુ])`,
-  String.raw`${NOT_SECOND_PERSON}${WORD_START}રસ્તામાં${WORD_END}`,
 ];
 
 /**
  * Language that says Arham sends the ambulance or that it is on its way, in English, Hindi, Marathi and Gujarati
  * (DISPATCH_PATTERNS). Words may be separated by any horizontal whitespace but never a line break. It does not fire
- * on sending the reporter a number or details, the dispatch team or dispatcher, "on the way to the clinic", or a verb
- * whose subject is the reporter (a second-person subject within two words before it).
+ * on sending the reporter a number or details, the dispatch team or dispatcher, the way to a clinic, a verb whose
+ * subject is the reporter (a second-person subject within two words before it), or an Indic "is coming" or "on the
+ * way" without an ambulance or team word right before it.
  */
 export const DISPATCH_RE = new RegExp(DISPATCH_PATTERNS.join("|"), "iu");
 
@@ -189,11 +209,14 @@ export function hasDispatchLanguage(text: string): boolean {
 }
 
 /**
- * A sentence with its terminators and the whitespace after it, a stray run of terminators, or line breaks. A sentence
- * ends only where TERMINATOR allows, and at a line break. Every character lands in one part, so no text is lost when the
- * parts are joined again.
+ * A sentence with its terminators, the closers and emoji right after them and the whitespace after those, a stray run of
+ * terminators, or line breaks. A sentence ends only where TERMINATOR allows, and at a line break. Every character lands
+ * in one part, so no text is lost when the parts are joined again.
  */
-const SENTENCE_RE = new RegExp(String.raw`(?:(?!${TERMINATOR})[^\n])+(?:${TERMINATOR})*\s*|(?:${TERMINATOR})+\s*|\n+`, "giu");
+const SENTENCE_RE = new RegExp(
+  String.raw`(?:(?!${TERMINATOR})[^\n])+(?:${TERMINATOR})*${CLOSER}*\s*|(?:${TERMINATOR})+${CLOSER}*\s*|\n+`,
+  "giu",
+);
 
 /** One key per number, so "+91 70000 00001" and "7000000001" count once. */
 function numberKey(number: string): string {
@@ -232,24 +255,29 @@ function partnerLabelAt(text: string): string | null {
  * Replaces each sentence that matches DISPATCH_RE, keeping the whitespace after it, so paragraph breaks survive.
  * Adjacent matching sentences share one replacement. The allowed numbers a replaced sentence held are appended after
  * the replacement, as they were written and each with the partner label that followed it, so the reporter never loses
- * a number code inserted or the label that says a partner NGO runs the unit.
+ * a number code inserted or the label that says a partner NGO runs the unit. A number the kept sentences show, or an
+ * earlier replacement appended, is not appended again.
  */
 export function replaceDispatchSentences(text: string, replacement: string, allowedNumbers: string[] = []): string {
   const normalized = normalizeDigits(text);
   const parts = normalized.match(SENTENCE_RE) ?? [normalized];
+  const replaced = parts.map((part) => DISPATCH_RE.test(part));
+  const numbersIn = (part: string) => splitAllowed(part, allowedNumbers).filter((_, k) => k % 2 === 1);
+  // Every number the text already shows once, by key: those of the kept sentences, then each one a replacement appends.
+  const shown = new Map(parts.flatMap((part, i) => (replaced[i] ? [] : numbersIn(part))).map((n) => [numberKey(n), n]));
   let out = "";
   for (let i = 0; i < parts.length; ) {
-    if (!DISPATCH_RE.test(parts[i])) {
+    if (!replaced[i]) {
       out += parts[i++];
       continue;
     }
     // A run of adjacent matching sentences: one replacement, then each allowed number they held, once, with its label.
     const numbers = new Map<string, { number: string; label: string | null }>();
     let trailing = "";
-    for (; i < parts.length && DISPATCH_RE.test(parts[i]); i++) {
+    for (; i < parts.length && replaced[i]; i++) {
       const pieces = splitAllowed(parts[i], allowedNumbers);
       pieces.forEach((piece, k) => {
-        if (k % 2 === 0) return;
+        if (k % 2 === 0 || shown.has(numberKey(piece))) return;
         const label = partnerLabelAt(pieces[k + 1] ?? "");
         const kept = numbers.get(numberKey(piece));
         if (kept === undefined) numbers.set(numberKey(piece), { number: piece, label });
@@ -257,6 +285,7 @@ export function replaceDispatchSentences(text: string, replacement: string, allo
       });
       trailing = parts[i].slice(parts[i].trimEnd().length);
     }
+    for (const [key, { number }] of numbers) shown.set(key, number);
     const appended = [...numbers.values()].map(({ number, label }) => (label === null ? number : `${number} ${label}`));
     // A danda can end a sentence with no space after it; a space keeps the replacement off the text around it.
     if (out !== "" && !/\s$/.test(out)) out += " ";

@@ -169,13 +169,21 @@ describe("dispatch guard: vocabulary", () => {
     "I'm sending an ambulance.", "I am sending help now.", "I\u2019m sending an ambulance.",
     "The ambulance is coming to you.", "They are coming to you now.", "They're coming to your location.",
     "It is on its way.", "The driver is on his way.", "Thank you, they are on the way.",
-    "एम्बुलेंस रास्ते में है।", "एम्बुलेंस आ रही है।", "टीम आ रही है।", "ड्राइवर आ रहा है।", "वे आ रहे हैं, एम्बुलेंस के साथ।",
+    "एम्बुलेंस रास्ते में है।", "एम्बुलेंस आ रही है।", "टीम आ रही है।",
+    "एम्बुलेंस रास्ते में है", "गाड़ी आ रही है", "टीम आपके पास आ रही है", "एम्बुलन्स पाठवली आहे", "એમ્બ્યુલન્સ રસ્તામાં છે", "Team is on its way",
     "गा\u0921\u093Cी आ रही है।", "गा\u095Cी आ रही है।",
     "हमने एम्बुलेंस भेज दी है।", "एम्बुलेंस भेजी है।", "एम्बुलेंस भेजी गई है।", "मैं एम्बुलेंस भेज रहा हूँ।",
     "आम्ही एम्बुलन्स पाठवली आहे.", "आम्ही टीम पाठवले आहे.", "एम्बुलन्स वाटेत आहे.", "गाडी रस्त्यात आहे.", "मी एम्बुलन्स पाठवत आहे.",
     "અમે એમ્બ્યુલન્સ મોકલી દીધી છે.", "એમ્બ્યુલન્સ રસ્તામાં છે.",
   ])("detects %j", (text) => {
     expect(hasDispatchLanguage(text)).toBe(true);
+  });
+
+  it("reads an Indic coming or road phrase only right after its vehicle or team subject (precision first)", () => {
+    // Claims these rules now miss on purpose: a driver or a pronoun as the subject, or the vehicle after the verb.
+    for (const t of ["ड्राइवर आ रहा है।", "वे आ रहे हैं, एम्बुलेंस के साथ।", "आप घबराइए मत वे रास्ते में हैं।", "ड्रायव्हर वाटेत आहे.", "ડ્રાઇવર રસ્તામાં છે."]) {
+      expect(hasDispatchLanguage(t)).toBe(false);
+    }
   });
 
   it("reads any horizontal whitespace between words, but never a line break", () => {
@@ -189,7 +197,7 @@ describe("dispatch guard: vocabulary", () => {
   it("keeps real claims whose second-person word is an object or sits before a first-person subject", () => {
     for (const t of [
       "हम आप तक एम्बुलेंस भेज रहे हैं।", "हमने आपके लिए एम्बुलेंस भेज दी है।", "तुम्ही सांगितलेल्या ठिकाणी आम्ही एम्बुलन्स पाठवली आहे.",
-      "An ambulance for you is on the way.", "आप रुकिए एम्बुलेंस भेज दी है।", "तुम्ही थांबा रुग्णवाहिका वाटेत आहे.", "आप घबराइए मत वे रास्ते में हैं।",
+      "An ambulance for you is on the way.", "आप रुकिए एम्बुलेंस भेज दी है।", "तुम्ही थांबा रुग्णवाहिका वाटेत आहे.",
     ]) {
       expect(hasDispatchLanguage(t)).toBe(true);
     }
@@ -208,6 +216,12 @@ describe("dispatch guard: exclusions", () => {
     "आप फोटो भेज रहे हैं।", "आपने जो फोटो भेजी है, वह मिल गई।", "तुम्ही वाटेत आहात का?", "तुम्ही फोटो पाठवले.", "તમે ફોટો મોકલી રહ્યા છો.", "તમે રસ્તામાં છો?",
     "बारिश आ रही है।", "एम्बुलेंस का नंबर ऊपर है। बारिश आ रही है।",
     "कृपया फोटो भेज दीजिए।", "चौरास्ते में रुकिए।", "संदेश पाठवल्याबद्दल धन्यवाद.", "पाठवलेली माहिती मिळाली.",
+    "अगर ड्राइवर से बात करने में दिक्कत आ रही है, तो हेल्पलाइन पर कॉल करें: +91 99999 00000।",
+    "दिक्कत आ रही है तो ड्राइवर को दोबारा कॉल करें", "क्या ड्राइवर की आवाज़ नहीं आ रही है?", "अगर कोई दिक्कत आ रही है तो हमारी टीम आपकी मदद करेगी",
+    "मैंने ड्राइवर का नंबर पहले ही भेज दिया है", "ड्राइवर का नंबर ऊपर भेजा है।", "आम्ही ड्रायव्हरचा नंबर आधीच पाठवला आहे.", "અમે ડ્રાઇવરનો નંબર પહેલેથી મોકલી દીધો છે.",
+    "कुत्ता रास्ते में घायल पड़ा है, यह रहा ड्राइवर का नंबर", "कुत्रा रस्त्यात जखमी आहे", "क्लिनिक के रास्ते में कुत्ते को पानी न दें",
+    "मैंने ड्राइवर की जानकारी अभी भेज दी है।", "आम्ही संपर्क तपशील पाठवले आहेत.", "અમે સંપર્ક વિગતો મોકલી દીધી છે.",
+    "मैंने नंबर +91 70000 00001 भेज दिया है।", "दवाखान्याची गाडी रस्त्यात आहे.",
   ])("ignores %j", (text) => {
     expect(hasDispatchLanguage(text)).toBe(false);
   });
@@ -278,6 +292,25 @@ describe("dispatch guard: sentence replacement", () => {
     expect(out).toBe("R. +91 70000 00001 +91 70000 00007 Stay calm.");
     expect(foreignDigitRuns(out, allowed)).toEqual([]);
     expect(replaceDispatchSentences("We are sending 9876543210 now.", "R.", allowed)).toBe("R.");
+  });
+
+  it("never re-appends a number the kept text already shows, or one an earlier replacement appended", () => {
+    const allowed = ["+917000000001"];
+    expect(replaceDispatchSentences("Call +91 70000 00001 now. They're on the way with +91 70000 00001!", "R.", allowed)).toBe("Call +91 70000 00001 now. R.");
+    expect(replaceDispatchSentences("They're on the way with +91 70000 00001! Call +91 70000 00001.", "R.", allowed)).toBe("R. Call +91 70000 00001.");
+    expect(replaceDispatchSentences("They're on the way, +91 70000 00001! Stay calm. The ambulance is on the way, +91 70000 00001.", "R.", allowed))
+      .toBe("R. +91 70000 00001 Stay calm. R.");
+  });
+
+  it("ends a sentence before an emoji or a WhatsApp closer, which stay with the sentence they close", () => {
+    expect(replaceDispatchSentences("*They're on the way.* Stay calm.", "R.")).toBe("R. Stay calm.");
+    expect(replaceDispatchSentences("_Stay calm._ They're on the way!", "R.")).toBe("_Stay calm._ R.");
+    expect(replaceDispatchSentences("They're on the way.🚑 Stay calm.", "R.")).toBe("R. Stay calm.");
+    expect(replaceDispatchSentences("Stay calm.🙏🏽 They're on the way!", "R.")).toBe("Stay calm.🙏🏽 R.");
+  });
+
+  it("reads डॉ. as a title, not a sentence end", () => {
+    expect(replaceDispatchSentences("डॉ. शाह की एम्बुलेंस रास्ते में है। शांत रहें।", "R।")).toBe("R। शांत रहें।");
   });
 
   it("keeps a multi-card's indents after a replaced sentence", () => {
