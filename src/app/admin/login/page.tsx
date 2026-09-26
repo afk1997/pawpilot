@@ -35,7 +35,8 @@ export default function LoginPage() {
 
   return (
     <main className="min-h-screen flex items-center justify-center bg-[#0f0f0f] text-white">
-      <form onSubmit={submit} className="w-80 space-y-4 rounded-xl border border-white/10 bg-[#141414] p-6">
+      {/* method="post": if the script has not loaded, a native submit must never put the password in the URL. */}
+      <form onSubmit={submit} method="post" className="w-80 space-y-4 rounded-xl border border-white/10 bg-[#141414] p-6">
         <h1 className="text-lg font-semibold">Arham Helpline Admin</h1>
         <label htmlFor="admin-password" className="sr-only">
           Password

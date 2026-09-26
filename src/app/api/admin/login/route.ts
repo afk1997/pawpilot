@@ -4,8 +4,11 @@ import { log } from "@/server/log";
 export const runtime = "nodejs";
 const THIRTY_DAYS_SEC = 30 * 24 * 60 * 60;
 const MAX_BODY_BYTES = 4 * 1024;
-/** What a browser sends for a request from our own page or a typed address; any other value means another site's page. */
-const ALLOWED_FETCH_SITES = ["same-origin", "same-site", "none"];
+/**
+ * What a browser sends for a request from our own page or a typed address. Any other value means another page made it,
+ * "same-site" included: a sibling subdomain is not this admin page.
+ */
+const ALLOWED_FETCH_SITES = ["same-origin", "none"];
 
 function clientIp(request: Request): string {
   return request.headers.get("x-forwarded-for")?.split(",")[0].trim() || "unknown";

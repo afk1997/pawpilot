@@ -113,11 +113,11 @@ describe("POST /api/admin/login: request hygiene and the global backstop", () =>
     expect((await postBody(RIGHT, "3.3.3.3", { "content-type": "Application/JSON" })).status).toBe(200);
   });
 
-  it("refuses a cross-site request (403), without counting it, and lets same-origin, same-site and direct ones through", async () => {
-    for (const site of ["cross-site", "cross-site", "cross-site", "something-new", "cross-site", "cross-site"]) {
+  it("refuses a cross-site or same-site request (403), without counting it, and lets same-origin and direct ones through", async () => {
+    for (const site of ["cross-site", "same-site", "cross-site", "something-new", "cross-site", "same-site"]) {
       expect((await postBody(RIGHT, "2.2.2.2", { "sec-fetch-site": site })).status).toBe(403);
     }
-    for (const site of ["same-origin", "same-site", "none"]) expect((await postBody(RIGHT, "2.2.2.2", { "sec-fetch-site": site })).status).toBe(200);
+    for (const site of ["same-origin", "none"]) expect((await postBody(RIGHT, "2.2.2.2", { "sec-fetch-site": site })).status).toBe(200);
     expect((await postBody(RIGHT, "2.2.2.2")).status).toBe(200);
   });
 

@@ -150,6 +150,18 @@ describe("login limiter keys", () => {
     expect(loginLimiter.allow("::ffff:198.51.100.8", t0)).toBe(true);
   });
 
+  it("strips brackets and a port before keying, so an address with a port shares its bucket", () => {
+    for (let i = 1; i <= 5; i++) loginLimiter.recordFailure(`[2001:db8:aa:bb::${i}]:443`, t0);
+    expect(loginLimiter.allow("2001:db8:aa:bb::99", t0)).toBe(false); // the same /64, bare
+    expect(loginLimiter.allow("[2001:db8:aa:bb::7]", t0)).toBe(false); // bracketed, no port
+    expect(loginLimiter.allow("[2001:db8:aa:bc::1]:443", t0)).toBe(true); // the next /64
+    for (let i = 0; i < 5; i++) loginLimiter.recordFailure(`1.2.3.4:${5678 + i}`, t0);
+    expect(loginLimiter.allow("1.2.3.4", t0)).toBe(false);
+    expect(loginLimiter.allow("1.2.3.5:5678", t0)).toBe(true);
+    for (let i = 0; i < 5; i++) loginLimiter.recordFailure("[::ffff:198.51.100.9]:8443", t0);
+    expect(loginLimiter.allow("198.51.100.9", t0)).toBe(false); // a mapped address with a port, by its IPv4 address
+  });
+
   it("caps keys at 64 characters", () => {
     const long = "x".repeat(64);
     for (let i = 0; i < 5; i++) loginLimiter.recordFailure(`${long}-${i}`, t0);

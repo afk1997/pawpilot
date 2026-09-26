@@ -50,11 +50,21 @@ export function checkPassword(candidate: string): boolean {
 }
 
 /**
- * The limiter's bucket for a client address, at most 64 characters. An IPv6 address counts by its /64, which one
- * subscriber usually holds whole; an IPv4-mapped one counts by its IPv4 address; anything else counts as written.
+ * The limiter's bucket for a client address, at most 64 characters. Brackets and a port come off first. An IPv6
+ * address counts by its /64, which one subscriber usually holds whole; an IPv4-mapped one counts by its IPv4 address;
+ * anything else counts as written.
  */
 function limiterKey(ip: string): string {
-  return (ipv6Bucket(ip) ?? ip).slice(0, MAX_KEY_LENGTH);
+  const address = withoutPort(ip.trim());
+  return (ipv6Bucket(address) ?? address).slice(0, MAX_KEY_LENGTH);
+}
+
+/** "[2001:db8::1]:443" and "[2001:db8::1]" → "2001:db8::1"; "1.2.3.4:5678" → "1.2.3.4"; anything else as written. */
+function withoutPort(ip: string): string {
+  const bracketed = ip.match(/^\[([^\]]*)\](?::\d+)?$/);
+  if (bracketed) return bracketed[1];
+  const v4 = ip.match(/^(\d{1,3}(?:\.\d{1,3}){3}):\d+$/);
+  return v4 ? v4[1] : ip;
 }
 
 /** "2001:db8:1:2:3:4:5:6" → "2001:db8:1:2::/64" and "::ffff:1.2.3.4" → "1.2.3.4"; null when `ip` is not IPv6. */
