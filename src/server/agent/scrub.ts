@@ -1,3 +1,6 @@
+import { partnerSuffix } from "../messages/cards";
+import { LANGUAGES } from "../types";
+
 /**
  * The last code guards on a reply before it is sent (spec §5.9 steps 3 and 5). The digit scrubber finds phone-shaped
  * runs the model typed, as opposed to numbers code inserted for tokens; the dispatch guard finds and replaces sentences
@@ -198,10 +201,38 @@ function numberKey(number: string): string {
   return digits.length === 12 && digits.startsWith("91") ? digits.slice(2) : digits;
 }
 
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * The partner label cards.ts writes after a partner unit's number ("(operated by X)", "(X द्वारा संचालित)", …), in every
+ * language, at the start of the text after the number. Built from partnerSuffix, so the two cannot drift apart.
+ */
+const PARTNER_LABEL_RE = (() => {
+  const marker = "\u0000";
+  const forms = LANGUAGES.map((lang) => {
+    const [before, after] = partnerSuffix(marker, lang).split(marker);
+    return `${escapeRegExp(before)}[^()\\n]+${escapeRegExp(after)}`;
+  });
+  return new RegExp(`^[^\\S\\n]*(${forms.join("|")})`, "u");
+})();
+
+/**
+ * The partner label at the start of `text` (normalized), or null. A label with dispatch wording or a phone-shaped run
+ * of its own is never kept: the model can type a lookalike.
+ */
+function partnerLabelAt(text: string): string | null {
+  const label = PARTNER_LABEL_RE.exec(text)?.[1];
+  if (label === undefined || DISPATCH_RE.test(label) || runsIn(label).length > 0) return null;
+  return label;
+}
+
 /**
  * Replaces each sentence that matches DISPATCH_RE, keeping the whitespace after it, so paragraph breaks survive.
  * Adjacent matching sentences share one replacement. The allowed numbers a replaced sentence held are appended after
- * the replacement, as they were written, so the reporter never loses a number code inserted.
+ * the replacement, as they were written and each with the partner label that followed it, so the reporter never loses
+ * a number code inserted or the label that says a partner NGO runs the unit.
  */
 export function replaceDispatchSentences(text: string, replacement: string, allowedNumbers: string[] = []): string {
   const normalized = normalizeDigits(text);
@@ -212,18 +243,24 @@ export function replaceDispatchSentences(text: string, replacement: string, allo
       out += parts[i++];
       continue;
     }
-    // A run of adjacent matching sentences: one replacement, then each allowed number they held, once.
-    const numbers = new Map<string, string>();
+    // A run of adjacent matching sentences: one replacement, then each allowed number they held, once, with its label.
+    const numbers = new Map<string, { number: string; label: string | null }>();
     let trailing = "";
     for (; i < parts.length && DISPATCH_RE.test(parts[i]); i++) {
-      splitAllowed(parts[i], allowedNumbers).forEach((part, k) => {
-        if (k % 2 === 1 && !numbers.has(numberKey(part))) numbers.set(numberKey(part), part);
+      const pieces = splitAllowed(parts[i], allowedNumbers);
+      pieces.forEach((piece, k) => {
+        if (k % 2 === 0) return;
+        const label = partnerLabelAt(pieces[k + 1] ?? "");
+        const kept = numbers.get(numberKey(piece));
+        if (kept === undefined) numbers.set(numberKey(piece), { number: piece, label });
+        else kept.label ??= label;
       });
       trailing = parts[i].slice(parts[i].trimEnd().length);
     }
+    const appended = [...numbers.values()].map(({ number, label }) => (label === null ? number : `${number} ${label}`));
     // A danda can end a sentence with no space after it; a space keeps the replacement off the text around it.
     if (out !== "" && !/\s$/.test(out)) out += " ";
-    out += [replacement, ...numbers.values()].join(" ") + (trailing === "" && i < parts.length ? " " : trailing);
+    out += [replacement, ...appended].join(" ") + (trailing === "" && i < parts.length ? " " : trailing);
   }
   return collapseSpaces(out).trim();
 }

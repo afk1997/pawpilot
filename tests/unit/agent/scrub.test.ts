@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { DIGIT_RUN_RE, digitsOf, findDigitRuns, foreignDigitRuns, maskDigitRuns, stripRuns, hasDispatchLanguage, replaceDispatchSentences } from "@/server/agent/scrub";
-import { buildAmbulanceCard, buildHelplineCard, buildMultiAmbulanceCard } from "@/server/messages/cards";
+import { buildAmbulanceCard, buildHelplineCard, buildMultiAmbulanceCard, partnerSuffix } from "@/server/messages/cards";
 import { callDirectlyLine } from "@/server/messages/system-replies";
 
 describe("digit scrubber", () => {
@@ -233,6 +233,26 @@ describe("dispatch guard: sentence replacement", () => {
   it("re-appends an allowed number the replaced sentence held, as it was written", () => {
     expect(replaceDispatchSentences("Call +91 70000 00001, they're on the way!", R, ["+917000000001"])).toBe(`${R} +91 70000 00001`);
     expect(replaceDispatchSentences("कॉल करें +९१ ७०००० ००००१, एम्बुलेंस रास्ते में है।", "R।", ["+917000000001"])).toBe("R। +91 70000 00001");
+  });
+
+  it("keeps the partner label that follows a re-appended number, in every language", () => {
+    const allowed = ["+917000000007"];
+    const en = partnerSuffix("Hope for Indies Trust", "en");
+    expect(replaceDispatchSentences(`Call +91 70000 00007 ${en}, they're on the way!`, R, allowed)).toBe(`${R} +91 70000 00007 ${en}`);
+    const hi = partnerSuffix("Hope for Indies Trust", "hi");
+    expect(replaceDispatchSentences(`कॉल करें +91 70000 00007 ${hi}, एम्बुलेंस रास्ते में है।`, "R।", allowed)).toBe(`R। +91 70000 00007 ${hi}`);
+    for (const lang of ["mr", "gu"] as const) {
+      const label = partnerSuffix("Blue Cross", lang);
+      expect(replaceDispatchSentences(`Call +91 70000 00007 ${label}, we are sending help.`, "R.", allowed)).toBe(`R. +91 70000 00007 ${label}`);
+    }
+  });
+
+  it("keeps only a real partner label right after the number, without dispatch wording or digits of its own", () => {
+    const allowed = ["+917000000001"];
+    expect(replaceDispatchSentences("Call +91 70000 00001 (call now), they're on the way!", "R.", allowed)).toBe("R. +91 70000 00001");
+    expect(replaceDispatchSentences("Call +91 70000 00001 now (operated by Blue Cross), they're on the way!", "R.", allowed)).toBe("R. +91 70000 00001");
+    expect(replaceDispatchSentences("Call +91 70000 00001 (operated by our team, on the way now)!", "R.", allowed)).toBe("R. +91 70000 00001");
+    expect(replaceDispatchSentences("Call +91 70000 00001 (operated by 9876543210), they're on the way!", "R.", allowed)).toBe("R. +91 70000 00001");
   });
 
   it("merges adjacent replaced sentences into one replacement", () => {
