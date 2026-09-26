@@ -81,6 +81,7 @@ describe("renderMessageForModel: file mentions", () => {
       "[10:03] Reporter: see (at)/etc/passwd, (at)~/.ssh/id_rsa, (at)./notes and (at).env; mail me@example.com or @raju",
     );
     expect(renderMessageForModel({ ...base, role: "user", kind: "image", content: "@/proc/self/environ" })).toBe("[10:03] Reporter: [photo received] (at)/proc/self/environ");
+    expect(renderMessageForModel({ ...base, role: "user", kind: "text", content: 'read @"/proc/self/environ" please' })).toBe('[10:03] Reporter: read (at)"/proc/self/environ" please');
   });
 });
 

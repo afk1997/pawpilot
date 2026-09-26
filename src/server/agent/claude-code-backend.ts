@@ -1,9 +1,11 @@
-import { mkdirSync } from "node:fs";
-import { query, type EffortLevel, type SDKMessage, type SDKRateLimitInfo, type SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
+import { chmodSync, mkdirSync } from "node:fs";
+import {
+  query, type EffortLevel, type SDKMessage, type SDKRateLimitInfo, type SDKResultMessage, type SDKStartupFailureReason,
+} from "@anthropic-ai/claude-agent-sdk";
 import { REPLY_JSON_SCHEMA, parseStructuredReplyDetailed } from "./schema";
 import { SERVER_NAME } from "./tools";
 import type { BackendErrorKind, LLMBackend, ObservedToolUse, TurnInput, TurnResult } from "./types";
-import { log } from "../log";
+import { log, safeErrorFields } from "../log";
 
 export interface StreamObservation {
   rejectedLimit: { resetsAt?: number } | null;
@@ -18,13 +20,15 @@ export interface StreamObservation {
   extraUsage?: boolean;
   /** The last near-limit warning, logged once after the turn. */
   usageWarning?: SDKRateLimitInfo;
-  /** The init message listed a tool the turn does not allow, or did not show this app's MCP server as connected. */
-  initMismatch?: boolean;
+  /** An init message arrived. */
+  sawInit?: boolean;
+  /** What the init message got wrong (foreign or missing tools, and the server's status); absent when it matched. */
+  initMismatch?: string;
 }
 
 /** What a turn's init message must show. */
 export interface ExpectedSetup {
-  /** The only tools it may list, besides the CLI's StructuredOutput. */
+  /** The tools it must list, and the only ones besides the CLI's StructuredOutput. */
   toolNames: readonly string[];
   /** The MCP server it must show as connected; null for a turn without tools. */
   server: string | null;
@@ -37,14 +41,19 @@ const BUILTIN_TOOLS = ["Bash", "Read", "Write", "Edit", "MultiEdit", "Glob", "Gr
  * loading. Never "mcp__*", which would also deny this app's own tools.
  */
 export const DISALLOWED_TOOLS = [...BUILTIN_TOOLS, "mcp__claude_ai_*"];
-/** Assistant errors only the owner can clear (login, account, model or request); the turn runner pauses Claude. */
+/** Assistant errors only the owner can clear (login, account or model); the turn runner pauses Claude. */
 const AUTH_ERRORS = new Set([
   "authentication_failed", "oauth_org_not_allowed", "account_on_hold", "verification_required", "billing_error", "cloud_credential_error",
-  "invalid_request", "model_not_found",
+  "model_not_found",
 ]);
 /** Error text that means a usage limit, and error text that means a login problem; whole phrases only. */
-const LIMIT_TEXT_RE = /\b(rate limit|usage limit|weekly limit|too many requests)\b/i;
-const AUTH_TEXT_RE = /\b(not logged in|invalid api key|invalid token|authentication|unauthorized|401|403)\b/i;
+const LIMIT_TEXT_RE = /\b(rate limit|usage limit|weekly limit|too many requests|limit reached|hit your limit)\b/i;
+const AUTH_TEXT_RE = /\b(not logged in|invalid api key|invalid token|authentication(?:_error)?|authenticate|permission_error|unauthorized|401|403)\b/i;
+/** Startup failures only the owner can fix (install, config, login, host); the others may clear on a retry. */
+const OWNER_STARTUP_FAILURES = new Set<SDKStartupFailureReason>([
+  "org_pin_api_key_conflict", "org_pin_mismatch", "managed_settings_invalid", "gateway_signin_required", "gateway_access_denied",
+  "proxy_invalid", "temp_dir_unusable", "cwd_unavailable", "shell_tool_missing", "cli_version_too_old", "bypass_root",
+]);
 /** The tool the CLI adds to carry the reply when outputFormat is a JSON schema. */
 const STRUCTURED_OUTPUT_TOOL = "StructuredOutput";
 /**
@@ -96,14 +105,22 @@ export function observe(msg: SDKMessage, obs: StreamObservation, byId: Map<strin
   switch (msg.type) {
     case "system": {
       if (msg.subtype !== "init") return;
-      const tools: unknown[] = Array.isArray(msg.tools) ? msg.tools : [];
+      obs.sawInit = true;
+      const listed: unknown[] = Array.isArray(msg.tools) ? msg.tools : [];
       const servers: unknown[] = Array.isArray(msg.mcp_servers) ? msg.mcp_servers : [];
-      const foreignTool = tools.some((t) => t !== STRUCTURED_OUTPUT_TOOL && !expected.toolNames.includes(t as string));
-      const serverDown = expected.server !== null && !servers.some((s) => {
-        const server = s as { name?: unknown; status?: unknown } | null;
-        return server?.name === expected.server && server.status === "connected";
-      });
-      if (foreignTool || serverDown) obs.initMismatch = true;
+      const foreign = listed.filter((t) => t !== STRUCTURED_OUTPUT_TOOL && !expected.toolNames.includes(t as string)).map(String);
+      const missing = expected.toolNames.filter((t) => !listed.includes(t));
+      let status: string | null = null;
+      if (expected.server !== null) {
+        const found = servers.find((s) => (s as { name?: unknown } | null)?.name === expected.server) as { status?: unknown } | undefined;
+        status = typeof found?.status === "string" ? found.status : "absent";
+      }
+      if (foreign.length === 0 && missing.length === 0 && (status === null || status === "connected")) return;
+      obs.initMismatch = [
+        ...(foreign.length > 0 ? [`foreign tools [${foreign.join(", ")}]`] : []),
+        ...(missing.length > 0 ? [`missing tools [${missing.join(", ")}]`] : []),
+        ...(status !== null ? [`${expected.server} status=${status}`] : []),
+      ].join("; ");
       return;
     }
     case "rate_limit_event": {
@@ -152,10 +169,13 @@ function classify(obs: StreamObservation): TurnResult {
     ({ ok: false, kind, message: truncate(message, MESSAGE_MAX), retryAfter, latencyMs: obs.latencyMs, sessionId, toolUses });
 
   // The turn was aborted at init, before the model ran: nothing else in the observation counts.
-  if (obs.initMismatch) return fail("TRANSIENT", "mcp_not_connected");
+  if (obs.initMismatch) return fail("TRANSIENT", `mcp_not_connected: ${obs.initMismatch}`);
   if (obs.rejectedLimit) return fail("LIMITED", "subscription usage limit reached", resetDate(obs.rejectedLimit.resetsAt));
   if (obs.assistantError) {
     if (obs.assistantError === "rate_limit") return fail("LIMITED", "assistant error: rate_limit");
+    // CLI 2.1.282 reports a refusal, prompt_too_long and a bad tool history as invalid_request: this turn's problem,
+    // retried with a shorter transcript, never a pause for every conversation.
+    if (obs.assistantError === "invalid_request") return fail("INVALID_OUTPUT", "assistant error: invalid_request");
     if (AUTH_ERRORS.has(obs.assistantError)) return fail("AUTH", `assistant error: ${obs.assistantError}`);
     return fail("TRANSIENT", `assistant error: ${obs.assistantError}`);
   }
@@ -170,6 +190,8 @@ function classify(obs: StreamObservation): TurnResult {
 
   if (r.subtype !== "success") {
     const text = ("errors" in r ? r.errors : []).join(" | ");
+    const reason = r.startup_failure_reason;
+    if (reason) return fail(OWNER_STARTUP_FAILURES.has(reason) ? "AUTH" : "TRANSIENT", `startup failure ${reason}: ${text}`);
     if (r.subtype === "error_max_structured_output_retries" || r.subtype === "error_max_turns") return fail("INVALID_OUTPUT", `${r.subtype}: ${text}`);
     if (LIMIT_TEXT_RE.test(text)) return fail("LIMITED", text);
     if (AUTH_TEXT_RE.test(text)) return fail("AUTH", text);
@@ -217,6 +239,8 @@ export function classifyOutcome(obs: StreamObservation): TurnResult {
 
 export class ClaudeCodeBackend implements LLMBackend {
   readonly name = "claude-code";
+  /** Set once the home dir has been restricted (or that failed and was logged), so it happens once per backend. */
+  private homeRestricted = false;
 
   constructor(private readonly opts: { model: string; effort: EffortLevel; maxTurns: number; oauthToken?: string; homeDir: string }) {
     // A root worker gives a turn that goes wrong the whole container.
@@ -234,6 +258,7 @@ export class ClaudeCodeBackend implements LLMBackend {
       // Here, not in the constructor: a home dir the worker cannot create fails this turn as TRANSIENT (retry, then
       // fallback) instead of throwing out of getBackend().
       mkdirSync(`${this.opts.homeDir}/config`, { recursive: true, mode: 0o700 });
+      this.restrictHome();
       const q = query({
         prompt: input.prompt,
         options: {
@@ -276,10 +301,26 @@ export class ClaudeCodeBackend implements LLMBackend {
     }
     obs.latencyMs = Date.now() - started;
     if (obs.usageWarning) log.warn({ info: obs.usageWarning }, "claude usage nearing limit");
+    // The init check never ran for this turn.
+    if (obs.result && !obs.sawInit) log.warn({ latencyMs: obs.latencyMs }, "claude result arrived without an init message");
     const outcome = classifyOutcome(obs);
     // Kind and latency only: the message can quote SDK error text or reply field names, so it goes on the turn row.
     if (!outcome.ok) log.warn({ kind: outcome.kind, latencyMs: outcome.latencyMs }, "claude turn failed");
     else if (outcome.extraUsage) log.warn({ latencyMs: outcome.latencyMs }, "claude turn used extra usage");
     return outcome;
+  }
+
+  /**
+   * mkdirSync's mode applies only to directories it creates, so a home dir that already existed is tightened to 0700
+   * here, once per backend. A failure (a dir the worker does not own) is logged and the turn goes on.
+   */
+  private restrictHome(): void {
+    if (this.homeRestricted) return;
+    this.homeRestricted = true;
+    try {
+      chmodSync(this.opts.homeDir, 0o700);
+    } catch (e) {
+      log.warn(safeErrorFields(e), "could not restrict the Claude home dir to 0700");
+    }
   }
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { McpSdkServerConfigWithInstance, Options } from "@anthropic-ai/claude-agent-sdk";
@@ -9,11 +9,26 @@ import { SERVER_NAME, TOOL_NAMES } from "@/server/agent/tools";
 import type { TurnInput } from "@/server/agent/types";
 import { log } from "@/server/log";
 
-/** Every query() call the backend makes, and the messages the next call streams. Nothing reaches the real CLI. */
+/**
+ * Every query() call the backend makes, and the messages the next call streams (nothing reaches the real CLI); and an
+ * error for chmodSync to throw, to stand in for a home dir the worker does not own.
+ */
 const sdk = vi.hoisted(() => ({
   calls: [] as { prompt: unknown; options: Options }[],
   stream: (() => (async function* () {})()) as (options: Options) => AsyncGenerator<unknown>,
+  chmodError: null as Error | null,
 }));
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...actual,
+    chmodSync: (...args: Parameters<typeof actual.chmodSync>) => {
+      if (sdk.chmodError) throw sdk.chmodError;
+      return actual.chmodSync(...args);
+    },
+  };
+});
 
 vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@anthropic-ai/claude-agent-sdk")>()),
@@ -46,6 +61,7 @@ const backendAt = (homeDir: string, oauthToken?: string) =>
 beforeEach(() => {
   home = mkdtempSync(path.join(tmpdir(), "arham-claude-wiring-"));
   sdk.calls.length = 0;
+  sdk.chmodError = null;
 });
 afterEach(() => {
   rmSync(home, { recursive: true, force: true });
@@ -99,9 +115,10 @@ describe("ClaudeCodeBackend wiring", () => {
   });
 
   it.each([
-    ["a foreign tool", init([...TOOL_NAMES, "StructuredOutput", "Bash"])],
-    ["no connected arham server", init(TOOL_NAMES, [{ name: SERVER_NAME, status: "failed" }])],
-  ])("aborts the turn as mcp_not_connected when init shows %s", async (_, initMessage) => {
+    ["a foreign tool", init([...TOOL_NAMES, "StructuredOutput", "Bash"]), "mcp_not_connected: foreign tools [Bash]; arham status=connected"],
+    ["a missing arham tool", init(["StructuredOutput", ...TOOL_NAMES.slice(1)]), `mcp_not_connected: missing tools [${TOOL_NAMES[0]}]; arham status=connected`],
+    ["no connected arham server", init(TOOL_NAMES, [{ name: SERVER_NAME, status: "failed" }]), "mcp_not_connected: arham status=failed"],
+  ])("aborts the turn as mcp_not_connected when init shows %s", async (_, initMessage, message) => {
     let closed = false;
     sdk.stream = () => (async function* () {
       try {
@@ -111,7 +128,7 @@ describe("ClaudeCodeBackend wiring", () => {
         closed = true;
       }
     })();
-    expect(await backendAt(home).runTurn(input())).toMatchObject({ ok: false, kind: "TRANSIENT", message: "mcp_not_connected" });
+    expect(await backendAt(home).runTurn(input())).toMatchObject({ ok: false, kind: "TRANSIENT", message });
     expect(sdk.calls[0].options.abortController?.signal.aborted).toBe(true);
     expect(closed).toBe(true);
   });
@@ -133,6 +150,36 @@ describe("ClaudeCodeBackend wiring", () => {
     expect(await backendAt(home).runTurn(input())).toMatchObject({ ok: false, kind: "TRANSIENT" });
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledWith({ kind: "TRANSIENT", latencyMs: expect.any(Number) }, "claude turn failed");
+  });
+
+  it("warns, with the latency only, when a result arrives without an init message", async () => {
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
+    sdk.stream = streamOf(result());
+    expect(await backendAt(home).runTurn(input())).toMatchObject({ ok: true });
+    expect(warn).toHaveBeenCalledWith({ latencyMs: expect.any(Number) }, "claude result arrived without an init message");
+    warn.mockClear();
+    sdk.stream = streamOf(init(), result());
+    await backendAt(home).runTurn(input());
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("restricts a home dir that already existed to 0700", async () => {
+    chmodSync(home, 0o755);
+    sdk.stream = streamOf(init(), result());
+    expect(await backendAt(home).runTurn(input())).toMatchObject({ ok: true });
+    expect(statSync(home).mode & 0o777).toBe(0o700);
+  });
+
+  it("runs the turn when the home dir cannot be restricted, and logs that once, with the error's class and code", async () => {
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
+    sdk.chmodError = Object.assign(new Error(`EPERM: operation not permitted, chmod '${home}'`), { code: "EPERM" });
+    sdk.stream = streamOf(init(), result());
+    const backend = backendAt(home);
+    expect(await backend.runTurn(input())).toMatchObject({ ok: true });
+    sdk.stream = streamOf(init(), result());
+    expect(await backend.runTurn(input())).toMatchObject({ ok: true });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith({ errorClass: "Error", code: "EPERM" }, "could not restrict the Claude home dir to 0700");
   });
 
   it("warns when the worker runs as root", () => {

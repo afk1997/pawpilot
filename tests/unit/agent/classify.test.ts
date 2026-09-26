@@ -84,12 +84,28 @@ describe("classifyOutcome", () => {
     expect(classifyOutcome({ ...base, result: err("Request failed with status 403") })).toMatchObject({ ok: false, kind: "AUTH" });
     expect(classifyOutcome({ ...base, result: err("upstream sent 4031 bytes") })).toMatchObject({ ok: false, kind: "TRANSIENT" });
   });
-  it("treats invalid_request and model_not_found as AUTH, since the owner must act", () => {
-    expect(classifyOutcome({ ...base, assistantError: "invalid_request" })).toMatchObject({ ok: false, kind: "AUTH" });
+  it("treats invalid_request as INVALID_OUTPUT, since one refusal must not pause Claude, and model_not_found as AUTH", () => {
+    expect(classifyOutcome({ ...base, assistantError: "invalid_request" })).toMatchObject({ ok: false, kind: "INVALID_OUTPUT" });
     expect(classifyOutcome({ ...base, assistantError: "model_not_found" })).toMatchObject({ ok: false, kind: "AUTH" });
   });
-  it("fails the turn as mcp_not_connected when the init check did not pass", () => {
-    expect(classifyOutcome({ ...base, initMismatch: true, aborted: true })).toMatchObject({ ok: false, kind: "TRANSIENT", message: "mcp_not_connected" });
+  it("reads wider limit and auth wording", () => {
+    const err = (text: string) => ({ ...success(good), subtype: "error_during_execution", is_error: true, errors: [text] }) as never;
+    expect(classifyOutcome({ ...base, result: err("5-hour limit reached ∙ resets 3pm") })).toMatchObject({ ok: false, kind: "LIMITED" });
+    expect(classifyOutcome({ ...base, result: err("You've hit your limit · resets 3pm") })).toMatchObject({ ok: false, kind: "LIMITED" });
+    expect(classifyOutcome({ ...base, result: err('{"type":"authentication_error","message":"invalid x-api-key"}') })).toMatchObject({ ok: false, kind: "AUTH" });
+    expect(classifyOutcome({ ...base, result: err("Could not authenticate with the API") })).toMatchObject({ ok: false, kind: "AUTH" });
+    expect(classifyOutcome({ ...base, result: err('{"type":"permission_error","message":"not allowed"}') })).toMatchObject({ ok: false, kind: "AUTH" });
+  });
+  it("classifies a startup failure by its reason: owner-fixable ones as AUTH, the rest as TRANSIENT", () => {
+    const startup = (startup_failure_reason: string, text: string) =>
+      ({ ...success(good), subtype: "error_during_execution", is_error: true, errors: [text], startup_failure_reason }) as never;
+    expect(classifyOutcome({ ...base, result: startup("cli_version_too_old", "this CLI is too old; the usage limit applies") })).toMatchObject({ ok: false, kind: "AUTH" });
+    expect(classifyOutcome({ ...base, result: startup("proxy_invalid", "HTTPS_PROXY is not a valid URL") })).toMatchObject({ ok: false, kind: "AUTH" });
+    expect(classifyOutcome({ ...base, result: startup("session_held_by_background", "not logged in to this session") })).toMatchObject({ ok: false, kind: "TRANSIENT" });
+  });
+  it("fails the turn as mcp_not_connected, with the init check's detail, when that check did not pass", () => {
+    expect(classifyOutcome({ ...base, initMismatch: "foreign tools [Bash]; arham status=connected", aborted: true }))
+      .toMatchObject({ ok: false, kind: "TRANSIENT", message: "mcp_not_connected: foreign tools [Bash]; arham status=connected" });
   });
   it("cuts every failure message to 300 characters", () => {
     expect(classifyOutcome({ ...base, thrown: "x".repeat(1000) })).toMatchObject({ ok: false, message: "x".repeat(300) });
@@ -139,6 +155,11 @@ describe("observe", () => {
     expect(obs.assistantError).toBe("overloaded");
     expect(obs.result).toBe(result);
   });
+  it("reads a model refusal (invalid_request) as INVALID_OUTPUT", () => {
+    const refusal = assistant([{ type: "text", text: "I can't help with that request." }], "invalid_request");
+    const obs = run(init([...allowed, "StructuredOutput"]), refusal, success(null, { is_error: true, result: "API Error: request refused" }));
+    expect(classifyOutcome(obs)).toMatchObject({ ok: false, kind: "INVALID_OUTPUT", message: "assistant error: invalid_request" });
+  });
   it("keeps a turn that extra usage covered and says so, and refuses one it did not", () => {
     for (const overageStatus of ["allowed", "allowed_warning"]) {
       const obs = run(limit({ status: "rejected", overageStatus, resetsAt: 1_800_000_000 }), success(good));
@@ -163,19 +184,25 @@ describe("observe", () => {
     expect(obs.usageWarning).toMatchObject({ status: "allowed_warning" });
     expect(classifyOutcome(obs)).toMatchObject({ ok: true });
   });
-  it("passes an init that lists only the allowed tools and StructuredOutput, with the server connected", () => {
-    expect(run(init([...allowed, "StructuredOutput"])).initMismatch).toBeFalsy();
+  it("passes an init that lists exactly the allowed tools and StructuredOutput, with the server connected", () => {
+    const obs = run(init([...allowed, "StructuredOutput"]));
+    expect(obs.initMismatch).toBeUndefined();
+    expect(obs.sawInit).toBe(true);
   });
-  it("flags an init with a foreign tool, or without the arham server connected", () => {
-    expect(run(init([...allowed, "StructuredOutput", "Bash"])).initMismatch).toBe(true);
-    expect(run(init(allowed, [])).initMismatch).toBe(true);
-    expect(run(init(allowed, [{ name: "arham", status: "pending" }])).initMismatch).toBe(true);
-    expect(run(init(allowed, [{ name: "claude_ai_Gmail", status: "connected" }])).initMismatch).toBe(true);
+  it("names the foreign tools, the missing tools and the arham status when init does not match", () => {
+    expect(run(init([...allowed, "StructuredOutput", "Bash", "WebFetch"])).initMismatch).toBe("foreign tools [Bash, WebFetch]; arham status=connected");
+    expect(run(init(["StructuredOutput", "mcp__arham__find_ambulances"])).initMismatch)
+      .toBe("missing tools [mcp__arham__find_clinics, mcp__arham__get_info]; arham status=connected");
+    expect(run(init(allowed, [{ name: "arham", status: "failed" }])).initMismatch).toBe("arham status=failed");
+    expect(run(init(allowed, [{ name: "arham", status: "pending" }])).initMismatch).toBe("arham status=pending");
+    expect(run(init(allowed, [])).initMismatch).toBe("arham status=absent");
+    expect(run(init(allowed, [{ name: "claude_ai_Gmail", status: "connected" }])).initMismatch).toBe("arham status=absent");
   });
-  it("needs no server for a turn without tools", () => {
+  it("needs no server for a turn without tools, and marks a stream without init", () => {
     const obs: StreamObservation = { ...base, toolUses: [] };
     observe(init(["StructuredOutput"], []) as never, obs, new Map(), { toolNames: [], server: null });
-    expect(obs.initMismatch).toBeFalsy();
+    expect(obs.initMismatch).toBeUndefined();
+    expect(run(success(good)).sawInit).toBeUndefined();
   });
 });
 

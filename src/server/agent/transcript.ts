@@ -52,10 +52,12 @@ function assistantBody(m: Renderable): string {
 const LINE_BREAK_RE = /\r\n|[\n\r\v\f\u0085\u2028\u2029]/g;
 
 /**
- * An "@" right before a path ("@/etc", "@~/", "@./", "@.env"), which the CLI could read as a file mention. The backend
- * already sends prompts verbatim; this is the second guard. E-mail addresses and @handles are left alone.
+ * An "@" right before a path or a quoted path ("@/etc", "@~/", "@./", "@.env", '@"/proc/…"'), which the CLI could read
+ * as a file mention. This is the second guard: the backend sends prompts verbatim (verbatimPrompts), and that alone
+ * covers two cases this one leaves open, a bare relative mention ("@notes.txt", which would resolve against the Claude
+ * home dir) and a mention the model echoed into an assistant row. E-mail addresses and @handles are left alone.
  */
-const PATH_MENTION_RE = /@(?=[/~.])/g;
+const PATH_MENTION_RE = /@(?=["/~.])/g;
 
 /** One transcript row. Continuation lines are indented, so no message text can pass for a row or a system line. */
 function row(stamp: string, label: string, body: string): string {
