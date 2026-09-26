@@ -335,7 +335,8 @@ export async function runClaudeTurn(input: {
     model: first.model ?? cfg.claude.model,
     scrubbed: g.scrubbed,
   });
-  // Claude's own report of the language. The flag goes through flagConversation, so a reason already set is kept.
+  // Claude's own report of the language. The flag goes through flagConversation: a reason already set is kept unless
+  // it ranks below needs_human (claude_unavailable does).
   await updateConversation(conversationId, { language: g.structured.language });
   if (g.structured.needs_human) await flagConversation(conversationId, "needs_human");
   if (delivered) await recordOkTurn();
