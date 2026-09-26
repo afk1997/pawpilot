@@ -16,7 +16,7 @@ import { getStaticPhones } from "../content/static";
 import { recordEvent } from "../inbound/store";
 import { lastKnownLocation, loadHistory, sharedHandles } from "./gather";
 import { deliverText } from "./deliver";
-import { createTurn, finishTurn, flagConversation, loadConversationHandles, markAnswered, updateConversation } from "./persist";
+import { createTurn, finishTurn, flagConversation, loadConversationHandles, updateConversation } from "./persist";
 import { isClaudePaused, pauseClaude, recordOkTurn } from "./pause";
 import { runFallbackTurn } from "./fallback";
 
@@ -315,8 +315,10 @@ export async function runClaudeTurn(input: {
   if (g.unknownHandles.length > 0) await note(conversationId, "unknown_handle", { turnId: turn.id, handles: g.unknownHandles });
   if (g.staleHandles.length > 0) await note(conversationId, "stale_handle", { turnId: turn.id, handles: g.staleHandles });
 
-  const message = await deliverText(conversation, { text: g.text, template: g.template, origin: "agent", turnId: turn.id });
-  await markAnswered(pending.map((m) => m.id), turn.id);
+  // The burst is marked answered with the reply, before the send: a retry after a crash finds nothing to answer again.
+  const message = await deliverText(conversation, {
+    text: g.text, template: g.template, origin: "agent", turnId: turn.id, answers: pending.map((m) => m.id),
+  });
   // A reply that was not delivered stays visible: the turn is failed, and deliverText flagged the conversation.
   const delivered = message.deliveryStatus !== "failed";
   await finishTurn(turn.id, {

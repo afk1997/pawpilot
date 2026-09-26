@@ -8,7 +8,7 @@ import { gatherPending } from "./gather";
 import { claimWelcome, classifyPending, sendMenu, sendWelcome } from "./first-contact";
 import { pendingText } from "./fallback";
 import { deliverText } from "./deliver";
-import { createTurn, finishTurn, markAnswered, updateConversation } from "./persist";
+import { createTurn, finishTurn, updateConversation } from "./persist";
 import { runClaudeTurn } from "./claude-turn";
 import type { LLMBackend } from "../agent/types";
 import type { Language } from "../types";
@@ -98,10 +98,15 @@ async function runTurnLocked(conversationId: string, deps: TurnDeps): Promise<Tu
   const text = pendingText(pending);
   const lang: Language = conversation.language ?? detectLanguage(text);
   const cls = classifyPending(pending);
+  // Every reply below marks the burst answered with itself, before its send (deliver.ts's write-ahead).
+  const pendingIds = pending.map((m) => m.id);
   let welcomeJustSent = false;
 
   if (await claimWelcome(conversation.id)) {
-    const welcomeTurnId = await systemTurn(conversation.id, "system:welcome", (id) => sendWelcome(conversation, lang, id));
+    // The welcome answers the burst only when the burst was nothing but greetings; otherwise the reply below does.
+    const welcomeTurnId = await systemTurn(conversation.id, "system:welcome", (id) =>
+      sendWelcome(conversation, lang, id, cls.allGreeting ? pendingIds : [])
+    );
     // A burst with no real content ("hi", a sticker, a voice note) detects as English only by default,
     // so it does not decide the language; the first message with real content does.
     if (!(cls.allGreeting || cls.allAudio) || lang !== "en") {
@@ -110,23 +115,18 @@ async function runTurnLocked(conversationId: string, deps: TurnDeps): Promise<Tu
     }
     conversation = { ...conversation, welcomedAt: new Date() };
     welcomeJustSent = true;
-    if (cls.allGreeting) {
-      await markAnswered(pending.map((m) => m.id), welcomeTurnId);
-      return { kind: "welcome", turnId: welcomeTurnId, requeued: await requeueIfPending(conversation.id) };
-    }
+    if (cls.allGreeting) return { kind: "welcome", turnId: welcomeTurnId, requeued: await requeueIfPending(conversation.id) };
   }
 
   if (cls.allMenu) {
-    const turnId = await systemTurn(conversation.id, "system:menu", (id) => sendMenu(conversation, lang, id));
-    await markAnswered(pending.map((m) => m.id), turnId);
+    const turnId = await systemTurn(conversation.id, "system:menu", (id) => sendMenu(conversation, lang, id, pendingIds));
     return { kind: "menu", turnId, requeued: await requeueIfPending(conversation.id) };
   }
 
   if (cls.allAudio) {
     const turnId = await systemTurn(conversation.id, "system:audio", (id) =>
-      deliverText(conversation, { text: audioNotSupported(lang), origin: "system", turnId: id })
+      deliverText(conversation, { text: audioNotSupported(lang), origin: "system", turnId: id, answers: pendingIds })
     );
-    await markAnswered(pending.map((m) => m.id), turnId);
     return { kind: "audio_only", turnId, requeued: await requeueIfPending(conversation.id) };
   }
 

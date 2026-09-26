@@ -383,6 +383,56 @@ describe("delivery status and the resend sweep", () => {
     expect(await retryEvents()).toEqual([]);
   });
 
+  it("stores the reply as sending and marks the messages it answers before the send, then records the outcome", async () => {
+    const c = await createConversation({ phone: "+919876543235" });
+    const a = await storeReporterMessage(c.id, { kind: "text", content: "dog" });
+    const b = await storeReporterMessage(c.id, { kind: "text", content: "ghatkopar" });
+    const t = await createTurn({ conversationId: c.id, status: "failed" });
+    const seen: unknown[] = [];
+    setFetchForTests((async () => {
+      const rows = await getDb().select().from(messages).where(eq(messages.conversationId, c.id)).orderBy(asc(messages.createdAt));
+      seen.push(rows.map((m) => [m.role, m.role === "user" ? m.answeredTurnId : m.deliveryStatus]));
+      return new Response(JSON.stringify({ id: "wa-ahead" }), { status: 201 });
+    }) as typeof fetch);
+    const m = await deliverText(c, { text: "reply", origin: "agent", turnId: t.id, answers: [a.id!, b.id!] });
+    expect(seen).toEqual([[["user", t.id], ["user", t.id], ["assistant", "sending"]]]);
+    expect(m).toMatchObject({ deliveryStatus: "sent", deliveryHttpStatus: 201, providerMessageId: "out:wa-ahead", turnId: t.id });
+    await expect(deliverText(c, { text: "x", origin: "agent", answers: [a.id!] })).rejects.toThrow(/turn id/);
+  });
+
+  it("sends a list and its text fallback from one write-ahead row, answering the burst once", async () => {
+    const c = await createConversation({ phone: "+919876543236" });
+    const a = await storeReporterMessage(c.id, { kind: "text", content: "menu" });
+    const t = await createTurn({ conversationId: c.id, status: "failed" });
+    const seen: unknown[] = [];
+    let calls = 0;
+    setFetchForTests((async () => {
+      calls += 1;
+      const rows = await getDb().select().from(messages).where(eq(messages.conversationId, c.id)).orderBy(asc(messages.createdAt));
+      seen.push(rows.map((m) => [m.kind, m.role === "user" ? m.answeredTurnId : m.deliveryStatus]));
+      return calls === 1 ? new Response("{}", { status: 400 }) : new Response(JSON.stringify({ id: "wa-text" }), { status: 201 });
+    }) as typeof fetch);
+    const list = { body: "b", buttonLabel: "Options", rows: [{ id: "menu:ambulance", title: "A" }] };
+    const r = await deliverList(c, { list, fallbackText: "plain", origin: "system", turnId: t.id, answers: [a.id!] });
+    expect(seen).toEqual([
+      [["text", t.id], ["interactive", "sending"]],
+      [["text", t.id], ["interactive", "sending"]],
+    ]);
+    expect(r).toMatchObject({ usedList: false, message: { kind: "text", deliveryStatus: "sent", content: "plain", providerMessageId: "out:wa-text" } });
+    expect((await getDb().select().from(messages).where(eq(messages.role, "assistant")))).toHaveLength(1);
+  });
+
+  it("resends a reply left sending for over 2 minutes (a crash between the send and its bookkeeping), never one in flight", async () => {
+    const c = await createConversation({ phone: "+919876543234" });
+    const stale = await storedReply(c.id, { content: "stale", status: "sending", httpStatus: null, minutesAgo: 3 });
+    await storedReply(c.id, { content: "in flight", status: "sending", httpStatus: null, minutesAgo: 1 });
+    const sent = interakt(201);
+    expect(await resendFailedReplies()).toBe(1);
+    expect(sent).toEqual(["stale"]);
+    expect(await messageRow(stale.id)).toMatchObject({ deliveryStatus: "sent", deliveryAttempts: 2, error: null });
+    expect(await resendFailedReplies()).toBe(0);
+  });
+
   it("stops after three attempts in all, keeping each failure on the row and in an event", async () => {
     const c = await createConversation({ phone: "+919876543233" });
     const row = await storedReply(c.id, { httpStatus: 502 });

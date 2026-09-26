@@ -11,6 +11,7 @@ import { FakeBackend, okReply, errorResult } from "@/server/agent/fake-backend";
 import { findAmbulancesImpl } from "@/server/agent/tools";
 import { makeHandle } from "@/server/agent/handles";
 import { createTurn, finishTurn } from "@/server/worker/persist";
+import * as persist from "@/server/worker/persist";
 import { getWorkerState, isClaudePaused, pauseClaude } from "@/server/worker/pause";
 import type { LLMBackend, ObservedToolUse, TurnInput, TurnResult } from "@/server/agent/types";
 import * as agent from "@/server/agent";
@@ -408,6 +409,30 @@ describe("the Claude turn's guards, audit and context", () => {
     const row = await conversationRow(c.id);
     expect([row.flagged, row.flagReason, row.language]).toEqual([true, "send_failed", "hi"]);
     expect((await getWorkerState()).lastOkTurnAt).toBeNull();
+  });
+
+  it("answers the burst before the send, so a crash after the send never produces a second reply", async () => {
+    const c = await createConversation({ phone: "+919876500996", language: "en", welcomedAt: new Date() });
+    const sent = await storeReporterMessage(c.id, { kind: "text", content: "surat" });
+    const seenAtSend: { answeredTurnId?: string | null; status?: string | null }[] = [];
+    setFetchForTests((async () => {
+      const [inbound] = await getDb().select().from(messages).where(eq(messages.id, sent.id!));
+      const [reply] = await outbound(c.id);
+      seenAtSend.push({ answeredTurnId: inbound.answeredTurnId, status: reply?.deliveryStatus });
+      return new Response(JSON.stringify({ id: "wa-crash" }), { status: 201 });
+    }) as typeof fetch);
+    const crash = vi.spyOn(persist, "recordSendResult").mockRejectedValueOnce(new Error("connection lost after the send"));
+    const backend = new FakeBackend([okReply({ reply: "Please call {{PHONE:helpline}}." })]);
+    await expect(runTurn(c.id, { backend })).rejects.toThrow("connection lost after the send");
+    expect(crash).toHaveBeenCalledTimes(1);
+    const [turn] = await turnsOf(c.id);
+    // When Interakt was called, the burst was already answered and the reply stored as "sending".
+    expect(seenAtSend).toEqual([{ answeredTurnId: turn.id, status: "sending" }]);
+    // pg-boss retries the job: nothing is pending, so no second model call and no second reply.
+    expect(await runTurn(c.id, { backend })).toEqual({ kind: "noop" });
+    expect(backend.calls).toHaveLength(1);
+    expect(seenAtSend).toHaveLength(1);
+    expect((await outbound(c.id)).map((m) => [m.deliveryStatus, m.content])).toEqual([["sending", "Please call +91 99999 00000."]]);
   });
 
   it("audits tool uses the SDK refused beside the calls the tools recorded, on every attempt, and records extra usage", async () => {

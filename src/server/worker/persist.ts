@@ -1,7 +1,8 @@
 import { desc, eq, inArray, sql } from "drizzle-orm";
 import type { HandleMap } from "../agent/handles";
-import { getDb } from "../db/client";
-import { conversations, messages, turns, type Conversation, type NewTurn, type Turn } from "../db/schema";
+import { getDb, type Db } from "../db/client";
+import { conversations, messages, turns, type Conversation, type Message, type NewTurn, type Turn } from "../db/schema";
+import type { InteraktResult } from "../interakt/client";
 import type { TurnStatus } from "../types";
 
 export async function createTurn(input: { conversationId: string; status: TurnStatus; model?: string | null; effort?: string | null }): Promise<Turn> {
@@ -16,9 +17,29 @@ export async function finishTurn(id: string, patch: Partial<Omit<NewTurn, "id" |
   await getDb().update(turns).set(patch).where(eq(turns.id, id));
 }
 
-export async function markAnswered(messageIds: string[], turnId: string | null): Promise<void> {
+/** `db`: a transaction, when the marking must commit with other writes (deliver.ts's write-ahead). */
+export async function markAnswered(messageIds: string[], turnId: string | null, db: Pick<Db, "update"> = getDb()): Promise<void> {
   if (messageIds.length === 0) return;
-  await getDb().update(messages).set({ answeredTurnId: turnId }).where(inArray(messages.id, messageIds));
+  await db.update(messages).set({ answeredTurnId: turnId }).where(inArray(messages.id, messageIds));
+}
+
+/**
+ * A stored reply takes the outcome of a send: sent or failed, Interakt's HTTP status, its error text and message id.
+ * `kind`: what went out when it differs from what was stored (a list that went out as plain text).
+ */
+export async function recordSendResult(messageId: string, send: InteraktResult, kind?: "text"): Promise<Message> {
+  const [row] = await getDb()
+    .update(messages)
+    .set({
+      deliveryStatus: send.ok ? "sent" : "failed",
+      deliveryHttpStatus: send.status,
+      error: send.ok ? null : send.error ?? `status=${send.status}`,
+      ...(send.ok && send.messageId && { providerMessageId: `out:${send.messageId}` }),
+      ...(kind && { kind }),
+    })
+    .where(eq(messages.id, messageId))
+    .returning();
+  return row;
 }
 
 export async function updateConversation(

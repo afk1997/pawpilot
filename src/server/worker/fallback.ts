@@ -7,7 +7,7 @@ import { matchAmbulances } from "../directory/matcher";
 import { buildAmbulanceCard, buildHelplineCard, buildMultiAmbulanceCard } from "../messages/cards";
 import { fallbackFoundIntro, fallbackNoMatch } from "../messages/system-replies";
 import { deliverText } from "./deliver";
-import { createTurn, finishTurn, flagConversation, markAnswered, updateConversation } from "./persist";
+import { createTurn, finishTurn, flagConversation, updateConversation } from "./persist";
 import { recordEvent } from "../inbound/store";
 import type { Language } from "../types";
 
@@ -51,8 +51,8 @@ export async function runFallbackTurn(input: { conversation: Conversation; pendi
     reply = exactPlace && matched > 3 ? card : `${fallbackNoMatch(lang)}\n${card}`;
   }
 
-  const message = await deliverText(conversation, { text: reply, origin: "fallback", turnId: turn.id });
-  await markAnswered(pending.map((m) => m.id), turn.id);
+  // The burst is marked answered with the reply, before the send (deliverText's write-ahead).
+  const message = await deliverText(conversation, { text: reply, origin: "fallback", turnId: turn.id, answers: pending.map((m) => m.id) });
   const finish = { error: reason, structuredOutput: { matched, matchType: match.match, sent }, latencyMs: 0 };
   await finishTurn(turn.id, finish);
   // A burst with no real content (a greeting, a sticker, a caption-less photo) detects as English only by default,
