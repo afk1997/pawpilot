@@ -12,7 +12,8 @@ export interface ParsedInbound {
   lng: number | null;
   placeHint: string | null;
   interactiveId: string | null;
-  receivedAt: Date;
+  /** When WhatsApp received it; null when the payload has no time that parses (the stored row keeps its own default). */
+  receivedAt: Date | null;
   rawContentType: string;
 }
 
@@ -29,7 +30,7 @@ interface InteraktCustomer {
 
 interface InteraktPayload {
   type?: string;
-  timestamp?: string;
+  timestamp?: unknown;
   data?: {
     customer?: InteraktCustomer;
     message?: Record<string, unknown>;
@@ -44,6 +45,16 @@ function digitsOf(v: unknown): string {
   return typeof v === "string" ? v.replace(/\D/g, "") : "";
 }
 
+/** Longer than a national number: a `phone_number` this long that starts with the country code already carries it. */
+const NATIONAL_NUMBER_MAX_DIGITS = 10;
+
+/** `country_code` + `phone_number`, without prepending a code the number already carries ("91" + "919876543210"). */
+function withCountryCode(countryCode: string, phoneNumber: string): string {
+  if (!countryCode || !phoneNumber) return "";
+  const carriesCode = phoneNumber.length > NATIONAL_NUMBER_MAX_DIGITS && phoneNumber.startsWith(countryCode);
+  return carriesCode ? phoneNumber : countryCode + phoneNumber;
+}
+
 /**
  * The sender in E.164, from the first source with at least 8 digits: `country_code` + `phone_number` ("+91",
  * "9876543210"), then `channel_phone_number`. The latter is the WhatsApp id, country code included and no "+"
@@ -51,9 +62,10 @@ function digitsOf(v: unknown): string {
  * Singapore) into a wrong Indian number.
  */
 function toE164(customer: InteraktCustomer): string | null {
-  const countryCode = digitsOf(customer.country_code);
-  const phoneNumber = digitsOf(customer.phone_number);
-  const sources = [countryCode && phoneNumber ? countryCode + phoneNumber : "", digitsOf(customer.channel_phone_number)];
+  const sources = [
+    withCountryCode(digitsOf(customer.country_code), digitsOf(customer.phone_number)),
+    digitsOf(customer.channel_phone_number),
+  ];
   const digits = sources.find((d) => d.length >= MIN_PHONE_DIGITS);
   return digits ? `+${digits}` : null;
 }
@@ -71,6 +83,13 @@ function mapKind(contentType: string): MessageKind {
     case "interactivebuttonreply": case "interactivelistreply": return "interactive";
     default: return "text";
   }
+}
+
+/** A time from a string that parses; anything else (an object, a number, garbage) is no time at all. */
+function parseTime(v: unknown): Date | null {
+  if (typeof v !== "string") return null;
+  const d = new Date(v);
+  return isNaN(d.getTime()) ? null : d;
 }
 
 function parseJsonString(v: unknown): Record<string, unknown> | null {
@@ -91,7 +110,10 @@ export function parseInteraktPayload(raw: unknown): ParseOutcome {
 
   const customer = p.data?.customer;
   const message = p.data?.message;
-  if (!customer || !message || typeof message.id !== "string") return { kind: "ignored", reason: "missing_fields", eventType };
+  // An empty id would be stored once and then make every later empty-id message a "duplicate".
+  if (!customer || !message || typeof message.id !== "string" || message.id.trim() === "") {
+    return { kind: "ignored", reason: "missing_fields", eventType };
+  }
   if (typeof message.chat_message_type === "string" && message.chat_message_type !== "CustomerMessage") {
     return { kind: "ignored", reason: "not_customer_message", eventType };
   }
@@ -128,8 +150,6 @@ export function parseInteraktPayload(raw: unknown): ParseOutcome {
     content = body;
   }
 
-  const tsStr = (message.received_at_utc as string | undefined) ?? p.timestamp;
-  const parsedDate = tsStr ? new Date(tsStr) : new Date();
 
   return {
     kind: "inbound",
@@ -144,7 +164,7 @@ export function parseInteraktPayload(raw: unknown): ParseOutcome {
       lng,
       placeHint,
       interactiveId,
-      receivedAt: isNaN(parsedDate.getTime()) ? new Date() : parsedDate,
+      receivedAt: parseTime(message.received_at_utc) ?? parseTime(p.timestamp),
       rawContentType,
     },
   };

@@ -68,6 +68,31 @@ describe("parseInteraktPayload", () => {
     // Both present and disagreeing with base()'s channel_phone_number: country_code + phone_number wins.
     expect(senderPhone({ country_code: "+91", phone_number: "9876543210" })).toBe("+919876543210");
   });
+  it("never prepends the country code to a phone_number that already carries it", () => {
+    expect(senderPhone({ country_code: "+91", phone_number: "919876543210" })).toBe("+919876543210");
+    expect(senderPhone({ country_code: "91", phone_number: "+91 98765 43210" })).toBe("+919876543210");
+    // Ten digits is a national number, even one that starts with 91: the code is prepended.
+    expect(senderPhone({ country_code: "+91", phone_number: "9198765432" })).toBe("+919198765432");
+  });
+  it("ignores a message whose id is empty or blank, so it cannot shadow every later one as a duplicate", () => {
+    for (const id of ["", "  "]) {
+      expect(parseInteraktPayload(base({ id, message_content_type: "Text", message: "hi" }))).toEqual({
+        kind: "ignored", reason: "missing_fields", eventType: "message_received",
+      });
+    }
+  });
+  it("reads the received time only from a string that parses, else leaves it to the stored row's default", () => {
+    const at = (message: Record<string, unknown>, timestamp?: unknown) => {
+      const r = parseInteraktPayload({ ...base({ message_content_type: "Text", message: "hi", ...message }), timestamp });
+      return r.kind === "inbound" ? r.message.receivedAt : "ignored";
+    };
+    expect(at({}, "2026-09-25T09:00:00Z")).toEqual(new Date("2026-09-25T10:00:00Z"));
+    for (const bad of [{ $date: 1 }, ["2026-09-25"], 1790000000, "not a date", null]) {
+      expect(at({ received_at_utc: bad }, "2026-09-25T09:00:00Z")).toEqual(new Date("2026-09-25T09:00:00Z"));
+      expect(at({ received_at_utc: bad })).toBeNull();
+      expect(at({ received_at_utc: bad }, { $date: 1 })).toBeNull();
+    }
+  });
   it("ignores the message only when neither phone source has at least 8 digits", () => {
     expect(senderPhone({ country_code: "+91", phone_number: "98765" })).toBe("+917003705584");
     expect(senderPhone({ channel_phone_number: "70037055" })).toBe("+70037055");
