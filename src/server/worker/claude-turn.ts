@@ -150,7 +150,7 @@ export async function runClaudeTurn(input: {
     toolContext = ctx;
     const { server, allowedToolNames } = createArhamTools(ctx);
     const systemPrompt = buildSystemPrompt({ coverage: await getCoverageSummary(), websiteUrl: cfg.websiteUrl });
-    const handlesShared = sharedHandles(history, reg);
+    const handlesShared = await sharedHandles(history, reg);
 
     let backend: LLMBackend;
     try {

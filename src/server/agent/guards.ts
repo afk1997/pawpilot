@@ -2,7 +2,7 @@ import type { DirectoryAmbulance, MatchType } from "../directory/matcher";
 import type { DirectoryClinic } from "../directory/repo";
 import { foldDigits } from "../content/static";
 import { buildHelplineCard, formatIndianPhone, renderNumberForToken } from "../messages/cards";
-import { callDirectlyLine, DISPATCH_CORRECTION_NOTE, TOKEN_CORRECTION_NOTE } from "../messages/system-replies";
+import { callDirectlyLine, DISPATCH_CORRECTION_NOTE, staleHandleNote, TOKEN_CORRECTION_NOTE } from "../messages/system-replies";
 import { extractTokens, type HandleRegistry } from "./handles";
 import { renderReply, type RenderLookups, type RenderResult } from "./render";
 import { foreignDigitRuns, hasDispatchLanguage, replaceDispatchSentences, stripRuns } from "./scrub";
@@ -19,8 +19,8 @@ const DIGIT_RE = /\p{Nd}/u;
 const SYNTAX_RE = /[{}]/;
 /** A handle as makeHandle writes it (letters only): the only dropped value an event may carry. */
 const HANDLE_RE = /^(?:amb|cli)_[a-p]{8}$/i;
-/** Added to the token correction when a draft used the handle of a unit that is no longer active. */
-export const STALE_HANDLE_NOTE = "Look the place up again with find_ambulances; a previously shared unit is no longer available.";
+/** A dropped piece of syntax that named an AMB or CLINIC token: the model meant to give a unit's or a clinic's number. */
+const ENTITY_SYNTAX_RE = /\b(?:AMB|CLINIC)\b/i;
 
 /** Which guard asks for a corrective call. */
 export type CorrectionPurpose = "token" | "dispatch";
@@ -98,9 +98,9 @@ const appendLine = (text: string, line: string) => (text.trim() === "" ? line : 
  * guard (typed runs, or dropped pieces holding a digit) and a stale handle get one corrective call, then typed runs are
  * stripped; the dispatch guard gets one, whose draft meets the digit guard again, then its sentences are replaced.
  * Every number any draft inserted must reach the reporter (the numbers are code-inserted, so safe): one the final
- * reply lacks goes out again after the call-directly line. An ambulance reply left with no number at all because a
- * retired unit's handle was dropped gets the helpline card. needs_human holds if any draft set it, and then no draft
- * after it gets a guessed card.
+ * reply lacks goes out again after the call-directly line. A reply of any intent left with no number at all after an
+ * AMB or CLINIC token was dropped (retired, invented or malformed) gets the helpline card. needs_human holds if any
+ * draft set it, and then no draft after it gets a guessed card.
  */
 export async function guardReply(first: StructuredReply, deps: GuardDeps): Promise<GuardedReply> {
   const { registry } = deps;
@@ -124,8 +124,8 @@ export async function guardReply(first: StructuredReply, deps: GuardDeps): Promi
   };
   const inserted = new Set<string>();
   let needsHuman = false;
-  /** Some draft used the handle of a unit or clinic that is no longer active. */
-  let staleSeen = false;
+  /** Some draft dropped an AMB or CLINIC token: retired, invented or malformed. */
+  let entityDropped = false;
 
   const draft = async (structured: StructuredReply): Promise<Draft> => {
     needsHuman ||= structured.needs_human;
@@ -151,7 +151,13 @@ export async function guardReply(first: StructuredReply, deps: GuardDeps): Promi
       const ref = registry.resolve(dropped);
       return ref !== undefined && gone.has(ref.id);
     });
-    if (stale.length > 0) staleSeen = true;
+    const droppedValues = new Set(rendered.unknownHandles.map((v) => v.toLowerCase()));
+    if (
+      extractTokens(rendered.template).some((t) => t.kind !== "PHONE" && droppedValues.has(t.value.toLowerCase())) ||
+      rendered.unknownHandles.some((v) => SYNTAX_RE.test(v) && ENTITY_SYNTAX_RE.test(v))
+    ) {
+      entityDropped = true;
+    }
     return {
       structured,
       rendered,
@@ -174,22 +180,14 @@ export async function guardReply(first: StructuredReply, deps: GuardDeps): Promi
 
   let d = await draft(first);
 
-  // Digit guard, and a stale handle: one corrective call, then whatever is still typed is stripped.
+  // Digit guard, and a stale handle: one corrective call, then whatever is still typed is stripped. Each problem found
+  // gets its own note: typed digits the token note, retired handles the stale note naming them.
   if (typedDigits(d) || d.stale.length > 0) {
-    const correction = d.stale.length > 0 ? `${TOKEN_CORRECTION_NOTE} ${STALE_HANDLE_NOTE}` : TOKEN_CORRECTION_NOTE;
-    const corrected = await deps.retry(correction, "token");
+    const notes = [...(typedDigits(d) ? [TOKEN_CORRECTION_NOTE] : []), ...(d.stale.length > 0 ? [staleHandleNote(d.stale)] : [])];
+    const corrected = await deps.retry(notes.join(" "), "token");
     if (corrected) d = await draft(corrected);
   }
   let { text, template } = guarded(d);
-
-  // A retired unit's number was dropped and no draft gave another: an ambulance reply never goes out as "call this
-  // number:" with none, so the helpline card follows. Its number counts as inserted, so the steps below keep it.
-  if (staleSeen && d.structured.intent === "ambulance" && inserted.size === 0) {
-    const card = buildHelplineCard(deps.helplinePhone, d.structured.language);
-    text = appendLine(text, card);
-    template = appendLine(template, card.replace(formatIndianPhone(deps.helplinePhone), "{{PHONE:helpline}}"));
-    inserted.add(deps.helplinePhone);
-  }
 
   // Dispatch guard: one corrective call, whose draft meets the digit guard again, then sentence replacement.
   let replaced = false;
@@ -207,8 +205,17 @@ export async function guardReply(first: StructuredReply, deps: GuardDeps): Promi
     }
   }
 
-  // Every number a draft inserted reaches the reporter: one the reply lacks goes out again, its token in the template.
   const lang = d.structured.language;
+  // An AMB or CLINIC token was dropped (in any draft, the dispatch-corrected one included) and no draft gave any number:
+  // the reply never goes out as "call this number:" with none, so the helpline card follows, its number inserted.
+  if (entityDropped && inserted.size === 0) {
+    const card = buildHelplineCard(deps.helplinePhone, lang);
+    text = appendLine(text, card);
+    template = appendLine(template, card.replace(formatIndianPhone(deps.helplinePhone), "{{PHONE:helpline}}"));
+    inserted.add(deps.helplinePhone);
+  }
+
+  // Every number a draft inserted reaches the reporter: one the reply lacks goes out again, its token in the template.
   const lost = [...inserted].filter((phone) => !text.includes(formatIndianPhone(phone)));
   if (lost.length > 0) {
     const numberFor = (phone: string) => {

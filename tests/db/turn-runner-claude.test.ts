@@ -20,7 +20,7 @@ import { findDigitRuns } from "@/server/agent/scrub";
 import { setFetchForTests } from "@/server/interakt/client";
 import { log } from "@/server/log";
 import { buildHelplineCard } from "@/server/messages/cards";
-import { DISPATCH_CORRECTION_NOTE, TOKEN_CORRECTION_NOTE } from "@/server/messages/system-replies";
+import { DISPATCH_CORRECTION_NOTE, TOKEN_CORRECTION_NOTE, staleHandleNote } from "@/server/messages/system-replies";
 
 let ids: DirectoryIds;
 async function conv(language: "en" | "hi" | "mr" | "gu" | null = "en") {
@@ -241,8 +241,10 @@ describe("the Claude turn's guards, audit and context", () => {
     await runTurn(c.id, { backend });
     expect(backend.calls).toHaveLength(2);
     const [m] = await outbound(c.id);
-    expect(m.content).toBe("Call or now.");
-    expect(m.contentTemplate).toBe("Call or now.");
+    // The AMB token the model wrote a number into was dropped and no number was left: the helpline card follows.
+    const card = buildHelplineCard("+919999900000", "en");
+    expect(m.content).toBe(`Call or now.\n\n${card}`);
+    expect(m.contentTemplate).toBe(`Call or now.\n\n${card.replace("+91 99999 00000", "{{PHONE:helpline}}")}`);
     expect(findDigitRuns(m.contentTemplate!)).toEqual([]);
     const t = await lastTurn(c.id);
     expect(t.scrubbed).toBe(true);
@@ -258,8 +260,10 @@ describe("the Claude turn's guards, audit and context", () => {
     await runTurn(c.id, { backend });
     expect(backend.calls).toHaveLength(1);
     const [m] = await outbound(c.id);
-    expect(m.content).toBe("Call or or now.");
-    expect(m.contentTemplate).toBe("Call or or now.");
+    // Every token dropped and no number left: the helpline card follows.
+    const card = buildHelplineCard("+919999900000", "en");
+    expect(m.content).toBe(`Call or or now.\n\n${card}`);
+    expect(m.contentTemplate).toBe(`Call or or now.\n\n${card.replace("+91 99999 00000", "{{PHONE:helpline}}")}`);
     const t = await lastTurn(c.id);
     expect((await eventsOf("unknown_handle")).map((e) => e.payload)).toEqual([{ turnId: t.id, handles: ["amb_pppppppp"] }]);
     expect(t.structuredOutput).toMatchObject({ notes: "n", droppedSyntax: ["{AMB:x}"] });
@@ -661,9 +665,7 @@ describe("the Claude turn's time budget, audit totals and failure handling", () 
     expect(JSON.stringify(evs.map((e) => e.payload))).not.toMatch(/98765|43210/);
   });
 
-  describe("a handle whose unit was deactivated after it was shared", () => {
-    const STALE_NOTE = "Look the place up again with find_ambulances; a previously shared unit is no longer available.";
-    const staleHandle = async (conversationId: string) => {
+  describe("a handle whose unit was deactivated after it was shared", () => {    const staleHandle = async (conversationId: string) => {
       const h = makeHandle("ambulance", conversationId, ids.ghatkopar);
       const old = await createTurn({ conversationId, status: "ok" });
       await finishTurn(old.id, { handles: { [h]: { kind: "ambulance", id: ids.ghatkopar } } });
@@ -681,7 +683,8 @@ describe("the Claude turn's time budget, audit totals and failure handling", () 
       ]);
       await runTurn(c.id, { backend });
       expect(backend.calls).toHaveLength(2);
-      expect(backend.calls[1].prompt).toContain(`${TOKEN_CORRECTION_NOTE} ${STALE_NOTE}`);
+      expect(backend.calls[1].prompt).toContain(staleHandleNote([h]));
+      expect(backend.calls[1].prompt).not.toContain(TOKEN_CORRECTION_NOTE);
       const out = await outbound(c.id);
       expect(out.map((m) => m.content)).toEqual(["Please call our helpline +91 99999 00000."]);
       expect(await eventsOf("stale_handle")).toHaveLength(0);
@@ -765,18 +768,18 @@ describe("the Claude turn's time budget, audit totals and failure handling", () 
     expect([state.claudePausedUntil?.getTime(), state.pauseReason]).toEqual([at.getTime() + 15 * 60_000, result.ok ? null : result.kind]);
   });
 
-  it("pauses Claude on LIMITED from a corrective retry and still delivers the guarded draft it has", async () => {
+  it.each([
+    ["LIMITED", errorResult("LIMITED", "usage limit"), "claude_limited"],
+    ["AUTH", errorResult("AUTH", "not logged in"), "claude_auth_error"],
+  ] as const)("pauses Claude on %s from a corrective retry and still delivers the guarded draft it has", async (_kind, result, event) => {
     const c = await conv();
     await storeReporterMessage(c.id, { kind: "text", content: "helpline?" });
-    const backend = new FakeBackend([
-      okReply({ reply: "Call {{PHONE:helpline}} now. Or try 9876543210." }),
-      errorResult("LIMITED", "usage limit"),
-    ]);
+    const backend = new FakeBackend([okReply({ reply: "Call {{PHONE:helpline}} now. Or try 9876543210." }), result]);
     expect((await runTurn(c.id, { backend })).kind).toBe("ok");
     expect(backend.calls).toHaveLength(2);
     expect((await outbound(c.id))[0].content).toBe("Call +91 99999 00000 now. Or try.");
     expect(await isClaudePaused()).toBe(true);
-    expect(await eventsOf("claude_limited")).toHaveLength(1);
+    expect(await eventsOf(event)).toHaveLength(1);
     const t = await lastTurn(c.id);
     expect([t.status, t.scrubbed]).toEqual(["ok", true]);
   });

@@ -62,5 +62,24 @@ export function callDirectlyLine(lang: Language): string {
 export const TOKEN_CORRECTION_NOTE =
   "SYSTEM CORRECTION: your previous draft typed a phone number as digits. Phone numbers may only appear as tokens: {{AMB:<handle>}}, {{CLINIC:<handle>}}, or any {{PHONE:<key>}} token exactly as a tool returned it (including {{PHONE:helpline}}). Rewrite the reply using tokens only.";
 
+/** A handle as makeHandle writes it (letters a to p only): the only form a correction may name, so it never holds a digit. */
+const HANDLE_RE = /^(?:amb|cli)_[a-p]{8}$/;
+
+/**
+ * The correction for a draft that used the handles of units or clinics no longer active. It names each handle with the
+ * tool that finds a current one (find_ambulances for amb_, find_clinics for cli_), without TOKEN_CORRECTION_NOTE's
+ * wording about typed digits. Values that are not handle-shaped are left out.
+ */
+export function staleHandleNote(handles: string[]): string {
+  const named = [...new Set(handles.map((h) => h.toLowerCase()))].filter((h) => HANDLE_RE.test(h));
+  const units = named.filter((h) => h.startsWith("amb_"));
+  const clinics = named.filter((h) => h.startsWith("cli_"));
+  const parts: string[] = [];
+  if (units.length > 0) parts.push(`${units.join(", ")} (${units.length === 1 ? "an ambulance that is" : "ambulances that are"} no longer available): call find_ambulances again for the reporter's place`);
+  if (clinics.length > 0) parts.push(`${clinics.join(", ")} (${clinics.length === 1 ? "a clinic that is" : "clinics that are"} no longer available): call find_clinics again`);
+  if (parts.length === 0) parts.push("a unit or clinic in it is no longer available: look it up again with find_ambulances or find_clinics");
+  return `SYSTEM CORRECTION: your previous draft used a handle that no longer works. ${parts.join("; ")}. Use only handles the new result returns.`;
+}
+
 export const DISPATCH_CORRECTION_NOTE =
   "SYSTEM CORRECTION: your previous draft implied that Arham sends or dispatches the ambulance. We never dispatch; the reporter calls the driver directly. Rewrite the reply without any sending/dispatching/on-the-way language.";

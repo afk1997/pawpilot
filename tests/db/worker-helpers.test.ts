@@ -2,10 +2,12 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { resetDb, createConversation } from "../helpers/db";
 import { getDb } from "@/server/db/client";
-import { messages, turns, conversations, events } from "@/server/db/schema";
+import { ambulances, clinics, messages, turns, conversations, events } from "@/server/db/schema";
 import { storeReporterMessage } from "@/server/inbound/store";
 import * as store from "@/server/inbound/store";
-import { gatherPending, loadHistory } from "@/server/worker/gather";
+import { gatherPending, loadHistory, sharedHandles } from "@/server/worker/gather";
+import { HandleRegistry } from "@/server/agent/handles";
+import { seedDirectory } from "../helpers/fixtures";
 import { deliverText, deliverList } from "@/server/worker/deliver";
 import { createTurn, finishTurn, markAnswered, loadConversationHandles, type HandleMap } from "@/server/worker/persist";
 import { setFetchForTests } from "@/server/interakt/client";
@@ -16,6 +18,19 @@ describe("worker helpers", () => {
   afterEach(() => {
     setFetchForTests(null);
     vi.restoreAllMocks();
+  });
+
+  it("lists as shared only delivered handles whose unit or clinic is still active", async () => {
+    const ids = await seedDirectory();
+    const c = await createConversation({ isTest: true });
+    const registry = new HandleRegistry(c.id);
+    const [ghatkopar, malad, surat] = [registry.ambulance(ids.ghatkopar), registry.ambulance(ids.malad), registry.clinic(ids.clinicSurat)];
+    await deliverText(c, { text: "x", template: `Call {{AMB:${ghatkopar}}} or {{AMB:${malad}}}, or {{AMB:amb_pppppppp}}.`, origin: "agent" });
+    await deliverText(c, { text: "x", template: `Clinic {{CLINIC:${surat}}}, helpline {{PHONE:helpline}}.`, origin: "agent" });
+    expect(await sharedHandles(await loadHistory(c.id), registry)).toEqual([ghatkopar, malad, surat]);
+    await getDb().update(ambulances).set({ active: false }).where(eq(ambulances.id, ids.malad));
+    await getDb().update(clinics).set({ active: false }).where(eq(clinics.id, ids.clinicSurat));
+    expect(await sharedHandles(await loadHistory(c.id), registry)).toEqual([ghatkopar]);
   });
 
   it("gathers only unanswered reporter messages in order", async () => {

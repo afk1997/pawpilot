@@ -1,7 +1,8 @@
 import { and, asc, desc, eq, gte, isNull } from "drizzle-orm";
 import { getDb } from "../db/client";
 import { conversations, messages, turns, type Conversation, type Message } from "../db/schema";
-import { extractTokens, type HandleRegistry } from "../agent/handles";
+import { extractTokens, type HandleKind, type HandleRegistry } from "../agent/handles";
+import { getAmbulancesByIds, getClinicsByIds } from "../directory/repo";
 
 export async function gatherPending(conversationId: string): Promise<{ conversation: Conversation; pending: Message[] } | null> {
   const db = getDb();
@@ -46,15 +47,19 @@ export async function lastKnownLocation(conversationId: string, now: Date): Prom
 
 /**
  * The ambulance and clinic handles in the templates of replies whose send did not fail, oldest first, each once. Only
- * handles the registry still resolves: one the model invented was never shared.
+ * handles the registry still resolves (one the model invented was never shared) and whose unit or clinic is still
+ * active (the model must not offer a retired one again): one lookup per kind.
  */
-export function sharedHandles(history: Message[], registry: HandleRegistry): string[] {
-  const shared = new Set<string>();
+export async function sharedHandles(history: Message[], registry: HandleRegistry): Promise<string[]> {
+  const shared = new Map<string, { kind: HandleKind; id: string }>();
   for (const m of history) {
     if (m.role !== "assistant" || !m.contentTemplate || m.deliveryStatus === "failed") continue;
     for (const t of extractTokens(m.contentTemplate)) {
-      if (t.kind !== "PHONE" && registry.resolve(t.value)) shared.add(t.value.toLowerCase());
+      const ref = t.kind === "PHONE" ? undefined : registry.resolve(t.value);
+      if (ref && !shared.has(t.value.toLowerCase())) shared.set(t.value.toLowerCase(), ref);
     }
   }
-  return [...shared];
+  const idsOf = (kind: HandleKind) => [...new Set([...shared.values()].filter((r) => r.kind === kind).map((r) => r.id))];
+  const [units, clinicRows] = await Promise.all([getAmbulancesByIds(idsOf("ambulance")), getClinicsByIds(idsOf("clinic"))]);
+  return [...shared].filter(([, ref]) => (ref.kind === "ambulance" ? units : clinicRows).has(ref.id)).map(([handle]) => handle);
 }

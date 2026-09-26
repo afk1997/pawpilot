@@ -1,10 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { guardReply, STALE_HANDLE_NOTE, type GuardDeps } from "@/server/agent/guards";
+import { guardReply, type GuardDeps } from "@/server/agent/guards";
 import { HandleRegistry } from "@/server/agent/handles";
 import type { StructuredReply } from "@/server/agent/types";
 import type { DirectoryAmbulance, MatchType } from "@/server/directory/matcher";
 import { buildHelplineCard } from "@/server/messages/cards";
-import { DISPATCH_CORRECTION_NOTE, TOKEN_CORRECTION_NOTE } from "@/server/messages/system-replies";
+import { DISPATCH_CORRECTION_NOTE, TOKEN_CORRECTION_NOTE, staleHandleNote } from "@/server/messages/system-replies";
 
 const ghatkopar: DirectoryAmbulance = {
   id: "g", label: "Mumbai - Ghatkopar", city: "Mumbai", area: "Ghatkopar", state: "MH", areasCovered: [], category: "Animal Ambulance",
@@ -13,6 +13,9 @@ const ghatkopar: DirectoryAmbulance = {
 const rajkot: DirectoryAmbulance = { ...ghatkopar, id: "r", label: "Rajkot - Blue Cross", city: "Rajkot", area: null, phone: "+919876500001", operatorName: "Blue Cross", operatorIsArham: false };
 const units: Record<string, DirectoryAmbulance> = { g: ghatkopar, r: rajkot };
 const CALL_DIRECTLY = "Please call them directly and they will guide you.";
+
+const HELPLINE_CARD = buildHelplineCard("+919999900000", "en");
+const HELPLINE_TEMPLATE = HELPLINE_CARD.replace("+91 99999 00000", "{{PHONE:helpline}}");
 
 const reply = (partial: Partial<StructuredReply> & { reply: string }): StructuredReply => ({
   language: "en", intent: "other", location: { city: null, area: null }, needs_human: false, notes: null, ...partial,
@@ -83,18 +86,61 @@ describe("guardReply", () => {
     const { deps, corrections } = setup({ corrected: [reply({ reply: written })] });
     const g = await guardReply(reply({ reply: written }), deps);
     expect(corrections).toHaveLength(1);
+    // Every token dropped and no number left: the helpline card follows.
     expect(g).toMatchObject({
-      text: "Call or or or now.", template: "Call or or or now.", scrubbed: true, foreignRuns: 0, digitDrops: 1,
-      unknownHandles: ["amb_pppppppp"], droppedSyntax: ["{AMB:x}"],
+      text: `Call or or or now.\n\n${HELPLINE_CARD}`, template: `Call or or or now.\n\n${HELPLINE_TEMPLATE}`, scrubbed: true, foreignRuns: 0,
+      digitDrops: 1, unknownHandles: ["amb_pppppppp"], droppedSyntax: ["{AMB:x}"],
     });
   });
 
-  it("asks for a fresh lookup when a shared unit was retired, and reports its handle as stale if it stays", async () => {
+  it("asks for a fresh lookup, naming the retired handle, and reports it as stale if it stays", async () => {
     const { registry, deps, corrections } = setup({ active: ["r"] });
     const h = registry.ambulance("g");
     const g = await guardReply(reply({ reply: `Number: {{AMB:${h}}}` }), deps);
-    expect(corrections).toEqual([{ correction: `${TOKEN_CORRECTION_NOTE} ${STALE_HANDLE_NOTE}`, purpose: "token" }]);
-    expect(g).toMatchObject({ text: "Number:", staleHandles: [h], unknownHandles: [], scrubbed: false, restored: 0 });
+    // Only the stale note: nothing in the draft was typed as digits.
+    expect(corrections).toEqual([{ correction: staleHandleNote([h]), purpose: "token" }]);
+    expect(g).toMatchObject({ text: `Number:\n\n${HELPLINE_CARD}`, staleHandles: [h], unknownHandles: [], scrubbed: false, restored: 0 });
+  });
+
+  it("sends both notes when a draft typed digits and used a retired handle", async () => {
+    const { registry, deps, corrections } = setup({ active: ["r"] });
+    const h = registry.ambulance("g");
+    await guardReply(reply({ reply: `Call 9876543210 or {{AMB:${h}}}.` }), deps);
+    expect(corrections).toEqual([{ correction: `${TOKEN_CORRECTION_NOTE} ${staleHandleNote([h])}`, purpose: "token" }]);
+  });
+
+  it("appends the helpline card after an invented handle leaves a reply of any intent with no number", async () => {
+    const { deps, corrections } = setup();
+    const g = await guardReply(reply({ reply: "Call {{AMB:amb_pppppppp}} now.", intent: "other" }), deps);
+    expect(corrections).toEqual([]);
+    expect(g).toMatchObject({ text: `Call now.\n\n${HELPLINE_CARD}`, template: `Call now.\n\n${HELPLINE_TEMPLATE}`, unknownHandles: ["amb_pppppppp"] });
+  });
+
+  it("appends it after a retired clinic's handle in a clinic reply, and names find_clinics in the correction", async () => {
+    const { registry, deps, corrections } = setup();
+    const c = registry.clinic("c1");
+    const g = await guardReply(reply({ reply: `The clinic's number: {{CLINIC:${c}}}`, intent: "clinic" }), deps);
+    expect(corrections).toEqual([{ correction: staleHandleNote([c]), purpose: "token" }]);
+    expect(corrections[0].correction).toContain("find_clinics");
+    expect(g).toMatchObject({ text: `The clinic's number:\n\n${HELPLINE_CARD}`, staleHandles: [c] });
+  });
+
+  it("appends it after a retired handle that first appears in the dispatch-corrected draft", async () => {
+    const { registry, deps, corrections } = setup({ active: ["r"] });
+    const h = registry.ambulance("g");
+    deps.retry = async (correction, purpose) => {
+      corrections.push({ correction, purpose });
+      return reply({ reply: `Please call {{AMB:${h}}}.`, intent: "ambulance" });
+    };
+    const g = await guardReply(reply({ reply: "We are sending an ambulance now.", intent: "ambulance" }), deps);
+    expect(corrections.map((c) => c.purpose)).toEqual(["dispatch"]);
+    expect(g).toMatchObject({ text: `Please call.\n\n${HELPLINE_CARD}`, staleHandles: [h], replaced: false });
+  });
+
+  it("appends no helpline card when a dropped handle sits beside a number that reaches the reporter", async () => {
+    const { deps } = setup();
+    const g = await guardReply(reply({ reply: "Call {{AMB:amb_pppppppp}} or {{PHONE:helpline}}.", intent: "other" }), deps);
+    expect(g.text).toBe("Call or +91 99999 00000.");
   });
 
   it("appends the helpline card when a stale handle leaves an ambulance reply with no number", async () => {
