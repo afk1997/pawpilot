@@ -2,6 +2,14 @@
 
 import { useState } from "react";
 
+const SOMETHING_WRONG = "Something went wrong, try again.";
+
+function errorFor(status: number): string {
+  if (status === 401) return "Wrong password.";
+  if (status === 429) return "Too many attempts. Try again in 15 minutes.";
+  return SOMETHING_WRONG;
+}
+
 export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -11,21 +19,32 @@ export default function LoginPage() {
     e.preventDefault();
     setBusy(true);
     setError(null);
-    const res = await fetch("/api/admin/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password }) });
-    setBusy(false);
-    if (res.ok) {
-      window.location.href = "/admin";
-      return;
+    try {
+      const res = await fetch("/api/admin/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password }) });
+      if (res.ok) {
+        window.location.href = "/admin";
+        return;
+      }
+      setError(errorFor(res.status));
+    } catch {
+      setError(SOMETHING_WRONG);
+    } finally {
+      setBusy(false);
     }
-    setError(res.status === 429 ? "Too many attempts. Try again in 15 minutes." : "Wrong password.");
   }
 
   return (
     <main className="min-h-screen flex items-center justify-center bg-[#0f0f0f] text-white">
       <form onSubmit={submit} className="w-80 space-y-4 rounded-xl border border-white/10 bg-[#141414] p-6">
         <h1 className="text-lg font-semibold">Arham Helpline Admin</h1>
+        <label htmlFor="admin-password" className="sr-only">
+          Password
+        </label>
         <input
+          id="admin-password"
+          name="password"
           type="password"
+          autoComplete="current-password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           placeholder="Password"

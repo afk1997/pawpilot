@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { POST, DELETE } from "@/app/api/admin/login/route";
 import { loginLimiter, ADMIN_COOKIE, resetLoginLimiterForTests } from "@/server/admin/auth";
+import { resetConfigForTests } from "@/server/config";
 import { log } from "@/server/log";
 
 const post = (password: string, ip = "9.9.9.9") =>
@@ -30,11 +31,14 @@ const postBody = (body: string, ip: string, headers: Record<string, string> = {}
   POST(new Request("http://localhost/api/admin/login", { method: "POST", headers: { "content-type": "application/json", "x-forwarded-for": ip, ...headers }, body }));
 /** A JSON login body of exactly `bytes` bytes. */
 const bodyOf = (bytes: number) => JSON.stringify({ password: "x".repeat(bytes - '{"password":""}'.length) });
+const RIGHT = JSON.stringify({ password: "test-admin" });
 
 describe("POST /api/admin/login: request hygiene and the global backstop", () => {
   beforeEach(() => resetLoginLimiterForTests());
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    resetConfigForTests();
     resetLoginLimiterForTests();
   });
 
@@ -58,7 +62,9 @@ describe("POST /api/admin/login: request hygiene and the global backstop", () =>
 
   it("treats a malformed body as a wrong password and counts it", async () => {
     for (const body of ["not json", "", "null", '["test-admin"]', '{"password":123}']) expect((await postBody(body, "7.7.7.7")).status).toBe(401);
-    expect((await post("test-admin", "7.7.7.7")).status).toBe(429);
+    const refused = await post("test-admin", "7.7.7.7");
+    expect(refused.status).toBe(429);
+    expect(refused.headers.get("retry-after")).toBe("900");
   });
 
   it("counts concurrent attempts one at a time", async () => {
@@ -66,11 +72,15 @@ describe("POST /api/admin/login: request hygiene and the global backstop", () =>
     expect(statuses.sort((a, b) => a - b)).toEqual([...Array(5).fill(401), ...Array(7).fill(429)]);
   });
 
-  it("refuses every ip once 50 failures came from anywhere, and logs that lockout once", async () => {
+  it("refuses every ip once 50 failures came from anywhere, and warns of that lockout once", async () => {
     const info = vi.spyOn(log, "info").mockImplementation(() => undefined);
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
     for (let i = 0; i < 50; i++) expect((await post("wrong", `10.0.0.${i}`)).status).toBe(401);
-    expect((await post("test-admin", "10.0.1.1")).status).toBe(429);
-    expect(info.mock.calls).toEqual([[{ ip: "10.0.0.49" }, "admin login locked out for every ip"]]);
+    const refused = await post("test-admin", "10.0.1.1");
+    expect(refused.status).toBe(429);
+    expect(refused.headers.get("retry-after")).toBe("900");
+    expect(warn.mock.calls).toEqual([[{ ip: "10.0.0.49" }, "admin login locked out for every ip"]]);
+    expect(info).not.toHaveBeenCalled();
   });
 
   it("logs a success and a lockout with the ip only, and never the password or the body", async () => {
@@ -91,5 +101,41 @@ describe("POST /api/admin/login: request hygiene and the global backstop", () =>
       [{ ip: "5.5.5.6" }, "admin login locked out"],
     ]);
     expect(JSON.stringify(Object.values(spies).map((s) => s.mock.calls))).not.toMatch(/test-admin|guess-|body-secret/);
+  });
+
+  it("requires a JSON content type (415), without counting the attempt", async () => {
+    for (const type of ["text/plain", "application/x-www-form-urlencoded", "multipart/form-data; boundary=x", "text/plain", "application/jsonp", "text/json"]) {
+      expect((await postBody(RIGHT, "3.3.3.3", { "content-type": type })).status).toBe(415);
+    }
+    const bare = new Request("http://localhost/api/admin/login", { method: "POST", headers: { "x-forwarded-for": "3.3.3.3" } });
+    expect((await POST(bare)).status).toBe(415);
+    expect((await postBody(RIGHT, "3.3.3.3", { "content-type": "application/json; charset=utf-8" })).status).toBe(200);
+    expect((await postBody(RIGHT, "3.3.3.3", { "content-type": "Application/JSON" })).status).toBe(200);
+  });
+
+  it("refuses a cross-site request (403), without counting it, and lets same-origin, same-site and direct ones through", async () => {
+    for (const site of ["cross-site", "cross-site", "cross-site", "something-new", "cross-site", "cross-site"]) {
+      expect((await postBody(RIGHT, "2.2.2.2", { "sec-fetch-site": site })).status).toBe(403);
+    }
+    for (const site of ["same-origin", "same-site", "none"]) expect((await postBody(RIGHT, "2.2.2.2", { "sec-fetch-site": site })).status).toBe(200);
+    expect((await postBody(RIGHT, "2.2.2.2")).status).toBe(200);
+  });
+
+  it("clears the cookie on logout with the path and flags it was set with", async () => {
+    const cookie = (await DELETE()).headers.get("set-cookie") ?? "";
+    expect(cookie.startsWith(`${ADMIN_COOKIE}=;`)).toBe(true);
+    expect(cookie).toContain("Path=/");
+    expect(cookie).toContain("Max-Age=0");
+    expect(cookie).toContain("HttpOnly");
+    expect(cookie).not.toContain("Secure");
+  });
+
+  it("marks the cookie Secure in production, on login and on logout", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("LLM_BACKEND", "claude-code"); // config refuses the fake backend in production
+    resetConfigForTests();
+    const login = (await post("test-admin", "4.4.4.4")).headers.get("set-cookie") ?? "";
+    expect(login).toMatch(/; Path=\/; HttpOnly; SameSite=Lax; Max-Age=2592000; Secure$/);
+    expect((await DELETE()).headers.get("set-cookie")).toMatch(/; Path=\/; HttpOnly; SameSite=Lax; Max-Age=0; Secure$/);
   });
 });
