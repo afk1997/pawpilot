@@ -1,5 +1,6 @@
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 import type { Intent, Language } from "../types";
+import type { ToolContext } from "./tools";
 
 export interface StructuredReply {
   reply: string;
@@ -17,9 +18,20 @@ export interface TurnInput {
   toolServer: McpSdkServerConfigWithInstance | null;
   allowedToolNames: string[];
   timeoutMs: number;
+  /** Only the fake backend uses this, to simulate tool calls in tests and evals. */
+  toolContext?: ToolContext;
 }
 
 export type BackendErrorKind = "LIMITED" | "AUTH" | "TRANSIENT" | "INVALID_OUTPUT";
+
+/**
+ * One tool_use block the model emitted, as the SDK stream showed it; isError when its tool_result was an error.
+ * Includes calls the SDK refused before they reached our tools, and the "StructuredOutput" call that carries the reply.
+ */
+export interface ObservedToolUse {
+  name: string;
+  isError: boolean;
+}
 
 export type TurnResult =
   | {
@@ -30,8 +42,19 @@ export type TurnResult =
       sessionId: string | null;
       model: string | null;
       costUsd: number | null;
+      /** Only the Claude Code backend fills this. */
+      toolUses?: ObservedToolUse[];
     }
-  | { ok: false; kind: BackendErrorKind; message: string; retryAfter: Date | null; latencyMs: number; sessionId: string | null };
+  | {
+      ok: false;
+      kind: BackendErrorKind;
+      message: string;
+      retryAfter: Date | null;
+      latencyMs: number;
+      sessionId: string | null;
+      /** Only the Claude Code backend fills this. */
+      toolUses?: ObservedToolUse[];
+    };
 
 export interface LLMBackend {
   readonly name: string;
