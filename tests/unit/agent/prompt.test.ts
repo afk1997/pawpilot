@@ -1,11 +1,11 @@
 import { describe, it, expect } from "vitest";
 import { buildSystemPrompt, buildTurnPrompt, formatIst, type TurnContext } from "@/server/agent/prompt";
 
-const systemPrompt = () => buildSystemPrompt({ coverage: "- Mumbai: Ghatkopar", websiteUrl: "https://arhamalwayscare.org" });
+const systemPrompt = () => buildSystemPrompt({ coverage: "- Mumbai: Ghatkopar", websiteUrl: "https://alwayscare.org" });
 
 describe("prompts", () => {
   it("system prompt carries identity, coverage, token grammar and safety rules", () => {
-    const p = buildSystemPrompt({ coverage: "- Mumbai: Ghatkopar", websiteUrl: "https://arhamalwayscare.org" });
+    const p = buildSystemPrompt({ coverage: "- Mumbai: Ghatkopar", websiteUrl: "https://alwayscare.org" });
     expect(p).toContain("Arham Always Care");
     expect(p).toContain("- Mumbai: Ghatkopar");
     expect(p).toContain("{{AMB:<handle>}}");
@@ -15,7 +15,7 @@ describe("prompts", () => {
     expect(p).not.toMatch(/\d{7,}/);
   });
   it("system prompt covers undelivered replies, other PHONE tokens, approximate matches and bare greetings", () => {
-    const p = buildSystemPrompt({ coverage: "- Mumbai: Ghatkopar", websiteUrl: "https://arhamalwayscare.org" });
+    const p = buildSystemPrompt({ coverage: "- Mumbai: Ghatkopar", websiteUrl: "https://alwayscare.org" });
     expect(p).toContain("A transcript line marked [not delivered] never reached the reporter");
     expect(p).toContain("{{PHONE:<key>}}");
     expect(p).toMatch(/copy .*exactly as returned/i);

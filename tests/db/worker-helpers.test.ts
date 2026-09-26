@@ -8,7 +8,7 @@ import * as store from "@/server/inbound/store";
 import { gatherPending, loadHistory, sharedHandles } from "@/server/worker/gather";
 import { HandleRegistry } from "@/server/agent/handles";
 import { seedDirectory } from "../helpers/fixtures";
-import { deliverText, deliverList, resendFailedReplies } from "@/server/worker/deliver";
+import { deliverText, deliverList, resendFailedReplies, RESEND_MAX_ROWS, RESEND_PASS_MS } from "@/server/worker/deliver";
 import { getWorkerState } from "@/server/worker/pause";
 import { createTurn, finishTurn, flagConversation, markAnswered, loadConversationHandles, type HandleMap } from "@/server/worker/persist";
 import { setFetchForTests } from "@/server/interakt/client";
@@ -314,7 +314,7 @@ function interakt(...statuses: number[]) {
 /** An assistant reply already stored, as a failed first send left it, `minutesAgo` old on the database clock. */
 async function storedReply(
   conversationId: string,
-  opts: { content?: string; status?: string; httpStatus?: number | null; attempts?: number; minutesAgo?: number } = {}
+  opts: { content?: string; status?: string; httpStatus?: number | null; attempts?: number; minutesAgo?: number; turnId?: string } = {}
 ) {
   const [row] = await getDb()
     .insert(messages)
@@ -323,6 +323,7 @@ async function storedReply(
       contentTemplate: "Call {{AMB:amb_abcdefgh}} now.", deliveryStatus: opts.status ?? "failed",
       deliveryHttpStatus: opts.httpStatus === undefined ? 502 : opts.httpStatus, deliveryAttempts: opts.attempts ?? 1,
       error: "interakt 502: unavailable", createdAt: sql`now() - make_interval(mins => ${opts.minutesAgo ?? 1})`,
+      turnId: opts.turnId ?? null,
     })
     .returning();
   return row;
@@ -446,6 +447,89 @@ describe("delivery status and the resend sweep", () => {
     expect(sent).toEqual(["stale"]);
     expect(await messageRow(stale.id)).toMatchObject({ deliveryStatus: "sent", deliveryAttempts: 2, error: null });
     expect(await resendFailedReplies()).toBe(0);
+  });
+
+  it("does not resend a reply whose first send landed after the sweep read it", async () => {
+    const c = await createConversation({ phone: "+919876543237" });
+    const first = await storedReply(c.id, { content: "first", status: "sending", httpStatus: null, minutesAgo: 4 });
+    const late = await storedReply(c.id, { content: "late", status: "sending", httpStatus: null, minutesAgo: 3 });
+    const sent: string[] = [];
+    setFetchForTests((async (_url: unknown, init?: { body?: unknown }) => {
+      sent.push(JSON.parse(String(init?.body)).data.message);
+      // While "first" is resent, the late row's own first send lands.
+      await getDb().update(messages).set({ deliveryStatus: "sent", deliveryHttpStatus: 201 }).where(eq(messages.id, late.id));
+      return new Response(JSON.stringify({ id: "wa-first" }), { status: 201 });
+    }) as typeof fetch);
+    expect(await resendFailedReplies()).toBe(1);
+    expect(sent).toEqual(["first"]);
+    expect(await messageRow(first.id)).toMatchObject({ deliveryStatus: "sent", deliveryAttempts: 2 });
+    expect(await messageRow(late.id)).toMatchObject({ deliveryStatus: "sent", deliveryAttempts: 1 });
+  });
+
+  it("starts no other row once told to stop, past its row cap, or past its deadline", async () => {
+    const c = await createConversation({ phone: "+919876543238" });
+    for (let i = 0; i < RESEND_MAX_ROWS + 3; i++) await storedReply(c.id, { content: `r${i}` });
+    const sent = interakt(201);
+    // Told to stop after the first send: the pass ends there.
+    expect(await resendFailedReplies({ shouldStop: () => sent.length >= 1 })).toBe(1);
+    // A clock that passes the deadline during the first send: the pass ends there too.
+    let clock = 0;
+    setFetchForTests((async () => {
+      clock += RESEND_PASS_MS + 1;
+      return new Response(JSON.stringify({ id: "wa-x" }), { status: 201 });
+    }) as typeof fetch);
+    expect(await resendFailedReplies({ nowMs: () => clock })).toBe(1);
+    // Neither: the pass takes at most RESEND_MAX_ROWS rows, and the next pass the rest.
+    interakt(201);
+    expect(await resendFailedReplies()).toBe(RESEND_MAX_ROWS);
+    expect(await resendFailedReplies()).toBe(1);
+    expect(await resendFailedReplies()).toBe(0);
+  });
+
+  it("flags the conversation and records outbound_failed when a resend fails for the last time, not before", async () => {
+    const c = await createConversation({ phone: "+919876543239" });
+    const refused = await createConversation({ phone: "+919876543240" });
+    const row = await storedReply(c.id, { httpStatus: 502 });
+    const refusedRow = await storedReply(refused.id, { httpStatus: 502 });
+    const flagOf = async (id: string) => {
+      const [conv] = await getDb().select().from(conversations).where(eq(conversations.id, id));
+      return [conv.flagged, conv.flagReason];
+    };
+    const failedEvents = async (conversationId: string) =>
+      (await getDb().select().from(events).where(eq(events.kind, "outbound_failed"))).filter((e) => e.conversationId === conversationId).map((e) => e.payload);
+    // A retryable failure with attempts left: only its outbound_retry. A refused one is final at once.
+    let n = 0;
+    setFetchForTests((async (_url: unknown, init?: { body?: unknown }) => {
+      n += 1;
+      const phone = JSON.parse(String(init?.body)).phoneNumber;
+      return phone === "9876543240" ? new Response("{}", { status: 400 }) : new Response("{}", { status: 503 });
+    }) as typeof fetch);
+    expect(await resendFailedReplies()).toBe(2);
+    expect(await flagOf(c.id)).toEqual([false, null]);
+    expect(await failedEvents(c.id)).toEqual([]);
+    expect(await flagOf(refused.id)).toEqual([true, "send_failed"]);
+    expect(await failedEvents(refused.id)).toEqual([{ status: 400, error: expect.stringContaining("interakt 400"), messageId: refusedRow.id }]);
+    // The last attempt fails too: the reply will never be sent.
+    expect(await resendFailedReplies()).toBe(1);
+    expect(await messageRow(row.id)).toMatchObject({ deliveryStatus: "failed", deliveryAttempts: 3 });
+    expect(await flagOf(c.id)).toEqual([true, "send_failed"]);
+    expect(await failedEvents(c.id)).toEqual([{ status: 503, error: expect.stringContaining("interakt 503"), messageId: row.id }]);
+    expect(n).toBe(3);
+  });
+
+  it("clears delivery_failed from the reply's turn once a resend goes through", async () => {
+    const c = await createConversation({ phone: "+919876543241" });
+    const failedTurn = await createTurn({ conversationId: c.id, status: "failed" });
+    await finishTurn(failedTurn.id, { error: "delivery_failed" });
+    const fallbackTurn = await createTurn({ conversationId: c.id, status: "fallback" });
+    await finishTurn(fallbackTurn.id, { error: "claude_paused" });
+    await storedReply(c.id, { turnId: failedTurn.id });
+    await storedReply(c.id, { turnId: fallbackTurn.id });
+    interakt(201);
+    expect(await resendFailedReplies()).toBe(2);
+    const turnRow = async (id: string) => (await getDb().select().from(turns).where(eq(turns.id, id)))[0];
+    expect(await turnRow(failedTurn.id)).toMatchObject({ status: "ok", error: null });
+    expect(await turnRow(fallbackTurn.id)).toMatchObject({ status: "fallback", error: "claude_paused" });
   });
 
   it("stops after three attempts in all, keeping each failure on the row and in an event", async () => {

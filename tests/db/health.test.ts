@@ -106,13 +106,20 @@ describe("computeHealth", () => {
     }
   });
 
-  it("is 503, with clockSkew, when the worker's heartbeat lies ahead of this clock", async () => {
+  it("is 503, with clockSkew, when the worker's heartbeat lies over 5 s ahead of this clock", async () => {
     await heartbeat();
     const h = await computeHealth(new Date(Date.now() - 60_000));
     expect(h.status).toBe(503);
     expect(h.checks).toMatchObject({ clockSkew: true });
     expect(h.checks.workerHeartbeatAgeS).toBeLessThan(0);
     expect((await computeHealth()).checks.clockSkew).toBe(false);
+  });
+
+  it("reads a heartbeat a few seconds ahead (written while the check ran, or a small drift) as no skew", async () => {
+    await heartbeat();
+    const h = await computeHealth(new Date(Date.now() - 3_000));
+    expect(h.checks.workerHeartbeatAgeS).toBeLessThan(0);
+    expect(h).toMatchObject({ status: 200, checks: { clockSkew: false } });
   });
 
   it("answers 503, without throwing, when the environment is invalid, and logs the error's class only", async () => {

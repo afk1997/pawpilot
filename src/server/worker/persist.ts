@@ -24,6 +24,14 @@ export async function markAnswered(messageIds: string[], turnId: string | null, 
 }
 
 /**
+ * A reply its turn failed to deliver went out after all (the resend sweep's): that turn is no longer a delivery
+ * failure. Only a turn whose error is delivery_failed changes; its status becomes ok, as a delivered reply's is.
+ */
+export async function clearDeliveryFailure(turnId: string): Promise<void> {
+  await getDb().update(turns).set({ status: "ok", error: null }).where(and(eq(turns.id, turnId), eq(turns.error, "delivery_failed")));
+}
+
+/**
  * A stored reply takes the outcome of a send: sent or failed, Interakt's HTTP status, its error text and message id.
  * `kind`: what went out when it differs from what was stored (a list that went out as plain text).
  */

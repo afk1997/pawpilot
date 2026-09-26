@@ -191,8 +191,10 @@ function validReply(obs: StreamObservation): boolean {
 function classify(obs: StreamObservation): TurnResult {
   const sessionId = obs.result?.session_id ?? null;
   const toolUses = obs.toolUses ?? [];
-  const fail = (kind: BackendErrorKind, message: string, retryAfter: Date | null = null): Extract<TurnResult, { ok: false }> =>
-    ({ ok: false, kind, message: truncate(message, MESSAGE_MAX), retryAfter, latencyMs: obs.latencyMs, sessionId, toolUses });
+  const fail = (kind: BackendErrorKind, message: string, retryAfter: Date | null = null): Extract<TurnResult, { ok: false }> => ({
+    ok: false, kind, message: truncate(message, MESSAGE_MAX), retryAfter, latencyMs: obs.latencyMs, sessionId, toolUses,
+    ...(obs.extraUsage && { extraUsage: true }),
+  });
 
   // The turn was aborted at init, before the model ran: nothing else in the observation counts.
   if (obs.initMismatch) return fail("TRANSIENT", `mcp_not_connected: ${obs.initMismatch}`);
@@ -354,7 +356,7 @@ export class ClaudeCodeBackend implements LLMBackend {
     const outcome = classifyOutcome(obs);
     // Kind and latency only: the message can quote SDK error text or reply field names, so it goes on the turn row.
     if (!outcome.ok) log.warn({ kind: outcome.kind, latencyMs: outcome.latencyMs }, "claude turn failed");
-    else if (outcome.extraUsage) log.warn({ latencyMs: outcome.latencyMs }, "claude turn used extra usage");
+    if (outcome.extraUsage) log.warn({ latencyMs: outcome.latencyMs }, "claude turn used extra usage");
     return outcome;
   }
 

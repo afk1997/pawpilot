@@ -243,6 +243,42 @@ describe("startWorker", () => {
     }
   });
 
+  it("stops taking turns at once when stopped mid-resend, even with the send hanging, and returns within the graceful window", async () => {
+    const c = await createConversation({ phone: "+919876500999", welcomedAt: new Date() });
+    for (const content of ["first reply", "second reply"]) {
+      await getDb().insert(messages).values({
+        conversationId: c.id, role: "assistant", origin: "agent", content, deliveryStatus: "failed", deliveryHttpStatus: 502,
+        createdAt: sql`now() - interval '1 minute'`,
+      });
+    }
+    const sent: string[] = [];
+    // A send that never answers, and ignores its abort signal.
+    setFetchForTests((async (_url: unknown, init?: { body?: unknown }) => {
+      sent.push(JSON.parse(String(init?.body)).data.message);
+      return new Promise<Response>(() => undefined);
+    }) as typeof fetch);
+    const turns = vi.spyOn(turnRunner, "runTurn");
+    const worker = await startWorker({ concurrency: 1, sweepMs: 100, resendStopWaitMs: 300 });
+    try {
+      await waitFor(() => sent.length === 1);
+      // A turn that falls due 2 s after it is queued (a normal enqueue), i.e. after stop() has begun: this worker must
+      // never take it. The old stop() waited on the hung resend first and kept taking turns meanwhile.
+      const other = await withPendingMessage("+91TEST_after_stop", 0);
+      await enqueueTurn(other.id);
+      const began = Date.now();
+      const stopped = worker.stop();
+      await new Promise((r) => setTimeout(r, 3_500)); // past the job's 2 s delay and the worker's 1 s polling interval
+      await stopped;
+      expect(Date.now() - began).toBeLessThan(GRACEFUL_STOP_MS + 5_000);
+      expect(turns).not.toHaveBeenCalled();
+      // The pass finished only the send it had started.
+      expect(sent).toEqual(["first reply"]);
+    } finally {
+      setFetchForTests(null);
+      turns.mockRestore();
+    }
+  });
+
   it("logs a failed sweep with only a fixed message, the error code and its class", async () => {
     class QueryFailed extends Error {}
     const failing = vi.spyOn(getDb(), "select").mockImplementation(() => {

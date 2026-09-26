@@ -172,6 +172,19 @@ describe("runTurn with a backend", () => {
     expect((await eventsOf("claude_limited")).map((e) => e.payload)).toEqual([{ turnId: claude.id, extraUsage: false, retryAfter: null }]);
   });
 
+  it("records extra usage on a failed call too: the limit's event says it, and so do the turn and its own event", async () => {
+    const c = await conv();
+    await storeReporterMessage(c.id, { kind: "text", content: "surat" });
+    const failed = { ...errorResult("LIMITED", "subscription usage limit reached", new Date(Date.now() + 60_000)), extraUsage: true } as TurnResult;
+    expect((await runTurn(c.id, { backend: new FakeBackend([failed]) })).kind).toBe("fallback");
+    const [claude] = await turnsOf(c.id);
+    expect((await eventsOf("claude_limited")).map((e) => e.payload)).toEqual([
+      { turnId: claude.id, message: "subscription usage limit reached", retryAfter: expect.any(String), extraUsage: true },
+    ]);
+    expect((await eventsOf("claude_extra_usage")).map((e) => e.payload)).toEqual([{ turnId: claude.id }]);
+    expect(claude.usage).toEqual({ backendCalls: 1, extraUsage: true });
+  });
+
   it("records an auth event and falls back on AUTH", async () => {
     const c = await conv();
     await storeReporterMessage(c.id, { kind: "text", content: "surat" });
@@ -433,6 +446,22 @@ describe("the Claude turn's guards, audit and context", () => {
     expect(backend.calls).toHaveLength(1);
     expect(seenAtSend).toHaveLength(1);
     expect((await outbound(c.id)).map((m) => [m.deliveryStatus, m.content])).toEqual([["sending", "Please call +91 99999 00000."]]);
+  });
+
+  it("still sends the reply when writing the audit before the send fails, and records the audit after it", async () => {
+    const c = await conv();
+    await storeReporterMessage(c.id, { kind: "text", content: "ghatkopar" });
+    const audit = vi.spyOn(persist, "finishTurn").mockRejectedValueOnce(Object.assign(new Error("pool exhausted for +919876543210"), { code: "53300" }));
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
+    const r = await runTurn(c.id, { backend: new FakeBackend([ghatkoparStep]) });
+    expect(r.kind).toBe("ok");
+    expect(audit).toHaveBeenCalledTimes(2);
+    const [m] = await outbound(c.id);
+    expect(m.content).toContain("+91 70000 00001");
+    const t = await lastTurn(c.id);
+    expect([t.status, Object.keys(t.handles as object).length]).toEqual(["ok", 1]);
+    expect(warn).toHaveBeenCalledWith({ conversationId: c.id, errorClass: "Error", code: "53300" }, "turn audit not recorded before the send");
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("9876543210");
   });
 
   it("writes the turn's handles and tool calls before the send, so a crash after it loses neither", async () => {

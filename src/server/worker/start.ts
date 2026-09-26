@@ -30,6 +30,25 @@ const SWEEP_FAILED_TURN_CAP = 3;
 export const GRACEFUL_STOP_MS = TURN_BUDGET_MS + SEND_TIMEOUT_MS + 30_000;
 
 /**
+ * How long a stop waits for a resend pass to finish the send it had started: that send's own timeout plus a margin for
+ * its bookkeeping, counted from the start of the stop, alongside the wait for in-flight turns. A send still pending
+ * then (a fetch that ignores its abort signal) is left behind: its row stays "sending", and the next worker's sweep
+ * resends it after 2 minutes.
+ */
+export const RESEND_STOP_WAIT_MS = SEND_TIMEOUT_MS + 5_000;
+
+/** Resolves once `pending` settles or `ms` pass, whichever is first; never rejects. */
+async function settledWithin(pending: Promise<unknown> | undefined, ms: number): Promise<void> {
+  if (!pending) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([pending.catch(() => undefined), new Promise<void>((resolve) => { timer = setTimeout(resolve, ms); })]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Backstop for turns the queue never ran: a message that landed on a debounce-slot boundary, or an
  * enqueue that failed after the webhook stored the message. Enqueues an immediate turn, longest-waiting
  * first, for every agent-mode conversation with a reporter message unanswered for over 15 s. So that a
@@ -88,7 +107,9 @@ export async function sweepUnanswered(): Promise<number> {
   return enqueued;
 }
 
-export async function startWorker(opts: { concurrency?: number; heartbeatMs?: number; sweepMs?: number } = {}) {
+export async function startWorker(
+  opts: { concurrency?: number; heartbeatMs?: number; sweepMs?: number; resendStopWaitMs?: number } = {}
+) {
   const cfg = getConfig();
   // index.ts loads the .env files only after log.ts has created the logger (imports are hoisted).
   log.level = cfg.logLevel;
@@ -128,24 +149,27 @@ export async function startWorker(opts: { concurrency?: number; heartbeatMs?: nu
     heartbeat().catch((err) => log.warn(safeErrorFields(err), "heartbeat failed"));
   }, opts.heartbeatMs ?? 30_000);
 
-  // Every minute: re-queue unanswered messages, then resend replies whose send failed (each guarded on its own).
-  let sweeping: Promise<void> | null = null;
-  const sweep = async () => {
-    try {
-      await sweepUnanswered();
-    } catch (err) {
-      log.warn(safeErrorFields(err), "sweep failed");
-    }
-    try {
-      await resendFailedReplies();
-    } catch (err) {
-      log.warn(safeErrorFields(err), "resend sweep failed");
-    }
-  };
+  // Every minute: re-queue unanswered messages, then resend replies whose send failed (each half guarded on its own).
+  // stop() treats the halves apart: the re-queue half enqueues, so it must end before pg-boss stops; the resend half
+  // is told to stop and finishes only the send it had started.
+  let stopping = false;
+  let sweeping: { requeued: Promise<void>; done: Promise<void> } | null = null;
   const sweepTimer = setInterval(() => {
     if (sweeping) return; // the previous sweep is still running
-    sweeping = sweep().finally(() => {
-      sweeping = null;
+    const requeued = sweepUnanswered().then(
+      () => undefined,
+      (err) => log.warn(safeErrorFields(err), "sweep failed")
+    );
+    const done = requeued
+      .then(() => resendFailedReplies({ shouldStop: () => stopping }))
+      .then(
+        () => undefined,
+        (err) => log.warn(safeErrorFields(err), "resend sweep failed")
+      );
+    const current = { requeued, done };
+    sweeping = current;
+    void done.finally(() => {
+      if (sweeping === current) sweeping = null;
     });
   }, opts.sweepMs ?? 60_000);
 
@@ -154,10 +178,24 @@ export async function startWorker(opts: { concurrency?: number; heartbeatMs?: nu
     async stop() {
       clearInterval(timer);
       clearInterval(sweepTimer);
-      // A sweep still enqueueing after stopBoss would start a fresh pg-boss through getBoss().
-      await sweeping;
+      // First, before anything is awaited: pg-boss's workers stop polling at once, so no turn starts from here. The
+      // turns they are running keep going until stopBoss's deadline below.
+      const offWork = boss.offWork(TURN_QUEUE, { wait: false });
+      // A resend pass under way finishes the send it had started, and starts no other.
+      stopping = true;
+      const current = sweeping;
+      // Counted from now, so it runs alongside the wait for in-flight turns rather than after it.
+      const resent = settledWithin(current?.done, opts.resendStopWaitMs ?? RESEND_STOP_WAIT_MS);
+      try {
+        await offWork;
+      } catch (err) {
+        log.warn(safeErrorFields(err), "worker offWork failed");
+      }
+      // The re-queue half enqueues through getBoss(): after stopBoss, that would start a fresh pg-boss.
+      await current?.requeued;
       // Long enough for an in-flight turn to finish instead of being failed and retried (GRACEFUL_STOP_MS).
       await stopBoss({ timeoutMs: GRACEFUL_STOP_MS });
+      await resent;
     },
   };
 }

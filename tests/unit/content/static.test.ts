@@ -128,7 +128,8 @@ describe("numbers in fields not named for a phone (bank, UPI, IFSC)", () => {
       donate: {
         en: {
           summary: "Give through the website.", bank: "A/c 50100123456789, IFSC HDFC0001234", upi: "9876543210@upi",
-          helpline_number: "+91 70000 00011",
+          helpline_number: "+91 70000 00011", bank_account_number: "50100123456789", upi_number: "9876543210",
+          ifsc_number: "0001234567", account_contact_number: "7000000014",
         },
       },
       volunteer: { en: { whatsapp: "7000000012", mobile_no: "70000 00013", contact_phone: "+91 70000 00009", contact_email: "v@example.org" } },
@@ -146,7 +147,8 @@ describe("numbers in fields not named for a phone (bank, UPI, IFSC)", () => {
     });
     expect(fresh.getStaticInfo("donate", "en")).toEqual({
       summary: "Give through the website.", bank: "A/c 50100123456789, IFSC HDFC0001234", upi: "9876543210@upi",
-      helpline_number: "{{PHONE:donate_helpline_number}}",
+      helpline_number: "{{PHONE:donate_helpline_number}}", bank_account_number: "50100123456789", upi_number: "9876543210",
+      ifsc_number: "0001234567", account_contact_number: "7000000014",
     });
   });
 

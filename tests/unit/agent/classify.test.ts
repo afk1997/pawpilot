@@ -236,6 +236,12 @@ describe("observe", () => {
     }
     expect(classifyOutcome(runWith(ALLOW_EXTRA, success(good)))).not.toHaveProperty("extraUsage");
   });
+  it("says a failed call ran on extra usage, under either policy", () => {
+    const overage = limit({ status: "rejected", overageStatus: "allowed", resetsAt: 1_800_000_000 });
+    expect(classifyOutcome(run(overage))).toMatchObject({ ok: false, kind: "LIMITED", extraUsage: true });
+    expect(classifyOutcome(runWith(ALLOW_EXTRA, overage, success({ reply: "" })))).toMatchObject({ ok: false, kind: "INVALID_OUTPUT", extraUsage: true });
+    expect(classifyOutcome(run(limit({ status: "rejected" })))).not.toHaveProperty("extraUsage");
+  });
   it("with extra usage not allowed, keeps the reply extra usage already paid for, with a pause until the reset", () => {
     for (const overageStatus of ["allowed", "allowed_warning"]) {
       const obs = run(limit({ status: "rejected", overageStatus, resetsAt: 1_800_000_000 }), success(good));

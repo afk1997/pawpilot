@@ -3,13 +3,17 @@ import { getDb } from "../db/client";
 import { conversations, messages, type Conversation, type Message } from "../db/schema";
 import { sendInteractiveList, sendText, type InteractiveListSpec, type InteraktResult } from "../interakt/client";
 import { recordEvent, stripNul, stripNulOrNull } from "../inbound/store";
-import { flagConversation, markAnswered, recordSendResult, updateConversation } from "./persist";
+import { clearDeliveryFailure, flagConversation, markAnswered, recordSendResult, updateConversation } from "./persist";
 import { recordDelivered } from "./pause";
 import type { MessageOrigin } from "../types";
 import { log, safeErrorFields } from "../log";
 
 /** Every send attempt a reply may get: the first, then two from the resend sweep. */
 export const MAX_DELIVERY_ATTEMPTS = 3;
+/** The most replies one resend pass takes; the next pass takes the rest. */
+export const RESEND_MAX_ROWS = 20;
+/** A resend pass starts no new reply after this long, so the minute sweep never runs into the next one. */
+export const RESEND_PASS_MS = 30_000;
 
 /** A reply to deliver. `answers`: the reporter messages it answers, marked with `turnId` before the send. */
 interface OutboundInput {
@@ -49,26 +53,29 @@ async function writeAhead(conversation: Conversation, input: OutboundInput & { k
 }
 
 /**
+ * A failed send made visible to the dispatcher: an outbound_failed event with Interakt's reason (events only, never
+ * logs; recording it is best effort and never stops the flag) and a send_failed flag.
+ */
+async function reportFailedSend(conversationId: string, messageId: string, send: InteraktResult): Promise<void> {
+  try {
+    await recordEvent("outbound_failed", { status: send.status, error: send.error ?? null, messageId }, conversationId);
+  } catch {
+    log.warn({ conversationId }, "outbound_failed event not recorded");
+  }
+  await flagConversation(conversationId, "send_failed");
+}
+
+/**
  * The stored reply takes the send's outcome and the conversation's last outbound time moves. An accepted send is
- * recorded for the health check; a failed one is made visible to the dispatcher: an outbound_failed event and a
- * send_failed flag.
+ * recorded for the health check; a failed one is reported (reportFailedSend).
  */
 async function afterSend(conversation: Conversation, row: Message, send: InteraktResult, kind?: "text"): Promise<Message> {
   // Status only: send.error can carry Interakt's response body (a phone number, say); it is kept on messages.error.
   if (!send.ok) log.warn({ conversationId: conversation.id, status: send.status }, "outbound failed");
   const updated = await recordSendResult(row.id, send, kind);
   await updateConversation(conversation.id, { lastOutboundAt: new Date() });
-  if (send.ok) {
-    await recordDelivered();
-    return updated;
-  }
-  // Interakt's reason goes to events, never to logs; failing to record it must not stop the flag.
-  try {
-    await recordEvent("outbound_failed", { status: send.status, error: send.error ?? null, messageId: row.id }, conversation.id);
-  } catch {
-    log.warn({ conversationId: conversation.id }, "outbound_failed event not recorded");
-  }
-  await flagConversation(conversation.id, "send_failed");
+  if (send.ok) await recordDelivered();
+  else await reportFailedSend(conversation.id, row.id, send);
   return updated;
 }
 
@@ -111,6 +118,8 @@ export async function deliverList(
 }
 
 /** An Interakt status worth another attempt: no response (network error, timeout), rate limited, or a server error. */
+const isRetryableStatus = (status: number): boolean => status === 0 || status === 429 || status >= 500;
+/** isRetryableStatus, as the resend query reads the stored status. */
 const RETRYABLE_STATUS = sql`(${messages.deliveryHttpStatus} = 0 or ${messages.deliveryHttpStatus} = 429 or ${messages.deliveryHttpStatus} >= 500)`;
 
 /**
@@ -118,12 +127,21 @@ const RETRYABLE_STATUS = sql`(${messages.deliveryHttpStatus} = 0 or ${messages.d
  * MAX_DELIVERY_ATTEMPTS attempts is sent again from its stored text when its send failed with a retryable status, or
  * when it was left "sending" for over 2 minutes (a crash or a failed write after the send; its outcome is unknown, so
  * it is treated as failed, at the risk of a duplicate of the same text). The model never runs again, so the reporter
- * never gets a different reply. Each attempt is claimed first (its attempt count must still be the one read) and
- * marked "sending", then the row takes the outcome and an outbound_retry event records the attempt, Interakt's reason
- * included (events only, never logs). One row's failure is logged and the others still go. One worker process runs
- * the sweep; a second one could resend a reply another is still resending. Returns how many replies it tried.
+ * never gets a different reply. Each attempt is claimed first (the row's attempt count and status must still be the
+ * ones read, so a first send that landed meanwhile is never repeated) and marked "sending", then the row takes the
+ * outcome and an outbound_retry event records the attempt, Interakt's reason included (events only, never logs). A
+ * resend that goes through clears its turn's delivery_failed; one that fails for good (its last attempt, or a status
+ * not worth another) is reported like a failed first send. One row's failure is logged and the others still go.
+ *
+ * A pass takes at most RESEND_MAX_ROWS replies and starts none after RESEND_PASS_MS (`nowMs`, for tests), nor once
+ * `shouldStop` says so: a pass under way when the worker stops finishes the send it had started, and no other. One
+ * worker process runs the sweep; a second one could resend a reply another is still resending. Returns how many
+ * replies it tried.
  */
-export async function resendFailedReplies(): Promise<number> {
+export async function resendFailedReplies(opts: { shouldStop?: () => boolean; nowMs?: () => number } = {}): Promise<number> {
+  const shouldStop = opts.shouldStop ?? (() => false);
+  const nowMs = opts.nowMs ?? Date.now;
+  const started = nowMs();
   const db = getDb();
   const due = await db
     .select({ message: messages, phone: conversations.phone })
@@ -141,29 +159,46 @@ export async function resendFailedReplies(): Promise<number> {
         gt(messages.createdAt, sql`now() - interval '10 minutes'`)
       )
     )
-    .orderBy(asc(messages.createdAt));
+    .orderBy(asc(messages.createdAt))
+    .limit(RESEND_MAX_ROWS);
   let tried = 0;
   for (const { message, phone } of due) {
+    if (shouldStop() || nowMs() - started >= RESEND_PASS_MS) break;
     const conversationId = message.conversationId;
     const attempt = message.deliveryAttempts + 1;
+    // The query selects failed and sending rows only.
+    if (message.deliveryStatus === null) continue;
     try {
       const [claimed] = await db
         .update(messages)
         .set({ deliveryAttempts: attempt, deliveryStatus: "sending" })
-        .where(and(eq(messages.id, message.id), eq(messages.deliveryAttempts, message.deliveryAttempts)))
+        .where(
+          and(
+            eq(messages.id, message.id),
+            eq(messages.deliveryAttempts, message.deliveryAttempts),
+            eq(messages.deliveryStatus, message.deliveryStatus)
+          )
+        )
         .returning({ id: messages.id });
       if (!claimed) continue;
       tried += 1;
       const send = await sendText(phone, message.content);
       await recordSendResult(message.id, send, "text");
       await updateConversation(conversationId, { lastOutboundAt: new Date() });
-      if (send.ok) await recordDelivered();
-      if (send.ok) log.info({ conversationId, attempt }, "reply resent");
-      else log.warn({ conversationId, attempt, status: send.status }, "resend failed");
+      if (send.ok) {
+        await recordDelivered();
+        if (message.turnId) await clearDeliveryFailure(message.turnId);
+        log.info({ conversationId, attempt }, "reply resent");
+      } else {
+        log.warn({ conversationId, attempt, status: send.status }, "resend failed");
+      }
       try {
         await recordEvent("outbound_retry", { messageId: message.id, attempt, ok: send.ok, status: send.status, error: send.error ?? null }, conversationId);
       } catch {
         log.warn({ conversationId }, "outbound_retry event not recorded");
+      }
+      if (!send.ok && (attempt >= MAX_DELIVERY_ATTEMPTS || !isRetryableStatus(send.status))) {
+        await reportFailedSend(conversationId, message.id, send);
       }
     } catch (err) {
       log.warn({ conversationId, attempt, ...safeErrorFields(err) }, "resend errored");

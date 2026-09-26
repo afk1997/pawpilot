@@ -31,6 +31,9 @@ const compactPhone = (phone: string): string => phone.replace(/[\s-]/g, "");
  * removes it before the model sees it, so an account number, IFSC or digit UPI id never goes out as a phone number.
  */
 const PHONE_FIELD_RE = /phone|contact|mobile|helpline|whatsapp|number/i;
+/** A field named for a bank or UPI detail is never a phone, even one also named for a number ("bank_account_number"). */
+const NOT_PHONE_FIELD_RE = /account|ifsc|upi|bank/i;
+const isPhoneField = (name: string): boolean => PHONE_FIELD_RE.test(name) && !NOT_PHONE_FIELD_RE.test(name);
 
 /**
  * Swaps the phone numbers in one topic's strings for {{PHONE:<key>}} tokens and records them, as ASCII
@@ -74,7 +77,7 @@ function phoneTokenizer(topic: string, phones: Record<string, string>) {
 
 /**
  * Tokenizes the phone numbers of every topic in every language once, at load, so the registry is complete before the
- * first lookup: in donate and volunteer only the fields PHONE_FIELD_RE names (the rest pass through, for the tool
+ * first lookup: in donate and volunteer only the fields isPhoneField names (the rest pass through, for the tool
  * boundary's scrub); in the free text of about, human_emergency and the FAQ, every 7+ digit run (so only phone
  * numbers belong there). English is scanned first, so it sets the numbering. Only scanned topics are copied into the
  * result, so a topic missing here comes back empty rather than raw.
@@ -93,7 +96,7 @@ function tokenizeContent(source: Record<string, unknown>): { content: Record<str
       out[lang] = Object.fromEntries(
         Object.entries(fields).map(([name, value]) => [
           name,
-          typeof value === "string" && PHONE_FIELD_RE.test(name) ? t.field(value, name, lang) : value,
+          typeof value === "string" && isPhoneField(name) ? t.field(value, name, lang) : value,
         ]),
       );
     }

@@ -209,16 +209,19 @@ export async function runClaudeTurn(input: {
       }
       backendCalls += 1;
       unrecorded.push(...unrecordedToolUses(r.toolUses ?? [], ctx.calls.slice(before)));
+      // A call extra usage paid for, whether or not it then failed: one event per turn.
+      if (r.extraUsage && !extraUsage) {
+        extraUsage = true;
+        await note(conversationId, "claude_extra_usage", { turnId: turn.id });
+      }
       if (r.ok) {
         usage = sumUsage(usage, r.usage);
-        if (r.extraUsage && !extraUsage) {
-          extraUsage = true;
-          await note(conversationId, "claude_extra_usage", { turnId: turn.id });
-        }
         if (r.pauseUntil !== undefined) limitPause = { until: r.pauseUntil, extraUsage: r.extraUsage === true };
       } else if (r.kind === "LIMITED") {
         await pauseClaude(r.retryAfter ?? new Date(now().getTime() + PAUSE_FALLBACK_MS), "LIMITED", now());
-        await note(conversationId, "claude_limited", { turnId: turn.id, message: r.message, retryAfter: r.retryAfter });
+        await note(conversationId, "claude_limited", {
+          turnId: turn.id, message: r.message, retryAfter: r.retryAfter, extraUsage: r.extraUsage === true,
+        });
       } else if (r.kind === "AUTH") {
         await pauseClaude(new Date(now().getTime() + PAUSE_FALLBACK_MS), "AUTH", now());
         await note(conversationId, "claude_auth_error", { turnId: turn.id, message: r.message });
@@ -317,9 +320,14 @@ export async function runClaudeTurn(input: {
   if (g.staleHandles.length > 0) await note(conversationId, "stale_handle", { turnId: turn.id, handles: g.staleHandles });
 
   // The audit goes on the turn row before the send as well: a failure after it must not lose the handles the reply
-  // carries (a later turn resolves them) or the tool calls. The full record follows the send.
+  // carries (a later turn resolves them) or the tool calls. Best effort: failing to write it must not keep the reply
+  // from the reporter. The full record follows the send.
   const { toolCalls, handles } = audit();
-  await finishTurn(turn.id, { toolCalls, handles });
+  try {
+    await finishTurn(turn.id, { toolCalls, handles });
+  } catch (e) {
+    log.warn({ conversationId, ...safeErrorFields(e) }, "turn audit not recorded before the send");
+  }
   // The burst is marked answered with the reply, before the send: a retry after a crash finds nothing to answer again.
   const message = await deliverText(conversation, {
     text: g.text, template: g.template, origin: "agent", turnId: turn.id, answers: pending.map((m) => m.id),

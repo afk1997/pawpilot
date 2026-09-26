@@ -7,6 +7,11 @@ import { PGBOSS_SCHEMA, TURN_QUEUE } from "./queue/boss";
 import { log, safeErrorFields } from "./log";
 
 const HEARTBEAT_MAX_S = 120;
+/**
+ * A heartbeat at most this far ahead of this clock is no skew: one the worker wrote while this check ran reads
+ * slightly ahead of the `now` taken at its start, and two clocks a second or two apart are normal.
+ */
+const CLOCK_SKEW_TOLERANCE_S = 5;
 /** This many of the latest finished sends, all failed and all within FAILED_SENDS_WINDOW_MS, is a delivery outage. */
 const FAILED_SENDS = 5;
 const FAILED_SENDS_WINDOW_MS = 15 * 60_000;
@@ -79,7 +84,10 @@ export async function computeHealth(now: Date = new Date()) {
     config: false,
     db: false,
     workerHeartbeatAgeS: null as number | null,
-    /** The worker's last heartbeat lies ahead of this clock: two clocks disagree, and a stalled worker could look fresh. */
+    /**
+     * The worker's last heartbeat lies over CLOCK_SKEW_TOLERANCE_S ahead of this clock: two clocks disagree, and a
+     * stalled worker could look fresh.
+     */
     clockSkew: false,
     lastOkTurnAgeS: null as number | null,
     lastDeliveredAgeS: null as number | null,
@@ -111,7 +119,7 @@ export async function computeHealth(now: Date = new Date()) {
     try {
       const s = await getWorkerState();
       checks.workerHeartbeatAgeS = s.lastHeartbeatAt ? Math.round((now.getTime() - s.lastHeartbeatAt.getTime()) / 1000) : null;
-      checks.clockSkew = checks.workerHeartbeatAgeS !== null && checks.workerHeartbeatAgeS < 0;
+      checks.clockSkew = checks.workerHeartbeatAgeS !== null && checks.workerHeartbeatAgeS < -CLOCK_SKEW_TOLERANCE_S;
       checks.lastOkTurnAgeS = s.lastOkTurnAt ? Math.round((now.getTime() - s.lastOkTurnAt.getTime()) / 1000) : null;
       checks.lastDeliveredAgeS = s.lastDeliveredAt ? Math.round((now.getTime() - s.lastDeliveredAt.getTime()) / 1000) : null;
       checks.claudePausedUntil = s.claudePausedUntil && s.claudePausedUntil > now ? s.claudePausedUntil.toISOString() : null;

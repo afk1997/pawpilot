@@ -64,6 +64,8 @@ export type TurnResult =
       toolUses?: ObservedToolUse[];
       /** The call ran out its timeout and was aborted: a retry would spend that time again, so none is made. */
       timedOut?: boolean;
+      /** The plan's limit was reached and extra usage (overage) paid for the failed call. */
+      extraUsage?: boolean;
     };
 
 export interface LLMBackend {
