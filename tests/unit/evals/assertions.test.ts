@@ -24,6 +24,8 @@ describe("checkStep", () => {
   it("fails a step whose turn fell back unless the step expects the fallback", () => {
     expect(checkStep({ number_of: ["Mumbai - Ghatkopar"] }, actual("+91 70000 00001", { turnStatus: "fallback" }))).toEqual(["turn_status: the turn fell back, which the step does not expect"]);
     expect(checkStep({ turn_status: "fallback" }, actual("+91 70000 00001", { turnStatus: "fallback" }))).toEqual([]);
+    expect(checkStep({ turn_status: "failed" }, actual("+91 70000 00001", { turnStatus: "failed" }))).toEqual([]);
+    expect(checkStep({ turn_status: "failed" }, actual("+91 70000 00001"))).toEqual(["turn_status: expected failed, got ok"]);
     expect(checkStep({ kind: "fallback" }, actual("+91 70000 00001", { turnStatus: "fallback", outcomeKind: "fallback" }))).toEqual([]);
   });
 });

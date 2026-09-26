@@ -5,6 +5,8 @@ import { stopBoss, getBoss, TURN_QUEUE } from "@/server/queue/boss";
 import { signAdminSession, ADMIN_COOKIE } from "@/server/admin/auth";
 import { getDb } from "@/server/db/client";
 import { messages } from "@/server/db/schema";
+import * as queries from "@/server/admin/queries";
+import * as store from "@/server/inbound/store";
 import { log } from "@/server/log";
 import { GET as list, POST as create } from "@/app/api/test-chat/conversations/route";
 import { GET as detail } from "@/app/api/test-chat/conversations/[id]/route";
@@ -147,6 +149,42 @@ describe("test-chat routes", () => {
     } finally {
       enqueue.mockRestore();
       logged.mockRestore();
+    }
+  });
+
+  it("answers 503 and logs only the error's class and code when a query or a write fails", async () => {
+    const { id } = await createConversation({ isTest: true });
+    // A failed query's message quotes its parameters: here a phone.
+    const failure = () =>
+      Object.assign(new Error("Failed query: … params: +919876500077"), { cause: Object.assign(new Error("terminating connection"), { code: "57P01" }) });
+    vi.spyOn(queries, "listConversations").mockRejectedValueOnce(failure());
+    vi.spyOn(queries, "getConversationDetail").mockRejectedValueOnce(failure());
+    vi.spyOn(store, "storeReporterMessage").mockRejectedValueOnce(failure());
+    vi.spyOn(getDb(), "insert").mockImplementationOnce(() => {
+      throw failure();
+    });
+    const logs = (["error", "warn", "info", "debug"] as const).map((level) => vi.spyOn(log, level).mockImplementation(() => undefined));
+    try {
+      const answers = [
+        await list(req(LIST_URL)),
+        await detail(req(`${LIST_URL}/${id}`), params(id)),
+        await create(req(LIST_URL, { method: "POST", body: JSON.stringify({ language: "hi" }) })),
+        await send(req(messagesUrl(id), { method: "POST", body: JSON.stringify({ content: "ghatkopar" }) }), params(id)),
+      ];
+      for (const res of answers) {
+        expect(res.status).toBe(503);
+        expect(await res.json()).toEqual({ error: "unavailable" });
+      }
+      const fields = { errorClass: "Error", code: "57P01" };
+      expect(logs[0].mock.calls).toEqual([
+        [fields, "test chat query failed"],
+        [fields, "test chat query failed"],
+        [fields, "test chat create failed"],
+        [fields, "test chat message not stored"],
+      ]);
+      expect(JSON.stringify(logs.map((spy) => spy.mock.calls))).not.toMatch(/9876500077/);
+    } finally {
+      vi.restoreAllMocks();
     }
   });
 

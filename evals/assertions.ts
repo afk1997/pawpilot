@@ -13,7 +13,7 @@ export interface StepExpect {
   number_of?: string[];
   no_foreign_digits?: boolean;
   no_dispatch?: boolean;
-  turn_status?: "ok" | "fallback";
+  turn_status?: "ok" | "fallback" | "failed";
   flagged?: boolean;
   message_count?: number;
   kind?: string;

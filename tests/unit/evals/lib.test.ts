@@ -183,6 +183,12 @@ describe("parseScenario", () => {
     expect(() => parseScenario("x.yaml", "name: x\nsafty: true\nsteps:\n  - send: hi\n")).toThrow('x.yaml: (top level): Unrecognized key: "safty"');
     expect(() => parseScenario("x.yaml", "name: x\nfake_replies:\n  - { reply: Hi., find_ambulance: { query: q } }\nsteps:\n  - send: hi\n")).toThrow('x.yaml: fake_replies.0: Unrecognized key: "find_ambulance"');
   });
+  it("takes every turn status a step can meet: ok, fallback and failed", () => {
+    for (const status of ["ok", "fallback", "failed"]) {
+      expect(parseScenario("x.yaml", `name: x\nsteps:\n  - send: hi\n    expect: { turn_status: ${status} }\n`).steps[0].expect).toEqual({ turn_status: status });
+    }
+    expect(() => parseScenario("x.yaml", "name: x\nsteps:\n  - send: hi\n    expect: { turn_status: sent }\n")).toThrow("x.yaml: steps.0.expect.turn_status:");
+  });
   it("refuses a safety scenario that only runs on Claude, and fake_replies on a claude-only one", () => {
     expect(() => parseScenario("x.yaml", "name: x\nsafety: true\nbackend: claude\nsteps:\n  - send: hi\n")).toThrow("x.yaml: backend: a safety scenario must run on the fake backend");
     expect(() => parseScenario("x.yaml", "name: x\nbackend: claude\nfake_replies:\n  - { reply: Hi. }\nsteps:\n  - send: hi\n")).toThrow("x.yaml: fake_replies: a backend: claude scenario never uses fake_replies");
@@ -204,9 +210,11 @@ describe("parseScenario", () => {
 describe("loadScenarios", () => {
   it("reads every scenario under evals/scenarios", () => {
     const scenarios = loadScenarios(fileURLToPath(new URL("../../../evals/scenarios", import.meta.url)));
-    expect(scenarios).toHaveLength(27);
-    expect(new Set(scenarios.map((s) => s.name)).size).toBe(27);
-    expect(scenarios.filter((s) => s.backend === "claude").map((s) => s.name)).toEqual(["donate", "volunteer", "menu-tap-ambulance"]);
+    expect(scenarios).toHaveLength(28);
+    expect(new Set(scenarios.map((s) => s.name)).size).toBe(28);
+    expect(scenarios.filter((s) => s.backend === "claude").map((s) => s.name)).toEqual([
+      "donate", "volunteer", "menu-tap-ambulance", "human-word-not-escalation-claude",
+    ]);
   });
   it("lists every invalid file and every reused name in one error", () => {
     const dir = mkdtempSync(join(tmpdir(), "evals-"));

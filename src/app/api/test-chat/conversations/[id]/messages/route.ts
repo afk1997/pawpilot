@@ -24,9 +24,17 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   if (!content) return Response.json({ error: "content required" }, { status: 400 });
   if (content.length > MAX_CONTENT_CHARS) return Response.json({ error: `content over ${MAX_CONTENT_CHARS} characters` }, { status: 413 });
   if (!UUID_RE.test(id)) return Response.json({ error: "not found" }, { status: 404 });
-  const [c] = await getDb().select().from(conversations).where(eq(conversations.id, id));
-  if (!c || !c.isTest) return Response.json({ error: "not found" }, { status: 404 });
-  const stored = await storeReporterMessage(c.id, { kind: "text", content });
+  let stored: Awaited<ReturnType<typeof storeReporterMessage>>;
+  let c: typeof conversations.$inferSelect | undefined;
+  try {
+    [c] = await getDb().select().from(conversations).where(eq(conversations.id, id));
+    if (!c || !c.isTest) return Response.json({ error: "not found" }, { status: 404 });
+    stored = await storeReporterMessage(c.id, { kind: "text", content });
+  } catch (e) {
+    // Nothing was stored. A failed query's own text can quote its parameters (the message), so only class and code.
+    log.error({ ...safeErrorFields(e) }, "test chat message not stored");
+    return Response.json({ error: "unavailable" }, { status: 503 });
+  }
   try {
     await getDb().update(conversations).set({ lastInboundAt: new Date(), updatedAt: new Date() }).where(eq(conversations.id, c.id));
     await enqueueTurn(c.id, { immediate: true });

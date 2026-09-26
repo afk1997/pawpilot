@@ -1,0 +1,7 @@
+# The model's judgement: "human" in a report about an injured animal is not a request for a person, so the
+# conversation is not flagged (11-human-request covers the request that is). Needs the real model.
+name: human-word-not-escalation-claude
+backend: claude
+steps:
+  - send: "a human hit the dog in Chembur, it is bleeding"
+    expect: { intent: ambulance, number_of: ["Mumbai - Chembur"], flagged: false, no_foreign_digits: true, no_dispatch: true }

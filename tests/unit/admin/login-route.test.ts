@@ -67,6 +67,18 @@ describe("POST /api/admin/login: request hygiene and the global backstop", () =>
     expect(refused.headers.get("retry-after")).toBe("900");
   });
 
+  it("treats a body that fails mid-read as a wrong password and counts it", async () => {
+    const unreadable = () =>
+      new Request("http://localhost/api/admin/login", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-forwarded-for": "5.5.5.5" },
+        body: new ReadableStream<Uint8Array>({ pull: (controller) => controller.error(new Error("connection reset")) }),
+        duplex: "half",
+      } as RequestInit);
+    for (let i = 0; i < 5; i++) expect((await POST(unreadable())).status).toBe(401);
+    expect((await post("test-admin", "5.5.5.5")).status).toBe(429);
+  });
+
   it("counts concurrent attempts one at a time", async () => {
     const statuses = (await Promise.all(Array.from({ length: 12 }, () => post("wrong", "6.6.6.6")))).map((r) => r.status);
     expect(statuses.sort((a, b) => a - b)).toEqual([...Array(5).fill(401), ...Array(7).fill(429)]);

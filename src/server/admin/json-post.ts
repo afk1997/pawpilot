@@ -60,16 +60,22 @@ function objectFrom(body: string): Record<string, unknown> | null {
 /**
  * The fields of an admin JSON post, or the refusal to return instead: 403 when another site made the request, 415 when
  * the body is not declared as JSON, 413 when it is over `maxBytes` (default 4 KB; a route taking longer text passes its
- * own), 400 when it cannot be read or is not a JSON object.
+ * own), 400 when it cannot be read or is not a JSON object. With `unusableBodyAsEmpty`, such a body comes back as no
+ * fields instead of the 400, for a route that answers it as it would a request missing them (the login: a wrong
+ * password, counted by its limiter). A parse error is never surfaced: it quotes its input.
  */
 export async function readAdminJsonPost(
   request: Request,
-  { maxBytes = DEFAULT_MAX_BODY_BYTES }: { maxBytes?: number } = {}
+  { maxBytes = DEFAULT_MAX_BODY_BYTES, unusableBodyAsEmpty = false }: { maxBytes?: number; unusableBodyAsEmpty?: boolean } = {}
 ): Promise<Record<string, unknown> | Response> {
   if (isCrossSite(request)) return Response.json({ error: "cross-site request refused" }, { status: 403 });
   if (!isJson(request)) return Response.json({ error: "content-type must be application/json" }, { status: 415 });
   const body = await readCappedBody(request, maxBytes);
   if (body === TOO_LARGE) return Response.json({ error: "request too large" }, { status: 413 });
-  if (body === UNREADABLE) return Response.json({ error: "body could not be read" }, { status: 400 });
-  return objectFrom(body) ?? Response.json({ error: "body must be a JSON object" }, { status: 400 });
+  const fields = body === UNREADABLE ? null : objectFrom(body);
+  if (fields !== null) return fields;
+  if (unusableBodyAsEmpty) return {};
+  return body === UNREADABLE
+    ? Response.json({ error: "body could not be read" }, { status: 400 })
+    : Response.json({ error: "body must be a JSON object" }, { status: 400 });
 }

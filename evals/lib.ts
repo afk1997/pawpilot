@@ -33,7 +33,7 @@ const StepExpectSchema: z.ZodType<StepExpect> = z.strictObject({
   number_of: z.array(z.string()).optional(),
   no_foreign_digits: z.boolean().optional(),
   no_dispatch: z.boolean().optional(),
-  turn_status: z.enum(["ok", "fallback"]).optional(),
+  turn_status: z.enum(["ok", "fallback", "failed"]).optional(),
   flagged: z.boolean().optional(),
   message_count: z.number().int().min(0).optional(),
   kind: z.enum(OUTCOME_KINDS).optional(),
