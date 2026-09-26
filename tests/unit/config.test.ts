@@ -46,6 +46,20 @@ describe("getConfig", () => {
     }
   });
 
+  it("trims the OAuth token, and reads one that is only whitespace as unset", () => {
+    try {
+      vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "  sk-ant-oat01-test\n");
+      resetConfigForTests();
+      expect(getConfig().claude.oauthToken).toBe("sk-ant-oat01-test");
+      vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", " \t\n");
+      resetConfigForTests();
+      expect(getConfig().claude.oauthToken).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+      resetConfigForTests();
+    }
+  });
+
   it("caps the worker concurrency at 8", () => {
     const configured = process.env.WORKER_CONCURRENCY;
     try {

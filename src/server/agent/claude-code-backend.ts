@@ -22,6 +22,8 @@ export interface StreamObservation {
   usageWarning?: SDKRateLimitInfo;
   /** An init message arrived. */
   sawInit?: boolean;
+  /** An assistant frame ended with stop_reason "refusal": the model refused this turn's content. */
+  refusal?: boolean;
   /** What the init message got wrong (foreign or missing tools, and the server's status); absent when it matched. */
   initMismatch?: string;
 }
@@ -49,7 +51,7 @@ const AUTH_ERRORS = new Set([
 /** Error text that means a usage limit, and error text that means a login problem; whole phrases only. */
 const LIMIT_TEXT_RE = /\b(rate limit|usage limit|weekly limit|too many requests|limit reached|hit your limit)\b/i;
 const AUTH_TEXT_RE = /\b(not logged in|invalid api key|invalid token|authentication(?:_error)?|authenticate|permission_error|unauthorized|401|403)\b/i;
-/** Startup failures only the owner can fix (install, config, login, host); the others may clear on a retry. */
+/** Startup failures only the owner can fix (install, config, login, host); the others are read by their text. */
 const OWNER_STARTUP_FAILURES = new Set<SDKStartupFailureReason>([
   "org_pin_api_key_conflict", "org_pin_mismatch", "managed_settings_invalid", "gateway_signin_required", "gateway_access_denied",
   "proxy_invalid", "temp_dir_unusable", "cwd_unavailable", "shell_tool_missing", "cli_version_too_old", "bypass_root",
@@ -136,6 +138,7 @@ export function observe(msg: SDKMessage, obs: StreamObservation, byId: Map<strin
     }
     case "assistant": {
       if (msg.error) obs.assistantError = msg.error;
+      if (msg.message?.stop_reason === "refusal") obs.refusal = true;
       const content = msg.message?.content;
       if (!Array.isArray(content)) return;
       for (const block of content) {
@@ -171,15 +174,24 @@ function classify(obs: StreamObservation): TurnResult {
   // The turn was aborted at init, before the model ran: nothing else in the observation counts.
   if (obs.initMismatch) return fail("TRANSIENT", `mcp_not_connected: ${obs.initMismatch}`);
   if (obs.rejectedLimit) return fail("LIMITED", "subscription usage limit reached", resetDate(obs.rejectedLimit.resetsAt));
+  const r = obs.result;
   if (obs.assistantError) {
     if (obs.assistantError === "rate_limit") return fail("LIMITED", "assistant error: rate_limit");
-    // CLI 2.1.282 reports a refusal, prompt_too_long and a bad tool history as invalid_request: this turn's problem,
-    // retried with a shorter transcript, never a pause for every conversation.
-    if (obs.assistantError === "invalid_request") return fail("INVALID_OUTPUT", "assistant error: invalid_request");
+    // CLI 2.1.282 reports several causes as invalid_request. Only the turn's own content (a refusal, a prompt too long
+    // for the model) is this turn's problem, retried with a shorter transcript instead of pausing every conversation.
+    // The API status decides next; anything else (a CLI too old, a bad credential header, a plan mismatch) is the owner's.
+    if (obs.assistantError === "invalid_request") {
+      const status = r?.subtype === "success" ? (r.api_error_status ?? null) : null;
+      const ending = r?.terminal_reason;
+      if (status === 401 || status === 403) return fail("AUTH", `assistant error: invalid_request (api status ${status})`);
+      if (status === 429) return fail("LIMITED", `assistant error: invalid_request (api status ${status})`);
+      if (obs.refusal) return fail("INVALID_OUTPUT", "assistant error: invalid_request (refusal)");
+      if (ending === "prompt_too_long" || ending === "blocking_limit") return fail("INVALID_OUTPUT", `assistant error: invalid_request (${ending})`);
+      return fail("AUTH", "assistant error: invalid_request");
+    }
     if (AUTH_ERRORS.has(obs.assistantError)) return fail("AUTH", `assistant error: ${obs.assistantError}`);
     return fail("TRANSIENT", `assistant error: ${obs.assistantError}`);
   }
-  const r = obs.result;
   // The result message is the turn's own verdict. After an error result the child exits non-zero and the SDK throws
   // "Claude Code returned an error result: …", so a throw or an abort decides the class only when no result arrived.
   if (!r) {
@@ -191,11 +203,12 @@ function classify(obs: StreamObservation): TurnResult {
   if (r.subtype !== "success") {
     const text = ("errors" in r ? r.errors : []).join(" | ");
     const reason = r.startup_failure_reason;
-    if (reason) return fail(OWNER_STARTUP_FAILURES.has(reason) ? "AUTH" : "TRANSIENT", `startup failure ${reason}: ${text}`);
+    // An owner-fixable startup failure is AUTH whatever its text says; any other one is read like any error text.
+    if (reason && OWNER_STARTUP_FAILURES.has(reason)) return fail("AUTH", `startup failure ${reason}: ${text}`);
     if (r.subtype === "error_max_structured_output_retries" || r.subtype === "error_max_turns") return fail("INVALID_OUTPUT", `${r.subtype}: ${text}`);
     if (LIMIT_TEXT_RE.test(text)) return fail("LIMITED", text);
     if (AUTH_TEXT_RE.test(text)) return fail("AUTH", text);
-    return fail("TRANSIENT", `${r.subtype}: ${text}`);
+    return fail("TRANSIENT", `${reason ? `startup failure ${reason}` : r.subtype}: ${text}`);
   }
   if (r.is_error) {
     const status = r.api_error_status ?? 0;

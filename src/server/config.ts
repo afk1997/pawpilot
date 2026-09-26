@@ -10,7 +10,8 @@ const envSchema = z.object({
   INTERAKT_WEBHOOK_VERIFY_MODE: z.enum(["hmac", "off"]).default("hmac"),
   INTERAKT_API_BASE: z.string().url().default("https://api.interakt.ai/v1/public/message/"),
   LLM_BACKEND: z.enum(["claude-code", "fake"]).default("claude-code"),
-  CLAUDE_CODE_OAUTH_TOKEN: z.string().optional(),
+  // A token pasted with a trailing newline or spaces would fail to authenticate; one that is only whitespace is unset.
+  CLAUDE_CODE_OAUTH_TOKEN: z.string().optional().transform((v) => v?.trim() || undefined),
   LLM_TOKEN_ISSUED_AT: z.string().optional(),
   LLM_MODEL: z.string().default("claude-sonnet-5"),
   LLM_EFFORT: z.enum(["low", "medium", "high", "xhigh", "max"]).default("medium"),

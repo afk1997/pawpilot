@@ -84,8 +84,21 @@ describe("classifyOutcome", () => {
     expect(classifyOutcome({ ...base, result: err("Request failed with status 403") })).toMatchObject({ ok: false, kind: "AUTH" });
     expect(classifyOutcome({ ...base, result: err("upstream sent 4031 bytes") })).toMatchObject({ ok: false, kind: "TRANSIENT" });
   });
-  it("treats invalid_request as INVALID_OUTPUT, since one refusal must not pause Claude, and model_not_found as AUTH", () => {
-    expect(classifyOutcome({ ...base, assistantError: "invalid_request" })).toMatchObject({ ok: false, kind: "INVALID_OUTPUT" });
+  it("classifies invalid_request by its cause: the turn's own content, the API status, or else the owner's setup", () => {
+    const apiError = (status: number) => success(null, { is_error: true, api_error_status: status }) as never;
+    const ended = (terminal_reason: string) => success(null, { is_error: true, terminal_reason }) as never;
+    const invalid = { ...base, assistantError: "invalid_request" };
+    // The turn's own content: a refusal, or a prompt too long for the model. Retried with a shorter transcript.
+    expect(classifyOutcome({ ...invalid, refusal: true })).toMatchObject({ ok: false, kind: "INVALID_OUTPUT", message: "assistant error: invalid_request (refusal)" });
+    expect(classifyOutcome({ ...invalid, result: ended("prompt_too_long") })).toMatchObject({ ok: false, kind: "INVALID_OUTPUT", message: "assistant error: invalid_request (prompt_too_long)" });
+    expect(classifyOutcome({ ...invalid, result: ended("blocking_limit") })).toMatchObject({ ok: false, kind: "INVALID_OUTPUT" });
+    // The API status says what it was.
+    expect(classifyOutcome({ ...invalid, result: apiError(401) })).toMatchObject({ ok: false, kind: "AUTH", message: "assistant error: invalid_request (api status 401)" });
+    expect(classifyOutcome({ ...invalid, result: apiError(403) })).toMatchObject({ ok: false, kind: "AUTH" });
+    expect(classifyOutcome({ ...invalid, result: apiError(429) })).toMatchObject({ ok: false, kind: "LIMITED" });
+    // Anything else (a CLI too old, a bad credential header, a plan mismatch) needs the owner.
+    expect(classifyOutcome(invalid)).toMatchObject({ ok: false, kind: "AUTH", message: "assistant error: invalid_request" });
+    expect(classifyOutcome({ ...invalid, result: apiError(400) })).toMatchObject({ ok: false, kind: "AUTH" });
     expect(classifyOutcome({ ...base, assistantError: "model_not_found" })).toMatchObject({ ok: false, kind: "AUTH" });
   });
   it("reads wider limit and auth wording", () => {
@@ -96,12 +109,15 @@ describe("classifyOutcome", () => {
     expect(classifyOutcome({ ...base, result: err("Could not authenticate with the API") })).toMatchObject({ ok: false, kind: "AUTH" });
     expect(classifyOutcome({ ...base, result: err('{"type":"permission_error","message":"not allowed"}') })).toMatchObject({ ok: false, kind: "AUTH" });
   });
-  it("classifies a startup failure by its reason: owner-fixable ones as AUTH, the rest as TRANSIENT", () => {
+  it("classifies an owner-fixable startup failure as AUTH by its reason, and reads the text of any other", () => {
     const startup = (startup_failure_reason: string, text: string) =>
       ({ ...success(good), subtype: "error_during_execution", is_error: true, errors: [text], startup_failure_reason }) as never;
     expect(classifyOutcome({ ...base, result: startup("cli_version_too_old", "this CLI is too old; the usage limit applies") })).toMatchObject({ ok: false, kind: "AUTH" });
     expect(classifyOutcome({ ...base, result: startup("proxy_invalid", "HTTPS_PROXY is not a valid URL") })).toMatchObject({ ok: false, kind: "AUTH" });
-    expect(classifyOutcome({ ...base, result: startup("session_held_by_background", "not logged in to this session") })).toMatchObject({ ok: false, kind: "TRANSIENT" });
+    expect(classifyOutcome({ ...base, result: startup("session_held_by_background", "another process holds this session") }))
+      .toMatchObject({ ok: false, kind: "TRANSIENT", message: "startup failure session_held_by_background: another process holds this session" });
+    expect(classifyOutcome({ ...base, result: startup("org_verify_failed", "Not logged in · Please run /login") })).toMatchObject({ ok: false, kind: "AUTH" });
+    expect(classifyOutcome({ ...base, result: startup("remote_settings_required_unavailable", "usage limit reached") })).toMatchObject({ ok: false, kind: "LIMITED" });
   });
   it("fails the turn as mcp_not_connected, with the init check's detail, when that check did not pass", () => {
     expect(classifyOutcome({ ...base, initMismatch: "foreign tools [Bash]; arham status=connected", aborted: true }))
@@ -155,10 +171,16 @@ describe("observe", () => {
     expect(obs.assistantError).toBe("overloaded");
     expect(obs.result).toBe(result);
   });
-  it("reads a model refusal (invalid_request) as INVALID_OUTPUT", () => {
-    const refusal = assistant([{ type: "text", text: "I can't help with that request." }], "invalid_request");
+  it("records a refusal frame, and reads its invalid_request as INVALID_OUTPUT", () => {
+    const refusal = { ...assistant([{ type: "text", text: "I can't help with that request." }], "invalid_request"), message: { role: "assistant", content: [{ type: "text", text: "I can't help with that request." }], stop_reason: "refusal" } };
     const obs = run(init([...allowed, "StructuredOutput"]), refusal, success(null, { is_error: true, result: "API Error: request refused" }));
-    expect(classifyOutcome(obs)).toMatchObject({ ok: false, kind: "INVALID_OUTPUT", message: "assistant error: invalid_request" });
+    expect(obs.refusal).toBe(true);
+    expect(classifyOutcome(obs)).toMatchObject({ ok: false, kind: "INVALID_OUTPUT", message: "assistant error: invalid_request (refusal)" });
+  });
+  it("reads an invalid_request without a refusal frame or a prompt-size cause as the owner's to fix", () => {
+    const obs = run(init([...allowed, "StructuredOutput"]), assistant([{ type: "text", text: "API Error: 400 invalid credential header" }], "invalid_request"));
+    expect(obs.refusal).toBeUndefined();
+    expect(classifyOutcome(obs)).toMatchObject({ ok: false, kind: "AUTH" });
   });
   it("keeps a turn that extra usage covered and says so, and refuses one it did not", () => {
     for (const overageStatus of ["allowed", "allowed_warning"]) {
