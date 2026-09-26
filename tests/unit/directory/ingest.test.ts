@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { parseDirectoryCsv, normalizePhone, parseAreasCovered, isPartnerNameLeak, validateDirectoryRows, type CsvRow } from "@/server/directory/ingest";
+import {
+  parseDirectoryCsv, normalizePhone, parseAreasCovered, isPartnerNameLeak, validateDirectoryRows, isArhamName, type CsvRow,
+} from "@/server/directory/ingest";
 
 describe("ingest helpers", () => {
   it("normalizes phones to E.164", () => {
@@ -16,6 +18,13 @@ describe("ingest helpers", () => {
     expect(isPartnerNameLeak("ALAI Trust", "ALAI Trust")).toBe(true);
     expect(isPartnerNameLeak("K9 Safe Animal", "K9 Safe Animal - Vision Gaushala")).toBe(true);
     expect(isPartnerNameLeak("Ghatkopar", "Arham Yuva Seva Group")).toBe(false);
+    expect(isPartnerNameLeak("Arham Yuva", "arham yuva seva GROUP")).toBe(false);
+  });
+  it("recognises Arham's name whatever its case and spacing, and nothing else", () => {
+    for (const name of ["Arham Yuva Seva Group", "arham yuva seva group", "  ARHAM  Yuva Seva\tGroup ", "ArhamYuva Seva Group"]) {
+      expect(isArhamName(name), name).toBe(true);
+    }
+    for (const name of ["Arham Yuva Sewa Group", "Arham Yuva Seva", "Blue Cross", ""]) expect(isArhamName(name), name).toBe(false);
   });
   it("splits ambulances and clinics", () => {
     const csv = `Type,Name,City,Area,State,Phone,Area of Operation,Category,Operated By
@@ -97,6 +106,31 @@ describe("validateDirectoryRows", () => {
     ).toEqual([
       'Ambulance "SURAT": Name is already used by Ambulance "Surat"',
       'Clinic "surat": Name is already used by Ambulance "Surat"',
+    ]);
+  });
+
+  it("accepts Arham's name in any case and spacing, and rejects a near-miss of it that would label Arham's units a partner's", () => {
+    expect(
+      validateDirectoryRows({
+        ambulances: [row({ "Operated By": "arham yuva seva group" }), row({ Name: "B", "Operated By": " ARHAM  Yuva Seva Group " })],
+        clinics: [clinic({ "Operated By": "Blue Cross" })],
+      })
+    ).toEqual([]);
+    const nearMiss = (name: string) => `Operated By "${name}" is within two letters of "Arham Yuva Seva Group" but is not it: spell Arham's name exactly (a partner's name is shown to reporters as the operator)`;
+    expect(
+      validateDirectoryRows({
+        ambulances: [
+          row({ Name: "A", "Operated By": "Arham Yuva Sewa Group" }),
+          row({ Name: "B", "Operated By": "Arham Yuva Seva Groups" }),
+          row({ Name: "C", "Operated By": "Arham Yuva Seva Grp" }),
+        ],
+        clinics: [clinic({ "Operated By": "arham yuva seva grup" })],
+      })
+    ).toEqual([
+      `Ambulance "A": ${nearMiss("Arham Yuva Sewa Group")}`,
+      `Ambulance "B": ${nearMiss("Arham Yuva Seva Groups")}`,
+      `Ambulance "C": ${nearMiss("Arham Yuva Seva Grp")}`,
+      `Clinic "Arham Clinic Surat": ${nearMiss("arham yuva seva grup")}`,
     ]);
   });
 

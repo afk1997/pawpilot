@@ -130,6 +130,25 @@ describe("directory ingest safeguards", () => {
     expect(await snapshot()).toEqual(before);
   });
 
+  it("reads Arham's name in any case and spacing as Arham, keeping one Arham operator", async () => {
+    const shouted = MALAD.replace("Arham Yuva Seva Group", "  ARHAM  yuva seva GROUP ");
+    expect(await ingestDirectory(rowsOf(GHATKOPAR, shouted))).toMatchObject({ operators: 1, ambulancesInserted: 2 });
+    expect((await loadActiveAmbulances()).map((r) => [r.label, r.operatorName, r.operatorIsArham])).toEqual([
+      ["Mumbai - Ghatkopar", "Arham Yuva Seva Group", true],
+      ["Mumbai - Malad", "Arham Yuva Seva Group", true],
+    ]);
+    expect((await snapshot()).operators).toEqual([{ name: "Arham Yuva Seva Group", isArham: true }]);
+  });
+
+  it("names the units and clinics it deactivated", async () => {
+    await ingestDirectory(rowsOf(GHATKOPAR, MALAD, SURAT_CLINIC));
+    expect(await ingestDirectory(rowsOf(GHATKOPAR))).toMatchObject({
+      ambulancesDeactivated: 1, clinicsDeactivated: 1,
+      deactivatedLabels: { ambulances: ["Mumbai - Malad"], clinics: ["Arham Clinic Surat"] },
+    });
+    expect(await ingestDirectory(rowsOf(GHATKOPAR))).toMatchObject({ deactivatedLabels: { ambulances: [], clinics: [] } });
+  });
+
   it("refuses a CSV with no ambulance rows instead of deactivating the whole directory", async () => {
     await ingestDirectory(rowsOf(GHATKOPAR, MALAD, SURAT_CLINIC));
     const before = await snapshot();

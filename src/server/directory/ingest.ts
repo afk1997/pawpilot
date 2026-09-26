@@ -2,6 +2,7 @@ import { parse } from "csv-parse/sync";
 import { and, eq, notInArray } from "drizzle-orm";
 import { getDb, type Db } from "../db/client";
 import { ambulances, clinics, operators } from "../db/schema";
+import { levenshtein } from "./fuzzy";
 
 export interface CsvRow {
   Type: string; Name: string; City: string; Area: string; State: string; Phone: string;
@@ -14,6 +15,29 @@ export interface DirectoryRows {
 }
 
 export const ARHAM_NAME = "Arham Yuva Seva Group";
+
+/** A name as the Arham comparison reads it: lower case, with no whitespace at all. */
+const nameKey = (name: string): string => (name ?? "").toLowerCase().replace(/\s+/g, "");
+const ARHAM_KEY = nameKey(ARHAM_NAME);
+/** A name this few edits from Arham's without being it is a misspelling of it, not a partner. */
+const ARHAM_NEAR_MISS_EDITS = 2;
+
+/** Arham's own name, whatever its case and spacing ("  ARHAM yuva seva group"). */
+export function isArhamName(name: string): boolean {
+  return nameKey(name) === ARHAM_KEY;
+}
+
+/** Within ARHAM_NEAR_MISS_EDITS of Arham's name but not it: stored as a partner, Arham's units would be labelled a partner's. */
+function isArhamNearMiss(name: string): boolean {
+  const key = nameKey(name);
+  return key !== ARHAM_KEY && levenshtein(key, ARHAM_KEY) <= ARHAM_NEAR_MISS_EDITS;
+}
+
+/** The operator name as stored: Arham's in its one spelling (so Arham has one operator row), any other trimmed. */
+function operatorName(raw: string): string {
+  const name = (raw ?? "").trim();
+  return isArhamName(name) ? ARHAM_NAME : name;
+}
 
 /** Ambulance numbers are drivers' mobiles; a clinic may list a landline. Both must be Indian. */
 const AMBULANCE_PHONE = /^\+91[6-9]\d{9}$/;
@@ -37,7 +61,7 @@ export function parseAreasCovered(value: string, city: string, area: string): st
 
 /** "ALAI Trust" in the Area column is the operator, not a place. */
 export function isPartnerNameLeak(area: string, operator: string): boolean {
-  if (!area || !operator || operator === ARHAM_NAME) return false;
+  if (!area || !operator || isArhamName(operator)) return false;
   const a = area.trim().toLowerCase();
   const o = operator.trim().toLowerCase();
   if (a.length < 4 || o.length < 4) return false;
@@ -77,6 +101,13 @@ export function validateDirectoryRows(rows: DirectoryRows): string[] {
       problems.push(`Phone must be ${expected}, optionally after 0, 91 or +91 (the cell has ${digits} digits)`);
     }
 
+    const operator = (r["Operated By"] ?? "").trim();
+    if (isArhamNearMiss(operator)) {
+      problems.push(
+        `Operated By "${operator}" is within two letters of "${ARHAM_NAME}" but is not it: spell Arham's name exactly (a partner's name is shown to reporters as the operator)`
+      );
+    }
+
     // Labels are the upsert key: a second row with the same Name would overwrite the first.
     if (name) {
       const first = firstRowByName.get(name.toLowerCase());
@@ -102,23 +133,23 @@ export async function ingestDirectory(rows: DirectoryRows, db: Db = getDb()) {
   if (errors.length > 0) throw new Error(`CSV validation failed:\n${errors.map((e) => `- ${e}`).join("\n")}`);
 
   return db.transaction(async (tx) => {
-    const names = new Set([...rows.ambulances, ...rows.clinics].map((r) => r["Operated By"].trim()).filter(Boolean));
+    const names = new Set([...rows.ambulances, ...rows.clinics].map((r) => operatorName(r["Operated By"])).filter(Boolean));
     const operatorIdByName = new Map<string, string>();
     for (const name of names) {
       const [existing] = await tx.select({ id: operators.id }).from(operators).where(eq(operators.name, name));
       if (existing) { operatorIdByName.set(name, existing.id); continue; }
-      const [inserted] = await tx.insert(operators).values({ name, isArham: name === ARHAM_NAME }).returning({ id: operators.id });
+      const [inserted] = await tx.insert(operators).values({ name, isArham: isArhamName(name) }).returning({ id: operators.id });
       operatorIdByName.set(name, inserted.id);
     }
 
     let ambulancesInserted = 0, ambulancesUpdated = 0, clinicsInserted = 0, clinicsUpdated = 0;
 
     for (const r of rows.ambulances) {
-      const operatorName = r["Operated By"].trim();
-      const operatorId = operatorIdByName.get(operatorName);
+      const operator = operatorName(r["Operated By"]);
+      const operatorId = operatorIdByName.get(operator);
       if (!operatorId) throw new Error(`Missing operator for ${r.Name}`);
       const rawArea = (r.Area ?? "").trim();
-      const leak = isPartnerNameLeak(rawArea, operatorName);
+      const leak = isPartnerNameLeak(rawArea, operator);
       const payload = {
         operatorId, label: r.Name.trim(), city: r.City.trim(), area: leak ? null : rawArea || null, state: r.State.trim(),
         phone: normalizePhone(r.Phone), phoneRaw: (r.Phone ?? "").trim(),
@@ -131,7 +162,7 @@ export async function ingestDirectory(rows: DirectoryRows, db: Db = getDb()) {
     }
 
     for (const r of rows.clinics) {
-      const operatorId = operatorIdByName.get(r["Operated By"].trim());
+      const operatorId = operatorIdByName.get(operatorName(r["Operated By"]));
       if (!operatorId) throw new Error(`Missing operator for ${r.Name}`);
       const payload = {
         operatorId, label: r.Name.trim(), city: r.City.replace(/,.*$/, "").trim(), area: (r.Area ?? "").trim() || null,
@@ -147,17 +178,22 @@ export async function ingestDirectory(rows: DirectoryRows, db: Db = getDb()) {
       .update(ambulances)
       .set({ active: false, updatedAt: new Date() })
       .where(and(eq(ambulances.active, true), notInArray(ambulances.label, rows.ambulances.map((r) => r.Name.trim()))))
-      .returning({ id: ambulances.id });
+      .returning({ label: ambulances.label });
     const deactivatedClinics = await tx
       .update(clinics)
       .set({ active: false })
       .where(and(eq(clinics.active, true), notInArray(clinics.label, rows.clinics.map((r) => r.Name.trim()))))
-      .returning({ id: clinics.id });
+      .returning({ label: clinics.label });
 
     return {
       operators: names.size,
       ambulancesInserted, ambulancesUpdated, ambulancesDeactivated: deactivatedAmbulances.length,
       clinicsInserted, clinicsUpdated, clinicsDeactivated: deactivatedClinics.length,
+      // By name, so a unit switched off by a typo in its Type or Name cell is seen in the summary.
+      deactivatedLabels: {
+        ambulances: deactivatedAmbulances.map((r) => r.label).sort(),
+        clinics: deactivatedClinics.map((r) => r.label).sort(),
+      },
     };
   });
 }
