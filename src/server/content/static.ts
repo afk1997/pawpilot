@@ -30,6 +30,13 @@ export function foldDigits(s: string): string {
 const compactPhone = (phone: string): string => phone.replace(/[\s-]/g, "");
 
 /**
+ * A donate or volunteer field whose number is a phone to hand over (contact_phone, helpline_number, whatsapp, …). A
+ * number in any other field (bank, upi, summary) is not tokenized: it passes through, and the tool-boundary scrub
+ * removes it before the model sees it, so an account number, IFSC or digit UPI id never goes out as a phone number.
+ */
+const PHONE_FIELD_RE = /phone|contact|mobile|helpline|whatsapp|number/i;
+
+/**
  * Swaps the phone numbers in one topic's strings for {{PHONE:<key>}} tokens and records them, as ASCII
  * digits, in `phones`. Native numerals are folded before matching; the text around a number is kept as
  * written. A field whose whole value is a number is keyed `<topic>_<field>` (`<topic>_<field>_<lang>` when a
@@ -69,10 +76,11 @@ function phoneTokenizer(topic: string, phones: Record<string, string>) {
 }
 
 /**
- * Tokenizes every string of every topic in every language once, at load, so no lookup can return
- * phone digits and the registry is complete before the first lookup. English is scanned first, so
- * it sets the numbering. Only scanned topics are copied into the result, so a topic missing here
- * comes back empty rather than raw.
+ * Tokenizes the phone numbers of every topic in every language once, at load, so the registry is complete before the
+ * first lookup: in donate and volunteer only the fields PHONE_FIELD_RE names (the rest pass through, for the tool
+ * boundary's scrub); in the free text of about, human_emergency and the FAQ, every 7+ digit run (so only phone
+ * numbers belong there). English is scanned first, so it sets the numbering. Only scanned topics are copied into the
+ * result, so a topic missing here comes back empty rather than raw.
  */
 function tokenizeContent(source: Record<string, unknown>): { content: Record<string, unknown>; phones: Record<string, string> } {
   const phones: Record<string, string> = {};
@@ -86,7 +94,10 @@ function tokenizeContent(source: Record<string, unknown>): { content: Record<str
       const fields = node[lang];
       if (typeof fields !== "object" || fields === null) continue;
       out[lang] = Object.fromEntries(
-        Object.entries(fields).map(([name, value]) => [name, typeof value === "string" ? t.field(value, name, lang) : value]),
+        Object.entries(fields).map(([name, value]) => [
+          name,
+          typeof value === "string" && PHONE_FIELD_RE.test(name) ? t.field(value, name, lang) : value,
+        ]),
       );
     }
     content[topic] = out;

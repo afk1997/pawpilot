@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
 import { getStaticInfo, getStaticPhones, foldDigits, type InfoTopic } from "@/server/content/static";
 import { LANGUAGES } from "@/server/types";
+import { HandleRegistry } from "@/server/agent/handles";
+import type { ToolContext } from "@/server/agent/tools";
 
 describe("getStaticInfo", () => {
   it("returns English donate content without TODO fields", () => {
@@ -82,8 +84,12 @@ describe("phone tokenization over filled content", () => {
     fresh = await loadStaticWith({
       volunteer: {
         en: { summary: "Ride along with an ambulance: call +91 70000 00008.", contact_phone: "+91 70000 00009" },
-        hi: { summary: "एम्बुलेंस के साथ चलने के लिए +91 70000 00008 पर कॉल करें।", contact_phone: "TODO" },
+        hi: { summary: "TODO", contact_phone: "TODO" },
         mr: { summary: "TODO", contact_phone: "+91 70000 00010" },
+      },
+      about: {
+        en: "Ride along with an ambulance: call +91 70000 00008.",
+        hi: "एम्बुलेंस के साथ चलने के लिए +91 70000 00008 पर कॉल करें।",
       },
     });
   });
@@ -91,25 +97,65 @@ describe("phone tokenization over filled content", () => {
 
   it("registers every number at load, before any lookup", () => {
     expect(fresh.getStaticPhones()).toEqual({
-      volunteer_1: "+917000000008",
       volunteer_contact_phone: "+917000000009",
       volunteer_contact_phone_mr: "+917000000010",
+      about_1: "+917000000008",
     });
   });
 
-  it("hands out only tokens and keeps one key per number across languages", () => {
-    expect(fresh.getStaticInfo("volunteer", "en")).toEqual({
-      summary: "Ride along with an ambulance: call {{PHONE:volunteer_1}}.",
-      contact_phone: "{{PHONE:volunteer_contact_phone}}",
-    });
-    expect(fresh.getStaticInfo("volunteer", "hi")).toEqual({
-      summary: "एम्बुलेंस के साथ चलने के लिए {{PHONE:volunteer_1}} पर कॉल करें।",
-      contact_phone: "{{PHONE:volunteer_contact_phone}}",
-    });
+  it("hands out only tokens for phone fields and free text, keeping one key per number across languages", () => {
+    expect(fresh.getStaticInfo("volunteer", "en").contact_phone).toBe("{{PHONE:volunteer_contact_phone}}");
+    expect(fresh.getStaticInfo("volunteer", "hi").contact_phone).toBe("{{PHONE:volunteer_contact_phone}}");
     expect(fresh.getStaticInfo("volunteer", "mr").contact_phone).toBe("{{PHONE:volunteer_contact_phone_mr}}");
+    expect(fresh.getStaticInfo("about", "en").text).toBe("Ride along with an ambulance: call {{PHONE:about_1}}.");
+    expect(fresh.getStaticInfo("about", "hi").text).toBe("एम्बुलेंस के साथ चलने के लिए {{PHONE:about_1}} पर कॉल करें।");
     for (const lang of LANGUAGES) {
-      expect(JSON.stringify(fresh.getStaticInfo("volunteer", lang))).not.toMatch(/\+?\d(?:[\s-]?\d){6,}/);
+      expect(JSON.stringify(fresh.getStaticInfo("about", lang))).not.toMatch(/\+?\d(?:[\s-]?\d){6,}/);
     }
+  });
+
+  it("passes a number in a field not named for a phone through as written, for the tool-boundary scrub to remove", () => {
+    expect(fresh.getStaticInfo("volunteer", "en").summary).toBe("Ride along with an ambulance: call +91 70000 00008.");
+  });
+});
+
+describe("numbers in fields not named for a phone (bank, UPI, IFSC)", () => {
+  let fresh: typeof import("@/server/content/static");
+  let tools: typeof import("@/server/agent/tools");
+
+  beforeAll(async () => {
+    fresh = await loadStaticWith({
+      donate: {
+        en: {
+          summary: "Give through the website.", bank: "A/c 50100123456789, IFSC HDFC0001234", upi: "9876543210@upi",
+          helpline_number: "+91 70000 00011",
+        },
+      },
+      volunteer: { en: { whatsapp: "7000000012", mobile_no: "70000 00013", contact_phone: "+91 70000 00009", contact_email: "v@example.org" } },
+    });
+    tools = await import("@/server/agent/tools");
+  });
+  afterAll(unmockStatic);
+
+  it("tokenizes a number only in a field named for a phone, contact, mobile, helpline, WhatsApp or number", () => {
+    expect(fresh.getStaticPhones()).toEqual({
+      donate_helpline_number: "+917000000011",
+      volunteer_whatsapp: "7000000012",
+      volunteer_mobile_no: "7000000013",
+      volunteer_contact_phone: "+917000000009",
+    });
+    expect(fresh.getStaticInfo("donate", "en")).toEqual({
+      summary: "Give through the website.", bank: "A/c 50100123456789, IFSC HDFC0001234", upi: "9876543210@upi",
+      helpline_number: "{{PHONE:donate_helpline_number}}",
+    });
+  });
+
+  it("never lets a bank account, IFSC or UPI number reach the model: get_info's output holds no 7+-digit run", () => {
+    const ctx: ToolContext = { conversationId: "c", language: "en", registry: new HandleRegistry("c"), calls: [], lastAmbulanceCandidates: null, lastAmbulanceMatch: null };
+    const out = tools.getInfoImpl(ctx, { topic: "donate" });
+    expect(JSON.stringify(out)).not.toMatch(/\d(?:[\s-]?\d){6,}/);
+    expect(out.helpline_number).toBe("{{PHONE:donate_helpline_number}}");
+    expect(ctx.calls[0]).toMatchObject({ name: "get_info", scrubbed: true });
   });
 });
 
@@ -118,11 +164,11 @@ describe("phone boundaries and native numerals", () => {
 
   beforeAll(async () => {
     fresh = await loadStaticWith({
-      about: { en: "Animal Helpline India: 1800-419-5860 - 24x7. Steps:\n1. Call 1800-419-5860\n2. Ask a local rescue group." },
-      donate: {
-        hi: { summary: "दान के बारे में जानने के लिए १८००-४१९-५८६० पर कॉल करें। हमारे पास ४५+ एम्बुलेंस हैं।" },
-        gu: { contact_phone: "૧૮૦૦-૪૧૯-૫૮૬૦" },
+      about: {
+        en: "Animal Helpline India: 1800-419-5860 - 24x7. Steps:\n1. Call 1800-419-5860\n2. Ask a local rescue group.",
+        hi: "दान के बारे में जानने के लिए १८००-४१९-५८६० पर कॉल करें। हमारे पास ४५+ एम्बुलेंस हैं।",
       },
+      donate: { gu: { contact_phone: "૧૮૦૦-૪૧૯-૫૮૬૦" } },
     });
   });
   afterAll(unmockStatic);
@@ -135,11 +181,9 @@ describe("phone boundaries and native numerals", () => {
   });
 
   it("tokenizes Devanagari and Gujarati numerals, registers ASCII and keeps other numerals as written", () => {
-    expect(fresh.getStaticInfo("donate", "hi").summary).toBe(
-      "दान के बारे में जानने के लिए {{PHONE:donate_1}} पर कॉल करें। हमारे पास ४५+ एम्बुलेंस हैं।",
-    );
+    expect(fresh.getStaticInfo("about", "hi").text).toBe("दान के बारे में जानने के लिए {{PHONE:about_1}} पर कॉल करें। हमारे पास ४५+ एम्बुलेंस हैं।");
     expect(fresh.getStaticInfo("donate", "gu").contact_phone).toBe("{{PHONE:donate_contact_phone}}");
-    expect(fresh.getStaticPhones()).toEqual({ about_1: "18004195860", donate_1: "18004195860", donate_contact_phone: "18004195860" });
+    expect(fresh.getStaticPhones()).toEqual({ about_1: "18004195860", donate_contact_phone: "18004195860" });
   });
 });
 
