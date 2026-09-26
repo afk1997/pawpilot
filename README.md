@@ -95,7 +95,7 @@ The production image, Caddy, Azure VM, backups, deploy script and uptime monitor
 - `npm run worker` and `migrate` run TypeScript through tsx and load `.env` files with dotenv, both devDependencies (`ingest:ambulances` also needs csv-parse): install dev dependencies in the image, or move those packages to dependencies.
 - Caddy must overwrite `X-Forwarded-For` with the client's bare address (no port, no client-supplied chain), since the login limiter keys on its first entry.
 - Run `npm run migrate` before starting new code; neither the app nor the worker migrates at start.
-- Set `NODE_ENV=production` for the worker too (`next start` defaults it for the app). In production the config refuses `LLM_BACKEND=fake`, the admin cookie is Secure and `LOG_RAW_WEBHOOKS` is ignored. Keep `INTERAKT_WEBHOOK_VERIFY_MODE=hmac`, with the secret set.
+- Set `NODE_ENV=production` for the worker too (`next start` defaults it for the app). In production the config refuses `LLM_BACKEND=fake`, `INTERAKT_WEBHOOK_VERIFY_MODE=off` and an empty `INTERAKT_WEBHOOK_SECRET` (the process will not start), the admin cookie is Secure and `LOG_RAW_WEBHOOKS` is ignored.
 - Keep Postgres on the same host. If it ever moves off-host, lower its `tcp_keepalives_idle`: each turn holds a session advisory lock on its own connection, and a worker host that vanishes without closing it blocks that conversation until Postgres notices the dead peer (about two hours with the Linux default).
 
 ## Known limitations

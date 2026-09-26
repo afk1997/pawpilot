@@ -46,6 +46,42 @@ describe("getConfig", () => {
     }
   });
 
+  it("refuses webhook verification off, or an empty or blank webhook secret, in production", () => {
+    try {
+      vi.stubEnv("NODE_ENV", "production");
+      vi.stubEnv("LLM_BACKEND", "claude-code");
+      vi.stubEnv("INTERAKT_WEBHOOK_SECRET", "s3cret");
+      vi.stubEnv("INTERAKT_WEBHOOK_VERIFY_MODE", "off");
+      resetConfigForTests();
+      expect(() => getConfig()).toThrow(/INTERAKT_WEBHOOK_VERIFY_MODE: .*production/);
+      vi.stubEnv("INTERAKT_WEBHOOK_VERIFY_MODE", "hmac");
+      for (const secret of ["", " \t"]) {
+        vi.stubEnv("INTERAKT_WEBHOOK_SECRET", secret);
+        resetConfigForTests();
+        expect(() => getConfig()).toThrow(/INTERAKT_WEBHOOK_SECRET: .*production/);
+      }
+      vi.stubEnv("INTERAKT_WEBHOOK_SECRET", "s3cret");
+      resetConfigForTests();
+      expect(getConfig().interakt).toMatchObject({ verifyMode: "hmac", webhookSecret: "s3cret" });
+    } finally {
+      vi.unstubAllEnvs();
+      resetConfigForTests();
+    }
+  });
+
+  it("allows webhook verification off and an empty secret outside production, for local sandbox testing", () => {
+    try {
+      vi.stubEnv("NODE_ENV", "development");
+      vi.stubEnv("INTERAKT_WEBHOOK_SECRET", "");
+      vi.stubEnv("INTERAKT_WEBHOOK_VERIFY_MODE", "off");
+      resetConfigForTests();
+      expect(getConfig().interakt).toMatchObject({ verifyMode: "off", webhookSecret: "" });
+    } finally {
+      vi.unstubAllEnvs();
+      resetConfigForTests();
+    }
+  });
+
   it("trims the OAuth token, and reads one that is only whitespace as unset", () => {
     try {
       vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "  sk-ant-oat01-test\n");

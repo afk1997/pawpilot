@@ -30,6 +30,16 @@ const envSchema = z.object({
   .refine((e) => !(e.NODE_ENV === "production" && e.LLM_BACKEND === "fake"), {
     message: "LLM_BACKEND=fake is not allowed when NODE_ENV=production",
     path: ["LLM_BACKEND"],
+  })
+  // "off" accepts any body as a reporter's message: only for local sandbox testing.
+  .refine((e) => !(e.NODE_ENV === "production" && e.INTERAKT_WEBHOOK_VERIFY_MODE === "off"), {
+    message: "INTERAKT_WEBHOOK_VERIFY_MODE=off is not allowed when NODE_ENV=production",
+    path: ["INTERAKT_WEBHOOK_VERIFY_MODE"],
+  })
+  // With no secret, "hmac" refuses every webhook (403) while the app looks healthy: the bot would ignore every message.
+  .refine((e) => !(e.NODE_ENV === "production" && e.INTERAKT_WEBHOOK_SECRET.trim() === ""), {
+    message: "INTERAKT_WEBHOOK_SECRET must be set when NODE_ENV=production (without it every webhook is refused)",
+    path: ["INTERAKT_WEBHOOK_SECRET"],
   });
 
 export interface AppConfig {
