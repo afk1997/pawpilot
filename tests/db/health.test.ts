@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { eq, sql } from "drizzle-orm";
 import { createConversation, resetDb } from "../helpers/db";
+import { getDb } from "@/server/db/client";
+import { conversations, messages, workerState } from "@/server/db/schema";
 import { computeHealth } from "@/server/health";
 import { heartbeat, pauseClaude, recordOkTurn } from "@/server/worker/pause";
 import { recordEvent } from "@/server/inbound/store";
@@ -132,5 +135,89 @@ describe("GET /api/health", () => {
     expect(up.status).toBe(200);
     expect(up.headers.get("cache-control")).toBe("no-store");
     expect(await up.json()).toMatchObject({ ok: true, status: 200, checks: { db: true, authErrorLastHour: false } });
+  });
+});
+
+/** A reply's final send state, `minutesAgo` old on the database clock. */
+async function outboundRow(conversationId: string, status: "sent" | "failed" | "sending", minutesAgo: number) {
+  await getDb().insert(messages).values({
+    conversationId, role: "assistant", origin: "agent", content: "x", deliveryStatus: status, createdAt: sql`now() - make_interval(mins => ${minutesAgo})`,
+  });
+}
+
+/** A reporter message, `minutesAgo` old on the database clock. */
+async function reporterMessage(conversationId: string, minutesAgo: number) {
+  await getDb().insert(messages).values({
+    conversationId, role: "user", origin: "reporter", content: "dog", createdAt: sql`now() - make_interval(mins => ${minutesAgo})`,
+  });
+}
+
+async function lastDeliveredMinutesAgo(minutes: number) {
+  await getDb().update(workerState).set({ lastDeliveredAt: sql`now() - make_interval(mins => ${minutes})` }).where(eq(workerState.singleton, true));
+}
+
+describe("computeHealth: delivery", () => {
+  beforeEach(async () => { await stopBoss(); await resetDb(); await heartbeat(); });
+  afterEach(async () => { await stopBoss(); });
+
+  it("is 503, with delivery degraded, when the last five sends all failed within 15 minutes", async () => {
+    const c = await createConversation();
+    for (let i = 1; i <= 5; i++) await outboundRow(c.id, "failed", i);
+    const h = await computeHealth();
+    expect(h.status).toBe(503);
+    expect(h.checks.delivery).toBe("degraded");
+  });
+
+  it("stays 200 when fewer than five sends failed, one of the last five went through, or a failure is over 15 minutes old", async () => {
+    const c = await createConversation();
+    for (let i = 1; i <= 4; i++) await outboundRow(c.id, "failed", i);
+    expect(await computeHealth()).toMatchObject({ status: 200, checks: { delivery: "ok" } });
+    await outboundRow(c.id, "failed", 16);
+    expect(await computeHealth()).toMatchObject({ status: 200, checks: { delivery: "ok" } });
+    await outboundRow(c.id, "sent", 0);
+    await outboundRow(c.id, "failed", 0);
+    expect(await computeHealth()).toMatchObject({ status: 200, checks: { delivery: "ok" } });
+  });
+
+  it("counts neither a test conversation's replies nor a send still in flight", async () => {
+    const t = await createConversation({ isTest: true });
+    for (let i = 1; i <= 5; i++) await outboundRow(t.id, "failed", i);
+    const c = await createConversation();
+    for (let i = 1; i <= 4; i++) await outboundRow(c.id, "failed", i);
+    await outboundRow(c.id, "sending", 0);
+    expect((await computeHealth()).checks.delivery).toBe("ok");
+  });
+
+  it("is 503 when a reporter message has waited over 10 minutes with nothing delivered since it came", async () => {
+    const c = await createConversation();
+    await reporterMessage(c.id, 11);
+    expect(await computeHealth()).toMatchObject({ status: 503, checks: { delivery: "degraded", lastDeliveredAgeS: null } });
+    await lastDeliveredMinutesAgo(30);
+    expect((await computeHealth()).checks.delivery).toBe("degraded");
+    // A delivery after the message came clears it.
+    await lastDeliveredMinutesAgo(5);
+    const h = await computeHealth();
+    expect(h).toMatchObject({ status: 200, checks: { delivery: "ok" } });
+    expect(h.checks.lastDeliveredAgeS).toBeGreaterThanOrEqual(299);
+  });
+
+  it("does not read a new message after a quiet spell as an outage until it has waited 10 minutes", async () => {
+    const c = await createConversation();
+    await lastDeliveredMinutesAgo(45);
+    await reporterMessage(c.id, 1);
+    expect((await computeHealth()).checks.delivery).toBe("ok");
+    expect((await computeHealth(new Date(Date.now() + 10 * 60_000))).checks.delivery).toBe("degraded");
+  });
+
+  it("ignores messages waiting in test or human-mode conversations, and messages over an hour old", async () => {
+    const t = await createConversation({ isTest: true });
+    const h = await createConversation({ mode: "human" });
+    const c = await createConversation();
+    await reporterMessage(t.id, 11);
+    await reporterMessage(h.id, 11);
+    await reporterMessage(c.id, 61);
+    expect(await computeHealth()).toMatchObject({ status: 200, checks: { delivery: "ok" } });
+    await getDb().update(conversations).set({ mode: "agent" }).where(eq(conversations.id, h.id));
+    expect((await computeHealth()).checks.delivery).toBe("degraded");
   });
 });

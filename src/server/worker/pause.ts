@@ -14,6 +14,7 @@ export async function getWorkerState() {
     pauseReason: row.pauseReason,
     lastHeartbeatAt: row.lastHeartbeatAt,
     lastOkTurnAt: row.lastOkTurnAt,
+    lastDeliveredAt: row.lastDeliveredAt,
   };
 }
 
@@ -56,4 +57,10 @@ export async function heartbeat(): Promise<void> {
 export async function recordOkTurn(): Promise<void> {
   await ensureRow();
   await getDb().update(workerState).set({ lastOkTurnAt: new Date() }).where(eq(workerState.singleton, true));
+}
+
+/** A send Interakt accepted, first attempt or resend: the health check's delivery signal. */
+export async function recordDelivered(): Promise<void> {
+  await ensureRow();
+  await getDb().update(workerState).set({ lastDeliveredAt: new Date() }).where(eq(workerState.singleton, true));
 }

@@ -13,7 +13,7 @@ import { storeReporterMessage } from "@/server/inbound/store";
 import { enqueueTurn, getBoss, stopBoss, TURN_QUEUE } from "@/server/queue/boss";
 import { GRACEFUL_STOP_MS, runWorkerProcess, startWorker, sweepUnanswered } from "@/server/worker/start";
 import { TURN_BUDGET_MS } from "@/server/worker/claude-turn";
-import { SEND_TIMEOUT_MS } from "@/server/interakt/client";
+import { SEND_TIMEOUT_MS, setFetchForTests } from "@/server/interakt/client";
 import * as turnRunner from "@/server/worker/turn-runner";
 import { getWorkerState } from "@/server/worker/pause";
 import { createTurn } from "@/server/worker/persist";
@@ -214,6 +214,32 @@ describe("startWorker", () => {
       expect(out[0].content.length).toBeGreaterThan(0);
     } finally {
       await worker.stop();
+    }
+  });
+
+  it("resends a failed reply through the sweep, from the stored text", async () => {
+    const c = await createConversation({ phone: "+919876500995", welcomedAt: new Date() });
+    const [row] = await getDb()
+      .insert(messages)
+      .values({
+        conversationId: c.id, role: "assistant", origin: "agent", content: "Call +91 70000 00001 now.", deliveryStatus: "failed",
+        deliveryHttpStatus: 502, createdAt: sql`now() - interval '1 minute'`,
+      })
+      .returning();
+    const bodies: string[] = [];
+    setFetchForTests((async (_url: unknown, init?: { body?: unknown }) => {
+      bodies.push(String(init?.body));
+      return new Response(JSON.stringify({ id: "wa-resent" }), { status: 201 });
+    }) as typeof fetch);
+    const worker = await startWorker({ concurrency: 1, sweepMs: 100 });
+    try {
+      const stored = async () => (await getDb().select().from(messages).where(eq(messages.id, row.id)))[0];
+      await waitFor(async () => (await stored()).deliveryStatus === "sent");
+      expect(await stored()).toMatchObject({ deliveryAttempts: 2, providerMessageId: "out:wa-resent" });
+      expect(bodies.map((b) => JSON.parse(b).data.message)).toEqual(["Call +91 70000 00001 now."]);
+    } finally {
+      await worker.stop();
+      setFetchForTests(null);
     }
   });
 

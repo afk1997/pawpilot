@@ -111,7 +111,12 @@ export const messages = pgTable(
     placeLabel: text("place_label"),
     providerMessageId: text("provider_message_id"),
     interactiveId: text("interactive_id"),
+    /** sending (written before the Interakt call), sent, failed or test_skipped; null for reporter messages. */
     deliveryStatus: text("delivery_status"),
+    /** Send attempts made for this reply: the first, then the resend sweep's (at most three in all). */
+    deliveryAttempts: integer("delivery_attempts").notNull().default(1),
+    /** Interakt's HTTP status for the latest attempt; 0 when no response came (network error, timeout). */
+    deliveryHttpStatus: integer("delivery_http_status"),
     error: text("error"),
     answeredTurnId: uuid("answered_turn_id").references(() => turns.id, { onDelete: "set null" }),
     /** The turn that sent this assistant message; null for reporter messages and for replies sent outside a turn. */
@@ -124,6 +129,8 @@ export const messages = pgTable(
     // Both reference turns with "on delete set null": deleting a turn must not scan every message.
     index("messages_turn_idx").on(t.turnId),
     index("messages_answered_turn_idx").on(t.answeredTurnId),
+    // The resend sweep and the health check read recent messages across every conversation.
+    index("messages_created_idx").on(t.createdAt),
     index("messages_pending_idx")
       .on(t.conversationId)
       .where(sql`${t.role} = 'user' and ${t.answeredTurnId} is null`),
@@ -148,6 +155,8 @@ export const workerState = pgTable("worker_state", {
   pauseReason: text("pause_reason"),
   lastHeartbeatAt: ts("last_heartbeat_at"),
   lastOkTurnAt: ts("last_ok_turn_at"),
+  /** The latest send Interakt accepted (a first send or a resend): the health check's delivery signal. */
+  lastDeliveredAt: ts("last_delivered_at"),
 });
 
 export type Operator = typeof operators.$inferSelect;

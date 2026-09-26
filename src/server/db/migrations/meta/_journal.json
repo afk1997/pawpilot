@@ -22,6 +22,13 @@
       "when": 1790416785004,
       "tag": "0002_message_turn_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1790439231061,
+      "tag": "0003_delivery_retries",
+      "breakpoints": true
     }
   ]
 }

@@ -6,6 +6,7 @@ import { setWebsiteUrl } from "../messages/welcome";
 import { recordEvent } from "../inbound/store";
 import { heartbeat } from "./pause";
 import { flagConversation } from "./persist";
+import { resendFailedReplies } from "./deliver";
 import { runTurn, type TurnOutcome } from "./turn-runner";
 import { TURN_BUDGET_MS } from "./claude-turn";
 import { SEND_TIMEOUT_MS } from "../interakt/client";
@@ -127,12 +128,18 @@ export async function startWorker(opts: { concurrency?: number; heartbeatMs?: nu
     heartbeat().catch((err) => log.warn(safeErrorFields(err), "heartbeat failed"));
   }, opts.heartbeatMs ?? 30_000);
 
+  // Every minute: re-queue unanswered messages, then resend replies whose send failed (each guarded on its own).
   let sweeping: Promise<void> | null = null;
   const sweep = async () => {
     try {
       await sweepUnanswered();
     } catch (err) {
       log.warn(safeErrorFields(err), "sweep failed");
+    }
+    try {
+      await resendFailedReplies();
+    } catch (err) {
+      log.warn(safeErrorFields(err), "resend sweep failed");
     }
   };
   const sweepTimer = setInterval(() => {

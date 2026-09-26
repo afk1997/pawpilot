@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { asc, eq, sql } from "drizzle-orm";
 import { resetDb, createConversation } from "../helpers/db";
 import { getDb } from "@/server/db/client";
 import { ambulances, clinics, messages, turns, conversations, events } from "@/server/db/schema";
@@ -8,7 +8,8 @@ import * as store from "@/server/inbound/store";
 import { gatherPending, loadHistory, sharedHandles } from "@/server/worker/gather";
 import { HandleRegistry } from "@/server/agent/handles";
 import { seedDirectory } from "../helpers/fixtures";
-import { deliverText, deliverList } from "@/server/worker/deliver";
+import { deliverText, deliverList, resendFailedReplies } from "@/server/worker/deliver";
+import { getWorkerState } from "@/server/worker/pause";
 import { createTurn, finishTurn, markAnswered, loadConversationHandles, type HandleMap } from "@/server/worker/persist";
 import { setFetchForTests } from "@/server/interakt/client";
 import { log } from "@/server/log";
@@ -277,5 +278,125 @@ describe("worker helpers", () => {
     expect(r).toMatchObject({ usedList: false, message: { kind: "text", deliveryStatus: "sent" } });
     expect(warn).toHaveBeenCalledWith({ conversationId: c.id }, "list_send_failed event not recorded");
     expect(JSON.stringify(warn.mock.calls)).not.toContain("9876543216");
+  });
+});
+
+/** A fetch stand-in that answers each call with the next status (the last repeats) and records the messages sent. */
+function interakt(...statuses: number[]) {
+  const sent: string[] = [];
+  let n = 0;
+  setFetchForTests((async (_url: unknown, init?: { body?: unknown }) => {
+    const body = JSON.parse(String(init?.body)) as { data: { message: unknown } };
+    sent.push(typeof body.data.message === "string" ? body.data.message : JSON.stringify(body.data.message));
+    const status = statuses[Math.min(n, statuses.length - 1)];
+    n += 1;
+    if (status === 0) throw new TypeError("fetch failed");
+    return new Response(JSON.stringify(status < 300 ? { id: `wa-${n}` } : { message: "unavailable" }), { status });
+  }) as typeof fetch);
+  return sent;
+}
+
+/** An assistant reply already stored, as a failed first send left it, `minutesAgo` old on the database clock. */
+async function storedReply(
+  conversationId: string,
+  opts: { content?: string; status?: string; httpStatus?: number | null; attempts?: number; minutesAgo?: number } = {}
+) {
+  const [row] = await getDb()
+    .insert(messages)
+    .values({
+      conversationId, role: "assistant", origin: "agent", content: opts.content ?? "Call +91 70000 00001 now.",
+      contentTemplate: "Call {{AMB:amb_abcdefgh}} now.", deliveryStatus: opts.status ?? "failed",
+      deliveryHttpStatus: opts.httpStatus === undefined ? 502 : opts.httpStatus, deliveryAttempts: opts.attempts ?? 1,
+      error: "interakt 502: unavailable", createdAt: sql`now() - make_interval(mins => ${opts.minutesAgo ?? 1})`,
+    })
+    .returning();
+  return row;
+}
+
+const messageRow = async (id: string) => (await getDb().select().from(messages).where(eq(messages.id, id)))[0];
+const retryEvents = async () =>
+  (await getDb().select().from(events).where(eq(events.kind, "outbound_retry")).orderBy(asc(events.createdAt))).map((e) => e.payload);
+
+describe("delivery status and the resend sweep", () => {
+  beforeEach(resetDb);
+  afterEach(() => {
+    setFetchForTests(null);
+    vi.restoreAllMocks();
+  });
+
+  it("records the send's HTTP status and one attempt, and the time of the last delivery", async () => {
+    const c = await createConversation({ phone: "+919876543230" });
+    interakt(502);
+    const failed = await deliverText(c, { text: "a", origin: "agent" });
+    expect([failed.deliveryStatus, failed.deliveryHttpStatus, failed.deliveryAttempts]).toEqual(["failed", 502, 1]);
+    expect((await getWorkerState()).lastDeliveredAt).toBeNull();
+    interakt(0);
+    expect((await deliverText(c, { text: "b", origin: "agent" })).deliveryHttpStatus).toBe(0);
+    interakt(201);
+    const before = Date.now();
+    const sent = await deliverText(c, { text: "c", origin: "agent" });
+    expect([sent.deliveryStatus, sent.deliveryHttpStatus, sent.deliveryAttempts]).toEqual(["sent", 201, 1]);
+    expect((await getWorkerState()).lastDeliveredAt!.getTime()).toBeGreaterThanOrEqual(before - 1000);
+  });
+
+  it("records no HTTP status and no delivery for a test conversation", async () => {
+    const c = await createConversation({ isTest: true, phone: "+91TEST_status" });
+    const m = await deliverText(c, { text: "a", origin: "agent" });
+    expect([m.deliveryStatus, m.deliveryHttpStatus]).toEqual(["test_skipped", null]);
+    expect((await getWorkerState()).lastDeliveredAt).toBeNull();
+  });
+
+  it("resends the stored text of a reply that failed with a retryable status, recording the attempt", async () => {
+    const c = await createConversation({ phone: "+919876543231" });
+    const rows = [
+      await storedReply(c.id, { content: "one", httpStatus: 502 }),
+      await storedReply(c.id, { content: "two", httpStatus: 429 }),
+      await storedReply(c.id, { content: "three", httpStatus: 0 }),
+      await storedReply(c.id, { content: "four", httpStatus: 503 }),
+    ];
+    const sent = interakt(201);
+    expect(await resendFailedReplies()).toBe(4);
+    expect(sent).toEqual(["one", "two", "three", "four"]);
+    for (const [i, row] of rows.entries()) {
+      expect(await messageRow(row.id)).toMatchObject({
+        deliveryStatus: "sent", deliveryHttpStatus: 201, deliveryAttempts: 2, error: null, providerMessageId: `out:wa-${i + 1}`,
+        content: row.content, contentTemplate: row.contentTemplate,
+      });
+    }
+    expect(await retryEvents()).toEqual(rows.map((r) => ({ messageId: r.id, attempt: 2, ok: true, status: 201, error: null })));
+    expect((await getWorkerState()).lastDeliveredAt).not.toBeNull();
+    expect(await resendFailedReplies()).toBe(0);
+  });
+
+  it("never resends a reply Interakt refused for good, one out of attempts, one over 10 minutes old, or a test conversation's", async () => {
+    const c = await createConversation({ phone: "+919876543232" });
+    const t = await createConversation({ isTest: true, phone: "+91TEST_resend" });
+    await storedReply(c.id, { httpStatus: 400 });
+    await storedReply(c.id, { httpStatus: 401 });
+    await storedReply(c.id, { httpStatus: 502, attempts: 3 });
+    await storedReply(c.id, { httpStatus: 502, minutesAgo: 11 });
+    await storedReply(c.id, { status: "sent", httpStatus: 201 });
+    await storedReply(t.id, { httpStatus: 502 });
+    const sent = interakt(201);
+    expect(await resendFailedReplies()).toBe(0);
+    expect(sent).toEqual([]);
+    expect(await retryEvents()).toEqual([]);
+  });
+
+  it("stops after three attempts in all, keeping each failure on the row and in an event", async () => {
+    const c = await createConversation({ phone: "+919876543233" });
+    const row = await storedReply(c.id, { httpStatus: 502 });
+    const sent = interakt(503, 0);
+    expect(await resendFailedReplies()).toBe(1);
+    expect(await messageRow(row.id)).toMatchObject({ deliveryStatus: "failed", deliveryHttpStatus: 503, deliveryAttempts: 2 });
+    expect(await resendFailedReplies()).toBe(1);
+    expect(await messageRow(row.id)).toMatchObject({ deliveryStatus: "failed", deliveryHttpStatus: 0, deliveryAttempts: 3, providerMessageId: null });
+    expect(await resendFailedReplies()).toBe(0);
+    expect(sent).toHaveLength(2);
+    expect(await retryEvents()).toEqual([
+      { messageId: row.id, attempt: 2, ok: false, status: 503, error: expect.stringContaining("interakt 503") },
+      { messageId: row.id, attempt: 3, ok: false, status: 0, error: expect.stringContaining("fetch failed") },
+    ]);
+    expect((await getWorkerState()).lastDeliveredAt).toBeNull();
   });
 });
