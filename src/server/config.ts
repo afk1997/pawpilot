@@ -24,7 +24,12 @@ const envSchema = z.object({
   WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(8).default(4),
   LOG_LEVEL: z.string().default("info"),
   LOG_RAW_WEBHOOKS: z.string().default("0"),
-});
+})
+  // The fake backend answers with canned text; in production it would silently stand in for the agent.
+  .refine((e) => !(e.NODE_ENV === "production" && e.LLM_BACKEND === "fake"), {
+    message: "LLM_BACKEND=fake is not allowed when NODE_ENV=production",
+    path: ["LLM_BACKEND"],
+  });
 
 export interface AppConfig {
   nodeEnv: string;

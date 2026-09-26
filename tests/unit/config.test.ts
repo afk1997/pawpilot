@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { getConfig, resetConfigForTests } from "@/server/config";
 
 describe("getConfig", () => {
@@ -29,6 +29,21 @@ describe("getConfig", () => {
     resetConfigForTests();
     expect(getConfig().claude.effort).toBe("high");
     process.env.LLM_EFFORT = "medium";
+  });
+
+  it("refuses the fake backend in production", () => {
+    try {
+      vi.stubEnv("NODE_ENV", "production");
+      vi.stubEnv("LLM_BACKEND", "fake");
+      resetConfigForTests();
+      expect(() => getConfig()).toThrow(/LLM_BACKEND/);
+      vi.stubEnv("LLM_BACKEND", "claude-code");
+      resetConfigForTests();
+      expect(getConfig().llmBackend).toBe("claude-code");
+    } finally {
+      vi.unstubAllEnvs();
+      resetConfigForTests();
+    }
   });
 
   it("caps the worker concurrency at 8", () => {

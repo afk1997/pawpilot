@@ -234,6 +234,7 @@ describe("POST /api/webhook", () => {
     expect(bodyLogs()).toHaveLength(1); // control: outside production the spy does see the raw body
     debug.mockClear();
     vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("LLM_BACKEND", "claude-code"); // config refuses the fake backend in production
     resetConfigForTests();
     expect((await POST(signed(inbound("m5", "hi")))).status).toBe(200);
     expect(bodyLogs()).toHaveLength(0);

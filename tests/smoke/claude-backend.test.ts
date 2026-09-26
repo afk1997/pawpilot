@@ -7,6 +7,11 @@ import { createArhamTools, type ToolContext } from "@/server/agent/tools";
 import { buildSystemPrompt, buildTurnPrompt, formatIst } from "@/server/agent/prompt";
 import { getCoverageSummary, resetCoverageCache } from "@/server/directory/coverage";
 
+// Spends the owner's Max usage, so it runs only on purpose: from a terminal that is not itself inside Claude Code, with
+// the owner's token in the environment,
+//   RUN_CLAUDE_SMOKE=1 CLAUDE_CODE_OAUTH_TOKEN=<token from `claude setup-token`> npx vitest run tests/smoke
+// (tests/setup.ts keeps the token only for such a run). It is also the check that the StructuredOutput tool still
+// returns the reply under permissionMode "dontAsk".
 const run = process.env.RUN_CLAUDE_SMOKE === "1" ? describe : describe.skip;
 
 run("ClaudeCodeBackend smoke (spends Max usage)", () => {
@@ -23,7 +28,8 @@ run("ClaudeCodeBackend smoke (spends Max usage)", () => {
         transcript: "--- NEW MESSAGES (answer these) ---\n[10:03] Reporter: ghatkopar station ke paas kutta ghayal hai please jaldi" }),
       toolServer: server, allowedToolNames, timeoutMs: 60_000,
     });
-    expect(res.ok).toBe(true);
+    // toMatchObject, so a failed turn prints its kind and message.
+    expect(res).toMatchObject({ ok: true });
     if (!res.ok) return;
     expect(res.structured.intent).toBe("ambulance");
     expect(res.structured.reply).toMatch(/\{\{AMB:amb_[a-p]{8}\}\}/);

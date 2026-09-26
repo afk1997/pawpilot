@@ -44,6 +44,8 @@ export type TurnResult =
       costUsd: number | null;
       /** Only the Claude Code backend fills this. */
       toolUses?: ObservedToolUse[];
+      /** True when the plan's limit was reached and extra usage (overage) paid for this turn. */
+      extraUsage?: boolean;
     }
   | {
       ok: false;

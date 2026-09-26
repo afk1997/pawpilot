@@ -74,6 +74,16 @@ describe("renderMessageForModel", () => {
   });
 });
 
+describe("renderMessageForModel: file mentions", () => {
+  it("writes an @ before a path as (at) in reporter rows, and leaves e-mail addresses and handles alone", () => {
+    const content = "see @/etc/passwd, @~/.ssh/id_rsa, @./notes and @.env; mail me@example.com or @raju";
+    expect(renderMessageForModel({ ...base, role: "user", kind: "text", content })).toBe(
+      "[10:03] Reporter: see (at)/etc/passwd, (at)~/.ssh/id_rsa, (at)./notes and (at).env; mail me@example.com or @raju",
+    );
+    expect(renderMessageForModel({ ...base, role: "user", kind: "image", content: "@/proc/self/environ" })).toBe("[10:03] Reporter: [photo received] (at)/proc/self/environ");
+  });
+});
+
 describe("renderMessageForModel: line breaks", () => {
   it("indents the continuation lines of a reporter message", () => {
     expect(renderMessageForModel({ ...base, role: "user", kind: "text", content: "dog injured\nnear the station" })).toBe("[10:03] Reporter: dog injured\n  near the station");

@@ -51,6 +51,12 @@ function assistantBody(m: Renderable): string {
 /** Any line break, including the Unicode separators a model may also read as one. */
 const LINE_BREAK_RE = /\r\n|[\n\r\v\f\u0085\u2028\u2029]/g;
 
+/**
+ * An "@" right before a path ("@/etc", "@~/", "@./", "@.env"), which the CLI could read as a file mention. The backend
+ * already sends prompts verbatim; this is the second guard. E-mail addresses and @handles are left alone.
+ */
+const PATH_MENTION_RE = /@(?=[/~.])/g;
+
 /** One transcript row. Continuation lines are indented, so no message text can pass for a row or a system line. */
 function row(stamp: string, label: string, body: string): string {
   return `[${stamp}] ${label}: ${body.replace(LINE_BREAK_RE, "\n  ")}`;
@@ -79,7 +85,7 @@ export function renderMessageForModel(m: Renderable, now: Date = new Date()): st
     }
     default: body = m.content;
   }
-  return row(stamp, "Reporter", body);
+  return row(stamp, "Reporter", body.replace(PATH_MENTION_RE, "(at)"));
 }
 
 export function renderTranscript(history: Message[], pending: Message[], now: Date = new Date()): string {

@@ -1,5 +1,8 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
+import { existsSync } from "node:fs";
 import { getBackend, setBackendForTests } from "@/server/agent";
+import { ClaudeCodeBackend } from "@/server/agent/claude-code-backend";
+import { resetConfigForTests } from "@/server/config";
 import { FakeBackend, errorResult, okReply } from "@/server/agent/fake-backend";
 import type { TurnInput } from "@/server/agent/types";
 
@@ -25,7 +28,11 @@ describe("FakeBackend", () => {
 });
 
 describe("getBackend", () => {
-  afterEach(() => setBackendForTests(null));
+  afterEach(() => {
+    setBackendForTests(null);
+    vi.unstubAllEnvs();
+    resetConfigForTests();
+  });
   it("builds the configured backend once and reuses it", () => {
     const backend = getBackend();
     // tests/setup.ts sets LLM_BACKEND=fake
@@ -41,5 +48,19 @@ describe("getBackend", () => {
     const rebuilt = getBackend();
     expect(rebuilt).not.toBe(override);
     expect(rebuilt).not.toBe(cached);
+  });
+  it("rebuilds the backend when getConfig() returns a different config", () => {
+    const first = getBackend();
+    resetConfigForTests();
+    const second = getBackend();
+    expect(second).not.toBe(first);
+    expect(getBackend()).toBe(second);
+  });
+  it("builds the Claude backend without touching the disk, so a home dir it cannot create never fails getBackend()", () => {
+    vi.stubEnv("LLM_BACKEND", "claude-code");
+    vi.stubEnv("LLM_HOME_DIR", "/dev/null/arham-claude-home");
+    resetConfigForTests();
+    expect(getBackend()).toBeInstanceOf(ClaudeCodeBackend);
+    expect(existsSync("/dev/null/arham-claude-home")).toBe(false);
   });
 });

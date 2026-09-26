@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
-import { query, type EffortLevel, type SDKMessage, type SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
+import { query, type EffortLevel, type SDKMessage, type SDKRateLimitInfo, type SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
 import { REPLY_JSON_SCHEMA, parseStructuredReplyDetailed } from "./schema";
+import { SERVER_NAME } from "./tools";
 import type { BackendErrorKind, LLMBackend, ObservedToolUse, TurnInput, TurnResult } from "./types";
 import { log } from "../log";
 
@@ -13,6 +14,20 @@ export interface StreamObservation {
   latencyMs: number;
   /** Every tool_use the stream showed, in order; absent means none. */
   toolUses?: ObservedToolUse[];
+  /** The plan's limit was reached but extra usage (overage) paid for the turn, so it ran. */
+  extraUsage?: boolean;
+  /** The last near-limit warning, logged once after the turn. */
+  usageWarning?: SDKRateLimitInfo;
+  /** The init message listed a tool the turn does not allow, or did not show this app's MCP server as connected. */
+  initMismatch?: boolean;
+}
+
+/** What a turn's init message must show. */
+export interface ExpectedSetup {
+  /** The only tools it may list, besides the CLI's StructuredOutput. */
+  toolNames: readonly string[];
+  /** The MCP server it must show as connected; null for a turn without tools. */
+  server: string | null;
 }
 
 const BUILTIN_TOOLS = ["Bash", "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "WebFetch", "WebSearch", "Task", "NotebookEdit", "TodoWrite", "KillShell", "BashOutput"];
@@ -22,13 +37,26 @@ const BUILTIN_TOOLS = ["Bash", "Read", "Write", "Edit", "MultiEdit", "Glob", "Gr
  * loading. Never "mcp__*", which would also deny this app's own tools.
  */
 export const DISALLOWED_TOOLS = [...BUILTIN_TOOLS, "mcp__claude_ai_*"];
-const AUTH_ERRORS = new Set(["authentication_failed", "oauth_org_not_allowed", "account_on_hold", "verification_required", "billing_error", "cloud_credential_error"]);
+/** Assistant errors only the owner can clear (login, account, model or request); the turn runner pauses Claude. */
+const AUTH_ERRORS = new Set([
+  "authentication_failed", "oauth_org_not_allowed", "account_on_hold", "verification_required", "billing_error", "cloud_credential_error",
+  "invalid_request", "model_not_found",
+]);
+/** Error text that means a usage limit, and error text that means a login problem; whole phrases only. */
+const LIMIT_TEXT_RE = /\b(rate limit|usage limit|weekly limit|too many requests)\b/i;
+const AUTH_TEXT_RE = /\b(not logged in|invalid api key|invalid token|authentication|unauthorized|401|403)\b/i;
+/** The tool the CLI adds to carry the reply when outputFormat is a JSON schema. */
+const STRUCTURED_OUTPUT_TOOL = "StructuredOutput";
 /**
- * Never inherited by the child: an API key would bill the API instead of the Max plan, and the others belong to a
- * parent Claude Code session (CLAUDE_EFFORT would override the effort option).
+ * The only parent variables the child sees: the search path, locale, time zone, temp dir, CA certificates and proxies.
+ * Everything else (database URL, API keys, admin secrets, a parent Claude Code session's variables) stays behind.
  */
-const STRIPPED_ENV = ["ANTHROPIC_API_KEY", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_EFFORT"];
-const INVALID_OUTPUT_MESSAGE_MAX = 300;
+const INHERITED_ENV = new Set([
+  "PATH", "LANG", "TZ", "TMPDIR", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS",
+  "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
+]);
+/** The longest failure message a TurnResult carries. */
+const MESSAGE_MAX = 300;
 
 function resetDate(resetsAt?: number): Date | null {
   if (!resetsAt) return null;
@@ -42,28 +70,89 @@ function truncate(s: string, max: number): string {
 }
 
 /**
- * The whole environment of the Claude Code child (the SDK does not merge it with process.env): `base` without unset
- * values and without STRIPPED_ENV, HOME and the config dir inside homeDir, and the OAuth token when one is given.
+ * The whole environment of the Claude Code child (the SDK does not merge it with process.env): the INHERITED_ENV and
+ * LC_* variables of `base`, HOME and the config dir inside homeDir, startup failures reported as result messages,
+ * claude.ai connectors off, and the OAuth token when one is given (never the parent's).
  */
 export function buildChildEnv(base: NodeJS.ProcessEnv, opts: { homeDir: string; oauthToken?: string }): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(base)) {
-    if (value !== undefined) env[key] = value;
+    if (value !== undefined && (INHERITED_ENV.has(key) || key.startsWith("LC_"))) env[key] = value;
   }
-  for (const key of STRIPPED_ENV) delete env[key];
   env.HOME = opts.homeDir;
   env.CLAUDE_CONFIG_DIR = `${opts.homeDir}/config`;
+  env.CLAUDE_CODE_STARTUP_FAILURE_RESULTS = "1";
+  env.ENABLE_CLAUDEAI_MCP_SERVERS = "false";
   if (opts.oauthToken) env.CLAUDE_CODE_OAUTH_TOKEN = opts.oauthToken;
   return env;
 }
 
-/** Pure mapping from what the SDK stream showed to a TurnResult (spec §5.4 table). */
-export function classifyOutcome(obs: StreamObservation): TurnResult {
+/**
+ * Folds one stream message into the observation: the init check, rate-limit events, assistant errors, tool uses and
+ * their results (paired by id through byId), and the result message. Pure apart from its arguments, and guarded
+ * against unexpected shapes, since a throw here would fail a turn that may have succeeded.
+ */
+export function observe(msg: SDKMessage, obs: StreamObservation, byId: Map<string, ObservedToolUse>, expected: ExpectedSetup): void {
+  switch (msg.type) {
+    case "system": {
+      if (msg.subtype !== "init") return;
+      const tools: unknown[] = Array.isArray(msg.tools) ? msg.tools : [];
+      const servers: unknown[] = Array.isArray(msg.mcp_servers) ? msg.mcp_servers : [];
+      const foreignTool = tools.some((t) => t !== STRUCTURED_OUTPUT_TOOL && !expected.toolNames.includes(t as string));
+      const serverDown = expected.server !== null && !servers.some((s) => {
+        const server = s as { name?: unknown; status?: unknown } | null;
+        return server?.name === expected.server && server.status === "connected";
+      });
+      if (foreignTool || serverDown) obs.initMismatch = true;
+      return;
+    }
+    case "rate_limit_event": {
+      const info = msg.rate_limit_info;
+      if (info?.status === "rejected") {
+        // Extra usage (overage) pays for a turn past the plan's limit: the turn runs, so it is not a refusal.
+        if (info.overageStatus === "allowed" || info.overageStatus === "allowed_warning") obs.extraUsage = true;
+        else obs.rejectedLimit = { resetsAt: info.resetsAt };
+      } else if (info?.status === "allowed_warning") {
+        obs.usageWarning = info;
+      }
+      return;
+    }
+    case "assistant": {
+      if (msg.error) obs.assistantError = msg.error;
+      const content = msg.message?.content;
+      if (!Array.isArray(content)) return;
+      for (const block of content) {
+        if (block?.type !== "tool_use") continue;
+        const use: ObservedToolUse = { name: block.name, isError: false };
+        (obs.toolUses ??= []).push(use);
+        byId.set(block.id, use);
+      }
+      return;
+    }
+    case "user": {
+      const content = msg.message?.content;
+      if (!Array.isArray(content)) return;
+      for (const block of content) {
+        if (block?.type !== "tool_result" || block.is_error !== true) continue;
+        const use = byId.get(block.tool_use_id);
+        if (use) use.isError = true;
+      }
+      return;
+    }
+    case "result":
+      obs.result = msg;
+      return;
+  }
+}
+
+function classify(obs: StreamObservation): TurnResult {
   const sessionId = obs.result?.session_id ?? null;
   const toolUses = obs.toolUses ?? [];
   const fail = (kind: BackendErrorKind, message: string, retryAfter: Date | null = null): TurnResult =>
-    ({ ok: false, kind, message, retryAfter, latencyMs: obs.latencyMs, sessionId, toolUses });
+    ({ ok: false, kind, message: truncate(message, MESSAGE_MAX), retryAfter, latencyMs: obs.latencyMs, sessionId, toolUses });
 
+  // The turn was aborted at init, before the model ran: nothing else in the observation counts.
+  if (obs.initMismatch) return fail("TRANSIENT", "mcp_not_connected");
   if (obs.rejectedLimit) return fail("LIMITED", "subscription usage limit reached", resetDate(obs.rejectedLimit.resetsAt));
   if (obs.assistantError) {
     if (obs.assistantError === "rate_limit") return fail("LIMITED", "assistant error: rate_limit");
@@ -82,20 +171,18 @@ export function classifyOutcome(obs: StreamObservation): TurnResult {
   if (r.subtype !== "success") {
     const text = ("errors" in r ? r.errors : []).join(" | ");
     if (r.subtype === "error_max_structured_output_retries" || r.subtype === "error_max_turns") return fail("INVALID_OUTPUT", `${r.subtype}: ${text}`);
-    if (/limit|too many requests|rate/i.test(text)) return fail("LIMITED", text);
-    if (/not logged in|login|invalid.*token|authentication|unauthorized|401/i.test(text)) return fail("AUTH", text);
+    if (LIMIT_TEXT_RE.test(text)) return fail("LIMITED", text);
+    if (AUTH_TEXT_RE.test(text)) return fail("AUTH", text);
     return fail("TRANSIENT", `${r.subtype}: ${text}`);
   }
   if (r.is_error) {
     const status = r.api_error_status ?? 0;
     if (status === 429) return fail("LIMITED", `api status ${status}`);
     if (status === 401 || status === 403) return fail("AUTH", `api status ${status}`);
-    return fail("TRANSIENT", `result is_error (status ${status}): ${r.result.slice(0, 200)}`);
+    return fail("TRANSIENT", `result is_error (status ${status}): ${r.result}`);
   }
   const parsed = parseStructuredReplyDetailed(r.structured_output);
-  if (!parsed.ok) {
-    return fail("INVALID_OUTPUT", truncate(`structured output failed validation: ${parsed.issues.join("; ")}`, INVALID_OUTPUT_MESSAGE_MAX));
-  }
+  if (!parsed.ok) return fail("INVALID_OUTPUT", `structured output failed validation: ${parsed.issues.join("; ")}`);
   const modelNames = Object.keys(r.modelUsage ?? {});
   const primary = modelNames.find((m) => !/haiku/i.test(m)) ?? modelNames[0] ?? null;
   return {
@@ -107,31 +194,24 @@ export function classifyOutcome(obs: StreamObservation): TurnResult {
     model: primary,
     costUsd: typeof r.total_cost_usd === "number" ? r.total_cost_usd : null,
     toolUses,
+    ...(obs.extraUsage && { extraUsage: true }),
   };
 }
 
-/**
- * Records the tool_use blocks of an assistant message, and marks one as failed when a user message carries an error
- * tool_result for it. Guards every shape, since a throw here would fail a turn that may have succeeded.
- */
-function trackToolUses(msg: SDKMessage, uses: ObservedToolUse[], byId: Map<string, ObservedToolUse>): void {
-  if (msg.type === "assistant") {
-    const content = msg.message?.content;
-    if (!Array.isArray(content)) return;
-    for (const block of content) {
-      if (block?.type !== "tool_use") continue;
-      const use: ObservedToolUse = { name: block.name, isError: false };
-      uses.push(use);
-      byId.set(block.id, use);
-    }
-  } else if (msg.type === "user") {
-    const content = msg.message?.content;
-    if (!Array.isArray(content)) return;
-    for (const block of content) {
-      if (block?.type !== "tool_result" || block.is_error !== true) continue;
-      const use = byId.get(block.tool_use_id);
-      if (use) use.isError = true;
-    }
+/** Pure mapping from what the SDK stream showed to a TurnResult (spec §5.4 table). Never throws: a malformed observation is TRANSIENT. */
+export function classifyOutcome(obs: StreamObservation): TurnResult {
+  try {
+    return classify(obs);
+  } catch {
+    return {
+      ok: false,
+      kind: "TRANSIENT",
+      message: "outcome classification failed",
+      retryAfter: null,
+      latencyMs: typeof obs?.latencyMs === "number" ? obs.latencyMs : 0,
+      sessionId: null,
+      toolUses: Array.isArray(obs?.toolUses) ? obs.toolUses : [],
+    };
   }
 }
 
@@ -139,19 +219,21 @@ export class ClaudeCodeBackend implements LLMBackend {
   readonly name = "claude-code";
 
   constructor(private readonly opts: { model: string; effort: EffortLevel; maxTurns: number; oauthToken?: string; homeDir: string }) {
-    mkdirSync(`${opts.homeDir}/config`, { recursive: true });
+    // A root worker gives a turn that goes wrong the whole container.
+    if (process.getuid?.() === 0) log.warn("worker runs as root; run the container as a non-root user");
   }
 
   async runTurn(input: TurnInput): Promise<TurnResult> {
     const started = Date.now();
     const abort = new AbortController();
     const timer = setTimeout(() => abort.abort(), input.timeoutMs);
-    const env = buildChildEnv(process.env, { homeDir: this.opts.homeDir, oauthToken: this.opts.oauthToken });
-
-    const toolUses: ObservedToolUse[] = [];
-    const toolUsesById = new Map<string, ObservedToolUse>();
-    const obs: StreamObservation = { rejectedLimit: null, assistantError: null, result: null, aborted: false, thrown: null, latencyMs: 0, toolUses };
+    const obs: StreamObservation = { rejectedLimit: null, assistantError: null, result: null, aborted: false, thrown: null, latencyMs: 0, toolUses: [] };
+    const byId = new Map<string, ObservedToolUse>();
+    const expected: ExpectedSetup = { toolNames: input.allowedToolNames, server: input.toolServer ? SERVER_NAME : null };
     try {
+      // Here, not in the constructor: a home dir the worker cannot create fails this turn as TRANSIENT (retry, then
+      // fallback) instead of throwing out of getBackend().
+      mkdirSync(`${this.opts.homeDir}/config`, { recursive: true, mode: 0o700 });
       const q = query({
         prompt: input.prompt,
         options: {
@@ -159,32 +241,31 @@ export class ClaudeCodeBackend implements LLMBackend {
           model: this.opts.model,
           effort: this.opts.effort,
           maxTurns: this.opts.maxTurns,
-          mcpServers: input.toolServer ? { arham: input.toolServer } : {},
+          mcpServers: input.toolServer ? { [SERVER_NAME]: input.toolServer } : {},
           allowedTools: input.allowedToolNames,
           disallowedTools: DISALLOWED_TOOLS,
           tools: [],
-          permissionMode: "bypassPermissions",
-          allowDangerouslySkipPermissions: true,
+          // Denies every tool call allowedTools does not pre-approve, and unlike bypassPermissions it runs as root too.
+          // The CLI's StructuredOutput tool is not in allowedTools; it returned the reply under dontAsk against a local
+          // stand-in API (CLI 2.1.282), and the owner's smoke run must confirm that against Claude.
+          permissionMode: "dontAsk",
           settingSources: [],
           persistSession: false,
           strictMcpConfig: true,
+          // Reporter text is in the prompt: never expand an @path mention or run a slash command from it.
+          verbatimPrompts: true,
           outputFormat: { type: "json_schema", schema: REPLY_JSON_SCHEMA },
           cwd: this.opts.homeDir,
-          env,
+          env: buildChildEnv(process.env, { homeDir: this.opts.homeDir, oauthToken: this.opts.oauthToken }),
           abortController: abort,
           stderr: (data) => log.debug({ data: data.slice(0, 200) }, "claude stderr"),
         },
       });
       for await (const msg of q) {
-        trackToolUses(msg, toolUses, toolUsesById);
-        if (msg.type === "rate_limit_event") {
-          const info = msg.rate_limit_info;
-          if (info.status === "rejected") obs.rejectedLimit = { resetsAt: info.resetsAt };
-          else if (info.status === "allowed_warning") log.warn({ info }, "claude usage nearing limit");
-        } else if (msg.type === "assistant" && msg.error) {
-          obs.assistantError = msg.error;
-        } else if (msg.type === "result") {
-          obs.result = msg;
+        observe(msg, obs, byId, expected);
+        if (obs.initMismatch) {
+          abort.abort();
+          break;
         }
       }
     } catch (e) {
@@ -194,9 +275,11 @@ export class ClaudeCodeBackend implements LLMBackend {
       clearTimeout(timer);
     }
     obs.latencyMs = Date.now() - started;
+    if (obs.usageWarning) log.warn({ info: obs.usageWarning }, "claude usage nearing limit");
     const outcome = classifyOutcome(obs);
     // Kind and latency only: the message can quote SDK error text or reply field names, so it goes on the turn row.
     if (!outcome.ok) log.warn({ kind: outcome.kind, latencyMs: outcome.latencyMs }, "claude turn failed");
+    else if (outcome.extraUsage) log.warn({ latencyMs: outcome.latencyMs }, "claude turn used extra usage");
     return outcome;
   }
 }
