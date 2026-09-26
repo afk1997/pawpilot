@@ -57,8 +57,13 @@ describe("prompts", () => {
   });
   it("system prompt limits needs_human to real escalation triggers", () => {
     const p = systemPrompt();
-    expect(p).toContain("Set needs_human to true only when the reporter asks for a person, cannot reach a driver, complains, or you cannot help them");
-    expect(p).toContain("Severe or urgent wording alone is normal on this line and never sets needs_human");
+    expect(p).toContain("Set needs_human to true only when the reporter asks for a person, cannot reach a driver, complains, a tool returns lookup_failed, or the request is something this helpline cannot handle at all. An out-of-coverage place, or severe or urgent wording, never sets needs_human on its own.");
+    expect(p).not.toContain("or you cannot help them");
+  });
+  it("system prompt says a [number sent] on an undelivered line never reached the reporter, and forbids writing the marker", () => {
+    const p = systemPrompt();
+    expect(p).toContain("[number sent] in the transcript stands for a phone number that was already sent, unless the line is marked [not delivered], in which case the reporter did not receive it.");
+    expect(p).toContain("Never write that marker yourself");
   });
   it("turn prompt includes context lines and the transcript", () => {
     const t = buildTurnPrompt({

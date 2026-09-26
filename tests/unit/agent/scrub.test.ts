@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { DIGIT_RUN_RE, digitsOf, findDigitRuns, foreignDigitRuns, stripRuns, hasDispatchLanguage, replaceDispatchSentences } from "@/server/agent/scrub";
+import { DIGIT_RUN_RE, digitsOf, findDigitRuns, foreignDigitRuns, maskDigitRuns, stripRuns, hasDispatchLanguage, replaceDispatchSentences } from "@/server/agent/scrub";
 import { buildAmbulanceCard, buildHelplineCard, buildMultiAmbulanceCard } from "@/server/messages/cards";
 import { callDirectlyLine } from "@/server/messages/system-replies";
 
@@ -106,16 +106,24 @@ describe("digit scrubber: allowed numbers are masked before runs are read", () =
   });
 });
 
+const HIDDEN_SEPARATORS = [
+  "98765\u00A043210", "98765\u202F43210", "98765\t43210", "98765  43210", "98765 \u2009 43210", "98765\n43210",
+  "98765\u201343210", "98765\u201443210", "98765\u221243210", "98765\uFF0D43210", "98765\u201143210",
+  "98765\u200B43210", "98765\u00AD43210", "98765\u206043210", "98765\u200D43210", "9 8 7 6 5 4 3 2 1 0",
+];
+
 describe("digit scrubber: separators", () => {
-  it.each([
-    "98765\u00A043210", "98765\u202F43210", "98765\t43210", "98765  43210", "98765 \u2009 43210", "98765\n43210",
-    "98765\u201343210", "98765\u201443210", "98765\u221243210", "98765\uFF0D43210", "98765\u201143210",
-    "98765\u200B43210", "98765\u00AD43210", "98765\u206043210", "98765\u200D43210", "9 8 7 6 5 4 3 2 1 0",
-  ])("reads %j as one run and strips it", (hidden) => {
+  it.each(HIDDEN_SEPARATORS)("reads %j as one run and strips it", (hidden) => {
     const text = `Call ${hidden} now.`;
     const runs = foreignDigitRuns(text, []);
     expect(runs).toHaveLength(1);
     expect(stripRuns(text, runs, [])).toBe("Call now.");
+  });
+
+  it.each(HIDDEN_SEPARATORS)("masks %j whole, leaving nothing the scrubber would find", (hidden) => {
+    const masked = maskDigitRuns(`Call ${hidden} now.`, "[number sent]");
+    expect(masked).toBe("Call [number sent] now.");
+    expect(findDigitRuns(masked)).toEqual([]);
   });
 
   it("returns runs with plain separators", () => {

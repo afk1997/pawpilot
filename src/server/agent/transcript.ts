@@ -1,5 +1,5 @@
 import type { Message } from "../db/schema";
-import { foldDigits, PHONE_RUN_RE } from "../content/static";
+import { maskDigitRuns } from "./scrub";
 import { menuChoiceLabel } from "../messages/welcome";
 
 type Renderable = Pick<
@@ -39,12 +39,21 @@ function assistantLabel(origin: Renderable["origin"]): string {
 }
 
 /**
- * The template when there is one (tokens, never digits). Without one, the sent text with every phone-shaped run,
- * native numerals included, masked, so the model never sees digits it could copy. The welcome/menu list is named, not dumped.
+ * The template when there is one (tokens, never digits). Without one, the sent text with every run the reply scrubber
+ * would find masked (native numerals, any separator), so the model never sees digits it could copy, not even ones a
+ * dispatcher typed. The welcome/menu list is named, not dumped.
  */
 function assistantBody(m: Renderable): string {
   if (m.origin === "system" && m.kind === "interactive") return "[welcome/menu list sent]";
-  return m.contentTemplate ?? foldDigits(m.content).replace(PHONE_RUN_RE, "[number sent]");
+  return m.contentTemplate ?? maskDigitRuns(m.content, "[number sent]");
+}
+
+/** Any line break, including the Unicode separators a model may also read as one. */
+const LINE_BREAK_RE = /\r\n|[\n\r\v\f\u0085\u2028\u2029]/g;
+
+/** One transcript row. Continuation lines are indented, so no message text can pass for a row or a system line. */
+function row(stamp: string, label: string, body: string): string {
+  return `[${stamp}] ${label}: ${body.replace(LINE_BREAK_RE, "\n  ")}`;
 }
 
 export function renderMessageForModel(m: Renderable, now: Date = new Date()): string {
@@ -52,7 +61,7 @@ export function renderMessageForModel(m: Renderable, now: Date = new Date()): st
   if (m.role === "assistant") {
     // A reply whose send failed never reached the reporter; the marker keeps the model from assuming it did.
     const undelivered = m.deliveryStatus === "failed" ? "[not delivered] " : "";
-    return `[${stamp}] ${assistantLabel(m.origin)}: ${undelivered}${assistantBody(m)}`;
+    return row(stamp, assistantLabel(m.origin), `${undelivered}${assistantBody(m)}`);
   }
   let body: string;
   switch (m.kind) {
@@ -70,7 +79,7 @@ export function renderMessageForModel(m: Renderable, now: Date = new Date()): st
     }
     default: body = m.content;
   }
-  return `[${stamp}] Reporter: ${body}`;
+  return row(stamp, "Reporter", body);
 }
 
 export function renderTranscript(history: Message[], pending: Message[], now: Date = new Date()): string {

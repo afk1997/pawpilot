@@ -62,6 +62,11 @@ export function digitsOf(run: string): string {
   return normalizeDigits(run).replace(/\D/g, "");
 }
 
+/** The text as the scrubber reads it, with every run replaced by `marker`: masks exactly what the scrubber would find. */
+export function maskDigitRuns(text: string, marker: string): string {
+  return normalizeDigits(text).replace(new RegExp(DIGIT_RUN_RE), marker);
+}
+
 /** One optional separator between two digits, as DIGIT_RUN_RE reads them. */
 const SEP = "[\\s-]?";
 
