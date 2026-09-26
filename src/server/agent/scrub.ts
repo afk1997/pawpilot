@@ -140,12 +140,13 @@ const TERMINATOR = String.raw`(?:।|(?<!${TITLE})[.!?](?=[.!?।]*(?:\s|$|[*_]|
 const CLOSER = String.raw`(?:[*_]|\p{Extended_Pictographic}|\p{Emoji_Modifier}|\uFE0F|\u200D)`;
 const FIRST_PERSON = String.raw`(?:we|I|हम|हमने|मैं|मैंने|आम्ही|मी|અમે|મેં|હું)`;
 /**
- * An ambulance or team that can be the subject of a Hindi, Marathi or Gujarati "is coming" or "on the way" phrase;
- * गाड़ी with ड़ in either encoding, or as Marathi's गाडी. Never a driver word.
+ * An ambulance or team that can be the subject of a Hindi, Marathi or Gujarati "is coming" or "on the way" phrase, in
+ * the spellings replies use (अ‍ॅ with or without its joiner), Latin "ambulance" and "team" inside an Indic sentence, and
+ * गाड़ी with ड़ in either encoding or as Marathi's गाडी. Never a driver word.
  */
-const INDIC_VEHICLE = String.raw`(?:एम्बुलेंस|एंबुलेंस|ऐम्बुलेंस|एम्बुलन्स|रुग्णवाहिका|गा(?:\u0921\u093C|\u095C|\u0921)ी|टीम|એમ્બ્યુલન્સ|ગાડી|ટીમ)`;
+const INDIC_VEHICLE = String.raw`(?:ambulance|team|एम्बुलेंस|एंबुलेंस|ऐम्बुलेंस|एम्बुलेन्स|एम्बुलन्स|एम्ब्युलन्स|ॲम्ब्युलन्स|अ\u200D?ॅम्ब्युलन्स|रुग्णवाहिका|गा(?:\u0921\u093C|\u095C|\u0921)ी|टीम|એમ્બ્યુલન્સ|ઍમ્બ્યુલન્સ|ગાડી|ટીમ)`;
 /** An ambulance, vehicle, crew or driver, in every script. */
-const VEHICLE = String.raw`(?:ambulance|team|driver|ड्राइवर|ड्रायव्हर|ડ્રાઇવર|${INDIC_VEHICLE})`;
+const VEHICLE = String.raw`(?:driver|ड्राइवर|ड्रायव्हर|ડ્રાઇવર|${INDIC_VEHICLE})`;
 /**
  * A word between a second-person pronoun and the verb. Never a first-person pronoun or an ambulance word: with one of
  * those between them, the pronoun is not the verb's subject ("आप रुकिए, एम्बुलेंस भेज दी है").
@@ -158,24 +159,31 @@ const SECOND_PERSON = String.raw`(?:you(?:['\u2019]re|['\u2019]ll${GAP}be|${GAP}
 /** Not within two words after a second-person subject: then the reporter is the one sending or travelling. */
 const NOT_SECOND_PERSON = String.raw`(?<!${WORD_START}${SECOND_PERSON}(?:${GAP}${INNER_WORD}){0,2}${GAP})`;
 /** A number, contact or details word in any of the four languages, with whatever is glued to it ("नंबरवर"). */
-const NUMBER_WORD = String.raw`(?:नंबर|नम्बर|क्रमांक|संपर्क|जानकारी|डिटेल्स|विवरण|माहिती|तपशील|નંબર|સંપર્ક|માહિતી|વિગતો|number|contact|details)[^\s।.!?]*`;
-/** One word, never across a sentence end; a phone number with single spaces or hyphens counts as one word. */
-const ONE_WORD = String.raw`(?:\+?\d(?:[ -]?\d)*|[^\s।.!?]+)`;
+const NUMBER_WORD = String.raw`(?:नंबर|नम्बर|क्रमांक|संपर्क|जानकारी|डिटेल्स|विवरण|माहिती|तपशील|નંબર|સંપર્ક|માહિતી|વિગતો|number|contact|details)[^\s।.!?,]*`;
+/**
+ * One word between that word and the verb: never an ambulance or team word (then the vehicle is what was sent), never
+ * across a comma or a sentence end; a phone number with single spaces or hyphens counts as one word.
+ */
+const WINDOW_WORD = String.raw`(?!${INDIC_VEHICLE})(?:\+?\d(?:[ -]?\d)*|[^\s।.!?,]+)`;
 /**
  * Not with a number, contact or details word within the two words before the verb: "नंबर पहले ही भेज दिया",
- * "नंबर आधीच पाठवला", "નંબર પહેલેથી મોકલી" send a number, not an ambulance.
+ * "नंबर आधीच पाठवला", "નંબર પહેલેથી મોકલી" send a number, not an ambulance. "यह रहा नंबर, एम्बुलेंस भेज दी है" does not
+ * escape: the comma, and the ambulance word, end the window.
  */
-const NOT_AFTER_NUMBER = String.raw`(?<!${NUMBER_WORD}(?:${GAP}${ONE_WORD}){0,2}${GAP})`;
+const NOT_AFTER_NUMBER = String.raw`(?<!${NUMBER_WORD}(?:${GAP}${WINDOW_WORD}){0,2}${GAP})`;
 /** "sending (you) (the) (driver's) number/contact/details": we send numbers, never ambulances. */
 const NOT_SENDING_A_NUMBER = String.raw`(?!${GAP}(?:you${GAP})?(?:(?:the|his|her|their|its|this|that|our)${GAP})?(?:(?:driver|ambulance|unit|helpline|clinic)(?:['\u2019]s)?${GAP}){0,2}(?:phone${GAP})?(?:numbers?|contacts?|details)\b)`;
-/** An INDIC_VEHICLE word right before the phrase that follows: the ambulance or team is that phrase's subject. */
-const VEHICLE_SUBJECT = String.raw`${WORD_START}${INDIC_VEHICLE}${WORD_END}${GAP}`;
+/** An adverb that may stand between the subject and the phrase: "एम्बुलेंस अभी रास्ते में है", "गाड़ी जल्द ही आ रही है". */
+const SUBJECT_ADVERB = String.raw`(?:अभी|भी|जल्द(?:${GAP}ही)?|तुरंत|आता|હમણાં)${WORD_END}${GAP}`;
+/**
+ * An INDIC_VEHICLE word right before the phrase that follows, or with one SUBJECT_ADVERB between: the ambulance or team
+ * is that phrase's subject.
+ */
+const VEHICLE_SUBJECT = String.raw`${WORD_START}${INDIC_VEHICLE}${WORD_END}${GAP}(?:${SUBJECT_ADVERB})?`;
 /** Hindi "आ रही/रहा/रहे है/हैं" (is coming), after an optional "to you" ("आपके पास", "आप तक", "आपकी ओर/तरफ़"). */
 const HI_COMING = String.raw`(?:(?:आपके${GAP}पास|आप${GAP}तक|आपकी${GAP}(?:ओर|तर(?:फ\u093C?|\u095E)))${GAP})?आ${GAP}रह[ीाे]${GAP}(?:हैं|है)${WORD_END}`;
 /** "On the way": Hindi रास्ते में, Marathi रस्त्यात and वाटेत, Gujarati રસ્તામાં (each also means "in the road"). */
 const ROAD = String.raw`(?:रास्ते${GAP}में|रस्त्यात|वाटेत|રસ્તામાં)${WORD_END}`;
-/** Not with a clinic, hospital or doctor word within the two words before: the way to a clinic, not an ambulance's. */
-const NOT_CLINIC_ROUTE = String.raw`(?<!(?:क्लिनिक|अस्पताल|हॉस्पिटल|डॉक्टर|दवाखान्या|रुग्णालय|હોસ્પિટલ|દવાખાને)[^\s।.!?]*${GAP}(?:[^\s।.!?]+${GAP})?)`;
 
 const DISPATCH_PATTERNS = [
   // English: we're/I'm sending, on the/its/their… way (not "on the way to the clinic"), is/are coming to you, dispatch(ed).
@@ -186,7 +194,7 @@ const DISPATCH_PATTERNS = [
   // Hindi, Marathi and Gujarati "is coming" and "on the way", precision first: only with an ambulance or team word right
   // before, so "दिक्कत आ रही है", "कुत्ता रास्ते में घायल है" or a driver or pronoun subject never fire.
   String.raw`${VEHICLE_SUBJECT}${HI_COMING}`,
-  String.raw`${VEHICLE_SUBJECT}${NOT_CLINIC_ROUTE}${ROAD}`,
+  String.raw`${VEHICLE_SUBJECT}${ROAD}`,
   // Hindi sending: भेज रहे/रहा/रही, भेज दी/दिया, भेजी (गई) है, भेजा (गया) है.
   String.raw`${NOT_SECOND_PERSON}${NOT_AFTER_NUMBER}${WORD_START}(?:भेज${GAP}(?:रह[ेाी]|(?:दी|दिया)${WORD_END})|भेजी${GAP}(?:गई${GAP})?है|भेजा${GAP}(?:गया${GAP})?है)`,
   // Marathi sending: पाठवत आहोत/आहे, पाठवली/पाठवले/पाठवला.
@@ -198,9 +206,9 @@ const DISPATCH_PATTERNS = [
 /**
  * Language that says Arham sends the ambulance or that it is on its way, in English, Hindi, Marathi and Gujarati
  * (DISPATCH_PATTERNS). Words may be separated by any horizontal whitespace but never a line break. It does not fire
- * on sending the reporter a number or details, the dispatch team or dispatcher, the way to a clinic, a verb whose
- * subject is the reporter (a second-person subject within two words before it), or an Indic "is coming" or "on the
- * way" without an ambulance or team word right before it.
+ * on sending the reporter a number or details, the dispatch team or dispatcher, "on the way to the clinic", a verb
+ * whose subject is the reporter (a second-person subject within two words before it), or an Indic "is coming" or "on
+ * the way" without an ambulance or team word right before it (one adverb such as अभी may stand between).
  */
 export const DISPATCH_RE = new RegExp(DISPATCH_PATTERNS.join("|"), "iu");
 
