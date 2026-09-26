@@ -116,8 +116,31 @@ describe("classifyOutcome", () => {
     expect(classifyOutcome({ ...base, result: startup("proxy_invalid", "HTTPS_PROXY is not a valid URL") })).toMatchObject({ ok: false, kind: "AUTH" });
     expect(classifyOutcome({ ...base, result: startup("session_held_by_background", "another process holds this session") }))
       .toMatchObject({ ok: false, kind: "TRANSIENT", message: "startup failure session_held_by_background: another process holds this session" });
-    expect(classifyOutcome({ ...base, result: startup("org_verify_failed", "Not logged in · Please run /login") })).toMatchObject({ ok: false, kind: "AUTH" });
-    expect(classifyOutcome({ ...base, result: startup("remote_settings_required_unavailable", "usage limit reached") })).toMatchObject({ ok: false, kind: "LIMITED" });
+    expect(classifyOutcome({ ...base, result: startup("org_verify_failed", "Not logged in · Please run /login") }))
+      .toMatchObject({ ok: false, kind: "AUTH", message: "startup failure org_verify_failed: Not logged in · Please run /login" });
+    expect(classifyOutcome({ ...base, result: startup("remote_settings_required_unavailable", "usage limit reached") }))
+      .toMatchObject({ ok: false, kind: "LIMITED", message: "startup failure remote_settings_required_unavailable: usage limit reached" });
+  });
+  it("reads a rapid_refill_breaker ending as INVALID_OUTPUT, whatever result carries it", () => {
+    const ending = { terminal_reason: "rapid_refill_breaker" };
+    expect(classifyOutcome({ ...base, assistantError: "invalid_request", result: success(null, { is_error: true, ...ending }) as never }))
+      .toMatchObject({ ok: false, kind: "INVALID_OUTPUT", message: "assistant error: invalid_request (rapid_refill_breaker)" });
+    expect(classifyOutcome({ ...base, result: success(null, { is_error: true, result: "context refilled too fast", ...ending }) as never }))
+      .toMatchObject({ ok: false, kind: "INVALID_OUTPUT" });
+    expect(classifyOutcome({ ...base, result: { ...success(null), subtype: "error_during_execution", is_error: true, errors: ["stopped"], ...ending } as never }))
+      .toMatchObject({ ok: false, kind: "INVALID_OUTPUT" });
+  });
+  it("reads a malformed tool history in an is_error result as INVALID_OUTPUT, after the API status", () => {
+    const failed = (result: string, extra: Record<string, unknown> = {}) => success(null, { is_error: true, result, ...extra }) as never;
+    for (const text of [
+      "API Error: 400 messages.3: orphaned tool_result block with no matching tool_use",
+      "API Error: 400 duplicate tool_use id toolu_01",
+      "API Error: 400 tool use concurrency issues",
+    ]) {
+      expect(classifyOutcome({ ...base, result: failed(text) })).toMatchObject({ ok: false, kind: "INVALID_OUTPUT" });
+    }
+    expect(classifyOutcome({ ...base, result: failed("duplicate tool_use id", { api_error_status: 401 }) })).toMatchObject({ ok: false, kind: "AUTH" });
+    expect(classifyOutcome({ ...base, result: failed("socket hang up") })).toMatchObject({ ok: false, kind: "TRANSIENT" });
   });
   it("fails the turn as mcp_not_connected, with the init check's detail, when that check did not pass", () => {
     expect(classifyOutcome({ ...base, initMismatch: "foreign tools [Bash]; arham status=connected", aborted: true }))

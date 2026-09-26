@@ -141,7 +141,7 @@ const CLOSER = String.raw`(?:[*_]|\p{Extended_Pictographic}|\p{Emoji_Modifier}|\
 const FIRST_PERSON = String.raw`(?:we|I|हम|हमने|मैं|मैंने|आम्ही|मी|અમે|મેં|હું)`;
 /**
  * An ambulance or team that can be the subject of a Hindi, Marathi or Gujarati "is coming" or "on the way" phrase, in
- * the spellings replies use (अ‍ॅ with or without its joiner), Latin "ambulance" and "team" inside an Indic sentence, and
+ * the spellings replies use (अ\u200Dॅ with or without its joiner), Latin "ambulance" and "team" inside an Indic sentence, and
  * गाड़ी with ड़ in either encoding or as Marathi's गाडी. Never a driver word.
  */
 const INDIC_VEHICLE = String.raw`(?:ambulance|team|एम्बुलेंस|एंबुलेंस|ऐम्बुलेंस|एम्बुलेन्स|एम्बुलन्स|एम्ब्युलन्स|ॲम्ब्युलन्स|अ\u200D?ॅम्ब्युलन्स|रुग्णवाहिका|गा(?:\u0921\u093C|\u095C|\u0921)ी|टीम|એમ્બ્યુલન્સ|ઍમ્બ્યુલન્સ|ગાડી|ટીમ)`;

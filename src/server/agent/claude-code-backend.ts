@@ -51,6 +51,13 @@ const AUTH_ERRORS = new Set([
 /** Error text that means a usage limit, and error text that means a login problem; whole phrases only. */
 const LIMIT_TEXT_RE = /\b(rate limit|usage limit|weekly limit|too many requests|limit reached|hit your limit)\b/i;
 const AUTH_TEXT_RE = /\b(not logged in|invalid api key|invalid token|authentication(?:_error)?|authenticate|permission_error|unauthorized|401|403)\b/i;
+/**
+ * Endings the turn's own content caused (a prompt too long for the model, a context that keeps refilling): a retry with
+ * a shorter transcript can clear them.
+ */
+const CONTENT_ENDINGS = new Set<string>(["prompt_too_long", "blocking_limit", "rapid_refill_breaker"]);
+/** Result text that means the turn's tool history was malformed: this turn's problem, not the service's. */
+const TOOL_HISTORY_RE = /orphaned tool_result|duplicate tool_use|tool use concurrency/i;
 /** Startup failures only the owner can fix (install, config, login, host); the others are read by their text. */
 const OWNER_STARTUP_FAILURES = new Set<SDKStartupFailureReason>([
   "org_pin_api_key_conflict", "org_pin_mismatch", "managed_settings_invalid", "gateway_signin_required", "gateway_access_denied",
@@ -186,7 +193,7 @@ function classify(obs: StreamObservation): TurnResult {
       if (status === 401 || status === 403) return fail("AUTH", `assistant error: invalid_request (api status ${status})`);
       if (status === 429) return fail("LIMITED", `assistant error: invalid_request (api status ${status})`);
       if (obs.refusal) return fail("INVALID_OUTPUT", "assistant error: invalid_request (refusal)");
-      if (ending === "prompt_too_long" || ending === "blocking_limit") return fail("INVALID_OUTPUT", `assistant error: invalid_request (${ending})`);
+      if (ending && CONTENT_ENDINGS.has(ending)) return fail("INVALID_OUTPUT", `assistant error: invalid_request (${ending})`);
       return fail("AUTH", "assistant error: invalid_request");
     }
     if (AUTH_ERRORS.has(obs.assistantError)) return fail("AUTH", `assistant error: ${obs.assistantError}`);
@@ -203,17 +210,23 @@ function classify(obs: StreamObservation): TurnResult {
   if (r.subtype !== "success") {
     const text = ("errors" in r ? r.errors : []).join(" | ");
     const reason = r.startup_failure_reason;
+    // Every message keeps the startup failure's reason when there is one.
+    const said = (what: string) => (reason ? `startup failure ${reason}: ${what}` : what);
     // An owner-fixable startup failure is AUTH whatever its text says; any other one is read like any error text.
-    if (reason && OWNER_STARTUP_FAILURES.has(reason)) return fail("AUTH", `startup failure ${reason}: ${text}`);
+    if (reason && OWNER_STARTUP_FAILURES.has(reason)) return fail("AUTH", said(text));
     if (r.subtype === "error_max_structured_output_retries" || r.subtype === "error_max_turns") return fail("INVALID_OUTPUT", `${r.subtype}: ${text}`);
-    if (LIMIT_TEXT_RE.test(text)) return fail("LIMITED", text);
-    if (AUTH_TEXT_RE.test(text)) return fail("AUTH", text);
-    return fail("TRANSIENT", `${reason ? `startup failure ${reason}` : r.subtype}: ${text}`);
+    if (r.terminal_reason && CONTENT_ENDINGS.has(r.terminal_reason)) return fail("INVALID_OUTPUT", `${r.subtype} (${r.terminal_reason}): ${text}`);
+    if (LIMIT_TEXT_RE.test(text)) return fail("LIMITED", said(text));
+    if (AUTH_TEXT_RE.test(text)) return fail("AUTH", said(text));
+    return fail("TRANSIENT", reason ? said(text) : `${r.subtype}: ${text}`);
   }
   if (r.is_error) {
     const status = r.api_error_status ?? 0;
     if (status === 429) return fail("LIMITED", `api status ${status}`);
     if (status === 401 || status === 403) return fail("AUTH", `api status ${status}`);
+    // The turn's own content: an ending it caused, or a malformed tool history. A retry with a shorter transcript.
+    if (r.terminal_reason && CONTENT_ENDINGS.has(r.terminal_reason)) return fail("INVALID_OUTPUT", `result is_error (${r.terminal_reason}): ${r.result}`);
+    if (TOOL_HISTORY_RE.test(r.result)) return fail("INVALID_OUTPUT", `result is_error (tool history): ${r.result}`);
     return fail("TRANSIENT", `result is_error (status ${status}): ${r.result}`);
   }
   const parsed = parseStructuredReplyDetailed(r.structured_output);
