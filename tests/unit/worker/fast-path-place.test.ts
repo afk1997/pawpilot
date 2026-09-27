@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { GENERIC_AREA_WORDS, hasGenericAreaWord, type DirectoryAmbulance } from "@/server/directory/matcher";
+import { EVERYDAY_AREA_NAMES, GENERIC_AREA_WORDS, hasGenericAreaWord, isVagueAreaName, type DirectoryAmbulance } from "@/server/directory/matcher";
 import { placeDecision } from "@/server/worker/fast-path";
 
 /** A directory-like unit with a dummy phone: the place columns are what the fast path reads. */
@@ -8,15 +8,15 @@ const unit = (id: string, city: string, area: string | null, areasCovered: strin
   operatorName: "Arham Yuva Seva Group", operatorIsArham: true,
 });
 
-/** Modelled on the real directory's place columns: shared locality names, a Ghuma area, a city of one unit. */
+/** Modelled on the real directory's place columns: shared locality names, everyday-word areas, a city of one unit. */
 const rows: DirectoryAmbulance[] = [
   unit("ghatkopar", "Mumbai", "Ghatkopar", ["Ghatkopar", "Vikhroli"]),
   unit("malad", "Mumbai", "Malad", ["Malad", "Kandivali"]),
-  unit("andheri", "Mumbai", "Andheri", ["Andheri West", "Vile Parle West", "Juhu"]),
+  unit("andheri", "Mumbai", "Andheri", ["Andheri West", "Vile Parle West", "Juhu", "Lokhandwala"]),
   unit("miraroad", "Mumbai", "Mira Road", ["Mira Road", "Bhayandar"]),
   unit("pmc", "Pune", "PMC", ["Kothrud", "Karve Nagar"]),
   unit("pcmc", "Pune", "PCMC", ["Pimpri Chinchwad", "Dehu Road"]),
-  unit("ahmedabad", "Ahmedabad", null, ["Satellite", "Bopal", "South Bopal", "Ghuma"]),
+  unit("ahmedabad", "Ahmedabad", null, ["Satellite", "Bopal", "South Bopal", "Ghuma", "Ambli"]),
   unit("delhi", "Delhi", "Old Delhi", ["Shalimar Bagh", "Model Town", "Kamla Nagar", "Patel Nagar"]),
   unit("indore", "Indore", null, ["Vijay Nagar", "Bengali Square"]),
   unit("kolkata", "Kolkata", null, ["Hazra", "Minto Park"]),
@@ -35,12 +35,14 @@ describe("fast path place checks", () => {
     ["Karve Nagar, Pune", "pmc", "area"], // a generic name, with the unit's city named
     ["Model Town, Delhi, dog injured", "delhi", "area"],
     ["Mira Road, Mumbai", "miraroad", "area"],
-    ["andheri west me kutta ghayal hai", "andheri", "area"], // the plain name "Andheri" beside the generic "Andheri West"
+    ["south bopal me kutta ghayal hai", "ahmedabad", "area"], // the plain name "Bopal" beside the generic "South Bopal"
     ["Vikhroli station ke paas", "ghatkopar", "area"],
     ["Solapur me kutta ghayal hai", "solapur", "city"],
     ["Nagpur, injured cow", "nagpur", "area"],
-    // The residual: an area name that is also an everyday word, with no other city named, still fires.
-    ["Satellite ke paas kutta ghayal hai", "ahmedabad", "area"],
+    // An everyday-word area name with its city named.
+    ["Satellite, Ahmedabad", "ahmedabad", "area"],
+    ["Andheri West, Mumbai", "andheri", "area"],
+    ["Hazra, Kolkata me kutta ghayal hai", "kolkata", "area"],
   ])("fires for %s", (text, id, matchType) => {
     expect(decide(text)).toEqual({ fire: true, unit: id, matchType });
   });
@@ -52,6 +54,14 @@ describe("fast path place checks", () => {
     ["Kamla Nagar, Agra, injured cow", "generic_area"],
     ["Karve Nagar me kutta ghayal hai", "generic_area"],
     ["mira road me kutta", "generic_area"],
+    // Area names that are also everyday words, verb forms or surnames need their city named.
+    ["ambli na jhad pase kutru ghayal che", "generic_area"],
+    ["Satellite ke paas kutta ghayal hai", "generic_area"],
+    ["gaadi ghuma rahe the, kutta ghayal ho gaya", "generic_area"],
+    ["Hazra ji ka kutta ghayal hai, Lucknow", "generic_area"],
+    ["Lokhandwala ji ki gali me kutta ghayal hai", "generic_area"],
+    ["andheri raat me kutta ghayal pada tha", "generic_area"],
+    ["andheri west me kutta ghayal hai", "generic_area"],
     ["Mumbai me gaadi ghuma rahe the", "other_city"],
     ["Hazra ji ka kutta ghayal hai, Mumbai", "other_city"],
     ["Ghatkopar, Pune", "other_city"],
@@ -71,6 +81,16 @@ describe("fast path place checks", () => {
     for (const name of ["Ghatkopar", "Ramdevnagar", "Shivajinagar", "Ranigunj", "Satellite", "Shalimar Bagh", "Bengali Square"]) {
       expect(hasGenericAreaWord(name), name).toBe(false);
     }
+  });
+
+  it("reads an everyday-word area name as vague, like a generic one", () => {
+    for (const name of ["Satellite", "Ghuma", "Ambli", "Khadki", "Lokhandwala", "Hazra", "Andheri", "Andheri West", "Khar", "Sela", "Model Town"]) {
+      expect(isVagueAreaName(name), name).toBe(true);
+    }
+    // Whole words only: Kharghar holds "khar" but is not Khar.
+    for (const name of ["Ghatkopar", "Bopal", "Vikhroli", "Kharghar"]) expect(isVagueAreaName(name), name).toBe(false);
+    expect(hasGenericAreaWord("Satellite")).toBe(false);
+    expect([...EVERYDAY_AREA_NAMES]).toEqual(["satellite", "ghuma", "ambli", "khadki", "lokhandwala", "hazra", "andheri", "khar", "sela"]);
   });
 
   it("is the one generic word list the ruling fixed", () => {

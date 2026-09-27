@@ -164,6 +164,26 @@ export function hasGenericAreaWord(areaName: string): boolean {
   return normalize(areaName).split(" ").some((w) => GENERIC_AREA_SET.has(w));
 }
 
+/**
+ * Area names that are also everyday words, verb forms or surnames in English, Hindi, Marathi or Gujarati, so a message
+ * can hold one without naming the place: "ambli na jhad pase" (a tamarind tree), "gaadi ghuma rahe the" (turning), "khadki
+ * pase" (a lane's gate), "Hazra ji ka kutta" and "Lokhandwala ji" (surnames), "andheri raat" (a dark night), "khar" (a
+ * squirrel in Marathi), "sela" (a rice). Read like GENERIC_AREA_WORDS, as whole words of the area name, so an exact
+ * match through one alone needs the unit's city named or known too. Curated from the seed fixture's and
+ * ambulances-clinics.csv's area names; a new area name that is an everyday word belongs here.
+ */
+export const EVERYDAY_AREA_NAMES = ["satellite", "ghuma", "ambli", "khadki", "lokhandwala", "hazra", "andheri", "khar", "sela"] as const;
+
+const VAGUE_AREA_WORDS: ReadonlySet<string> = new Set<string>([...GENERIC_AREA_WORDS, ...EVERYDAY_AREA_NAMES]);
+
+/**
+ * Whether an area name does not pin a place down on its own: it holds a word of GENERIC_AREA_WORDS ("Model Town") or of
+ * EVERYDAY_AREA_NAMES ("Satellite"), as a whole word after normalize.
+ */
+export function isVagueAreaName(areaName: string): boolean {
+  return normalize(areaName).split(" ").some((w) => VAGUE_AREA_WORDS.has(w));
+}
+
 /** Why an exact match on the reporter's words alone is not precise enough to act on without the model. */
 export type PrecisionIssue = "other_city" | "generic_area";
 
@@ -171,9 +191,10 @@ export type PrecisionIssue = "other_city" | "generic_area";
  * The precision rules for an exact match (`result`) made on the reporter's words alone (`text`, the query it was made
  * on), which the fast path's card and the Claude turn's pre-match both follow: other_city when the text names a
  * directory city (citiesNamed) that is not every matched unit's ("Ghatkopar, Pune"); generic_area when an area match
- * reaches a unit only through area names holding a GENERIC_AREA_WORDS word (areaNamesIn) and the text does not name that
- * unit's city ("Model Town, Ludhiana"). A unit reached through a plain name too ("Andheri West" also names Andheri) is
- * precise. Null when neither holds: "ghatkopar" and "Karve Nagar, Pune" are precise. Pure: rows in, issue out.
+ * reaches a unit only through vague area names (isVagueAreaName: a GENERIC_AREA_WORDS or EVERYDAY_AREA_NAMES word, found
+ * by areaNamesIn) and the text does not name that unit's city ("Model Town, Ludhiana", "ambli na jhad pase"). A unit
+ * reached through a plain name too ("South Bopal" also names Bopal) is precise. Null when neither holds: "ghatkopar"
+ * and "Karve Nagar, Pune" are precise. Pure: rows in, issue out.
  *
  * `knownCity` (the pre-match only; the fast path answers before any city is known): the city the conversation already
  * holds stands until the words name another, so a unit in a different city whose city the text does not name is
@@ -192,7 +213,7 @@ export function precisionIssue(
   const known = context.knownCity ? normalize(context.knownCity) : "";
   if (known.length > 0 && result.candidates.some((u) => normalize(u.city) !== known && !textNames(text, u.city))) return "other_city";
   const cityGiven = (u: DirectoryAmbulance) => named.includes(normalize(u.city)) || normalize(u.city) === known;
-  const vague = (u: DirectoryAmbulance) => !cityGiven(u) && areaNamesIn(u, text).every(hasGenericAreaWord);
+  const vague = (u: DirectoryAmbulance) => !cityGiven(u) && areaNamesIn(u, text).every(isVagueAreaName);
   if (result.match === "area" && result.candidates.some(vague)) return "generic_area";
   return null;
 }

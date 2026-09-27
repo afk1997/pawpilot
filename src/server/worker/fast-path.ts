@@ -84,9 +84,10 @@ export type FastPathDecision =
 /**
  * The fast path's place checks, pure (rows in, decision out). The text alone must match exactly one unit by area or
  * city (the fallback's rule for an exact place) and pass the matcher's precision rules (precisionIssue): no directory
- * city named but that unit's ("Ghatkopar, Pune" is other_city), and an area match through an area name of the unit with
- * no GENERIC_AREA_WORDS word, or with the unit's city named ("Karve Nagar, Pune" fires, "Model Town, Ludhiana" is
- * generic_area). A text naming both a plain and a generic name of the unit ("Andheri West") fires on the plain one.
+ * city named but that unit's ("Ghatkopar, Pune" is other_city), and an area match through an area name of the unit that
+ * is not vague (no GENERIC_AREA_WORDS or EVERYDAY_AREA_NAMES word), or with the unit's city named ("Karve Nagar, Pune"
+ * and "Satellite, Ahmedabad" fire; "Model Town, Ludhiana" and "ambli na jhad pase" are generic_area). A text naming both
+ * a plain and a vague name of the unit ("South Bopal") fires on the plain one.
  */
 export function placeDecision(rows: DirectoryAmbulance[], text: string): PlaceDecision {
   const match = matchAmbulances(rows, { query: text });

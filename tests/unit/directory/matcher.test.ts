@@ -351,8 +351,10 @@ describe("precisionIssue", () => {
     // The known city counts as named for generic_area.
     expect(issue("Karve Nagar me", "Pune")).toBeNull();
     expect(issue("Karve Nagar me")).toBe("generic_area");
-    // No known city: the words alone decide, as before.
-    expect(issue("gaadi ghuma rahe the tab dekha")).toBeNull();
-    expect(issue("gaadi ghuma rahe the tab dekha", null)).toBeNull();
+    // No known city: the words alone decide. Ghuma is also a verb (EVERYDAY_AREA_NAMES), so it needs Ahmedabad named.
+    expect(issue("vikhroli me ek aur kutta")).toBeNull();
+    expect(issue("vikhroli me ek aur kutta", null)).toBeNull();
+    expect(issue("gaadi ghuma rahe the tab dekha")).toBe("generic_area");
+    expect(issue("gaadi ghuma rahe the, Ahmedabad")).toBeNull();
   });
 });
