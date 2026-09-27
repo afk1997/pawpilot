@@ -22,11 +22,14 @@ export const FAST_PATH_MODEL = "fast_path";
 export const FAST_PATH_MAX_CHARS = 300;
 
 /**
- * Words that say the reporter wants something besides a new ambulance number (a clinic, to donate or volunteer, a
- * person, a complaint, a wrong number, a driver who does not answer, help for a hurt human): a burst holding one goes to
- * the model even when it names a place. The one list, in Latin script (English and Hinglish), Devanagari (Hindi and
- * Marathi) and Gujarati, the bot's own menu words included. A Latin word here must start no covered place's name:
- * "band" would block Bandra, and "man" and "accident" are left out as too broad.
+ * Words and short phrases that say the reporter wants something besides a new ambulance number: a clinic, doctor or
+ * hospital; to donate, volunteer or make a suggestion (the menu's own words); a person; a complaint; a wrong number; a
+ * driver who does not answer ("not picking", "phone band", "नहीं लग", "उचलत नाही", "લાગતો નથી"); a hurt person
+ * ("aadmi", "ladka", "a man is", "मुलगा", "બાળક"; a child only with an accident cue, since "bachcha" and "बच्चा" are
+ * also an animal's young). A burst holding one goes to the model even when it names a place. The list holds the common
+ * phrasings, not every one: an unlisted way of saying the same still takes the fast path. Latin script (English and
+ * Hinglish), Devanagari (Hindi and Marathi) and Gujarati. An entry must start no covered place's name: "band" would block
+ * Bandra, and "man", "accident" and a bare "bachcha" are left out as too broad.
  */
 export const OTHER_INTENT_WORDS = [
   "clinic", "clinik", "hospital", "doctor", "dawakhana", "क्लिनिक", "दवाखाना", "अस्पताल", "डॉक्टर", "દવાખાન", "હોસ્પિટલ",
@@ -36,22 +39,38 @@ export const OTHER_INTENT_WORDS = [
   // A driver who does not answer: the model gives another unit and the helpline (the prompt's rule 8).
   "utha", "uthaya", "uthata", "uthate", "uthaate", "switched", "unreachable", "reachable", "answering",
   "उठा", "उठाया", "उठाता", "बंद", "ઉપાડ", "બંધ",
-  // A hurt person: the model relays the emergency numbers.
+  "not picking", "picking up", "switch off", "switched off", "not responding", "no answer", "no response", "unable to reach",
+  "nahi lag", "nahi lagta", "lag nahi", "phone band", "number band", "phone busy", "number busy", "busy aa", "busy hai",
+  "उचल", "नहीं लग", "लग नहीं", "लागत नाही", "स्विच", "લાગતો નથી", "લાગતું નથી", "ઉપાડત",
+  // A hurt person: the model relays the emergency numbers. A child only with an accident cue: "bachcha" and "बच्चा" are
+  // also an animal's young ("kutte ka bachcha ghayal hai" is a puppy).
   "aadmi", "admi", "vyakti", "आदमी", "व्यक्ति", "माणूस", "વ્યક્તિ", "માણસ",
-  // The menu's own words (welcome.ts) and Marathi-only words: a complaint, a donation.
+  "ladka", "ladke", "ladki", "aurat", "woman", "boy", "girl", "man is", "man has", "man got", "man was",
+  "लड़का", "लड़के", "लड़की", "औरत", "मुलगा", "मुलगी", "बाळ", "બાળક", "છોકરો", "છોકરી",
+  "bachche ka accident", "bachche ko gaadi", "bachche ko takkar", "bachche ko maara",
+  "बच्चे का एक्सीडेंट", "बच्चे को गाड़ी", "बच्चे को टक्कर", "बच्चे को मारा",
+  // The menu's own words (welcome.ts) and Marathi-only words: volunteering, a complaint, a donation, a suggestion.
   "वालंटियर", "वॉलंटियर", "ક્લિનિક", "तक्रार", "देणगी",
+  "हॉस्पिटल", "डाक्टर", "ડૉક્ટર", "ડોક્ટર", "suggestion", "sujhav", "सुझाव", "सूचना", "સૂચન",
 ] as const;
 
-/**
- * A listed word at the start of a word, in any case, whatever ending follows: "Clinics", "दवाखाना", "દવાખાનું" and
- * "ખોટો" count; "vardaan" and "वरदान" do not.
- */
-const OTHER_INTENT_RE = new RegExp(`(?<![\\p{L}\\p{M}\\p{N}])(?:${OTHER_INTENT_WORDS.join("|")})`, "iu");
 /** Devanagari and Gujarati nukta: "ग़लत" is read as "गलत". */
 const NUKTA_RE = /[़઼]/g;
 
+/**
+ * The form both the entries and the reporter's text are read in: NFC, no nukta ("लड़का" and "लडका" are one word), and
+ * every whitespace run as one space, so a phrase's space matches a line break or a double space too.
+ */
+const intentForm = (s: string) => s.normalize("NFC").replace(NUKTA_RE, "").replace(/\s+/g, " ");
+
+/**
+ * A listed entry at the start of a word, in any case, whatever ending follows: "Clinics", "दवाखाना", "દવાખાનું" and
+ * "ખોટો" count; "vardaan" and "वरदान" do not.
+ */
+const OTHER_INTENT_RE = new RegExp(`(?<![\\p{L}\\p{M}\\p{N}])(?:${OTHER_INTENT_WORDS.map(intentForm).join("|")})`, "iu");
+
 export function hasOtherIntentWord(text: string): boolean {
-  return OTHER_INTENT_RE.test(text.normalize("NFC").replace(NUKTA_RE, ""));
+  return OTHER_INTENT_RE.test(intentForm(text));
 }
 
 export type PlaceDecision =

@@ -17,10 +17,69 @@ describe("fast path other-intent words", () => {
       "wrong", "galat", "गलत", "ખોટ",
       "utha", "uthaya", "uthata", "uthate", "uthaate", "switched", "unreachable", "reachable", "answering",
       "उठा", "उठाया", "उठाता", "बंद", "ઉપાડ", "બંધ",
+      "not picking", "picking up", "switch off", "switched off", "not responding", "no answer", "no response", "unable to reach",
+      "nahi lag", "nahi lagta", "lag nahi", "phone band", "number band", "phone busy", "number busy", "busy aa", "busy hai",
+      "उचल", "नहीं लग", "लग नहीं", "लागत नाही", "स्विच", "લાગતો નથી", "લાગતું નથી", "ઉપાડત",
       "aadmi", "admi", "vyakti", "आदमी", "व्यक्ति", "माणूस", "વ્યક્તિ", "માણસ",
+      "ladka", "ladke", "ladki", "aurat", "woman", "boy", "girl", "man is", "man has", "man got", "man was",
+      "लड़का", "लड़के", "लड़की", "औरत", "मुलगा", "मुलगी", "बाळ", "બાળક", "છોકરો", "છોકરી",
+      "bachche ka accident", "bachche ko gaadi", "bachche ko takkar", "bachche ko maara",
+      "बच्चे का एक्सीडेंट", "बच्चे को गाड़ी", "बच्चे को टक्कर", "बच्चे को मारा",
       "वालंटियर", "वॉलंटियर", "ક્લિનિક", "तक्रार", "देणगी",
+      "हॉस्पिटल", "डाक्टर", "ડૉક્ટર", "ડોક્ટર", "suggestion", "sujhav", "सुझाव", "सूचना", "સૂચન",
     ]);
     for (const word of OTHER_INTENT_WORDS) expect(hasOtherIntentWord(word), word).toBe(true);
+  });
+
+  describe("the phrasings the first lists missed (re-review I-2)", () => {
+    it.each([
+      // A driver who does not answer.
+      ["en", "Ghatkopar ambulance driver not picking up the call"],
+      ["en", "Ghatkopar driver is not responding"],
+      ["en", "Ghatkopar ambulance: no answer, please help"],
+      ["en", "unable to reach Ghatkopar ambulance"],
+      ["Hinglish", "Ghatkopar ambulance ka phone switch off hai"],
+      ["Hinglish", "Ghatkopar wala phone nahi lag raha"],
+      ["Hinglish", "Ghatkopar ka number busy aa raha hai"],
+      ["Hinglish", "Ghatkopar ambulance ka phone band hai"],
+      ["hi", "घाटकोपर एम्बुलेंस का फोन नहीं लग रहा"],
+      ["hi", "घाटकोपर एम्बुलेंस का फोन स्विच ऑफ है"],
+      ["mr", "घाटकोपर एम्बुलन्सचा फोन उचलत नाही"],
+      ["mr", "घाटकोपर एम्बुलन्सचा फोन लागत नाही"],
+      ["gu", "ઘાટકોપર એમ્બ્યુલન્સનો ફોન લાગતો નથી"],
+      ["gu", "ઘાટકોપર એમ્બ્યુલન્સનું ફોન લાગતું નથી"],
+      // A hurt person.
+      ["en", "a man is injured near Ghatkopar station"],
+      ["en", "a woman fell near Ghatkopar station"],
+      ["Hinglish", "Ghatkopar me ek ladke ka accident hua hai"],
+      ["Hinglish", "Ghatkopar me ek bachche ko gaadi ne maara"],
+      ["hi", "घाटकोपर में एक बच्चे का एक्सीडेंट हुआ है"],
+      ["hi", "घाटकोपर में एक लड़का घायल है"],
+      ["mr", "घाटकोपरमध्ये एक मुलगा जखमी आहे"],
+      ["gu", "ઘાટકોપરમાં એક બાળક ઘાયલ છે"],
+      // Other requests: a hospital or doctor, and the menu's suggestion item.
+      ["hi", "घाटकोपर में हॉस्पिटल कहाँ है"],
+      ["hi", "मेरा एक सुझाव है"],
+      ["mr", "माझी एक सूचना आहे"],
+      ["gu", "ઘાટકોપરમાં ડૉક્ટર જોઈએ"],
+      ["gu", "મારું એક સૂચન છે"],
+      ["en", "Ghatkopar ke baare me yeh mera suggestion hai"],
+    ])("goes to the model (%s): %s", async (_lang, text) => {
+      expect(await decide(text)).toEqual({ fire: false, reason: "other_intent" });
+    });
+
+    it("reads an entry with or without its nukta, and a phrase across any whitespace", () => {
+      for (const text of ["एक लड़का घायल है", "एक लड़का घायल है", "एक लडका घायल है", "phone\nband hai", "driver  not   picking"]) {
+        expect(hasOtherIntentWord(text), text).toBe(true);
+      }
+    });
+
+    it("leaves an animal's young, a busy road and the words it was not given to the fast path", () => {
+      for (const text of [
+        "Ghatkopar me kutte ka bachcha ghayal hai", "Ghatkopar me billi ka baccha ghayal hai", "घाटकोपर में कुत्ते का बच्चा घायल है",
+        "busy road ke paas kutta ghayal hai, Ghatkopar", "Ghatkopar station ke bahar", "manhole me kutta gira hai",
+      ]) expect(hasOtherIntentWord(text), text).toBe(false);
+    });
   });
 
   it.each([

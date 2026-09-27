@@ -237,6 +237,16 @@ describe("the fast path", () => {
     expect((await turnOf(r.turnId!)).structuredOutput).toMatchObject({ location: { city: "Jamnagar", area: null }, matchType: "area" });
   });
 
+  it.each([
+    ["an animal's young", "Ghatkopar me kutte ka bachcha ghayal hai"],
+    ["a busy road", "busy road ke paas kutta ghayal hai, Ghatkopar"],
+  ])("still takes the fast path for %s", async (_case, content) => {
+    const c = await conv();
+    await storeReporterMessage(c.id, { kind: "text", content });
+    expect((await runTurn(c.id, { backend: untouched() })).kind).toBe("fast_path");
+    expect((await outbound(c.id))[0].content).toContain("Arham Animal Ambulance, Ghatkopar\n+91 70000 00001");
+  });
+
   it("is off when FAST_PATH_ENABLED is false", async () => {
     vi.stubEnv("FAST_PATH_ENABLED", "false");
     resetConfigForTests();
