@@ -70,6 +70,17 @@ describe("prematchAmbulances and the fast path's precision rules", () => {
     expect(prematched).toMatchObject({ source: "words", units: [{ display_name: "Arham Animal Ambulance, Old Delhi", covers: "Model Town" }] });
   });
 
+  it("holds the words to the city the conversation knows: another city's unit is not pre-matched unless named", async () => {
+    const skippedRun = await prematch("gaadi ghuma rahe the tab dekha", { city: "Mumbai", area: null });
+    expect(skippedRun.prematched).toBeNull();
+    expect([skippedRun.ctx.lastAmbulanceCandidates, skippedRun.ctx.lastAmbulanceMatch]).toEqual([null, null]);
+    expect(skippedRun.record.output).toEqual({ matchType: "area", count: 1, handles: [], skipped: "other_city" });
+    // A generic area name in the city the conversation knows is precise.
+    const known = await prematch("Karve Nagar me", { city: "Pune", area: null });
+    expect(known.prematched).toMatchObject({ source: "words", units: [{ display_name: "Arham Animal Ambulance, PMC", covers: "Karve Nagar" }] });
+    expect(known.ctx.lastAmbulanceMatch).toBe("area");
+  });
+
   it("leaves the known location's lookup as it was: offered, never armed, never checked against the words", async () => {
     const { prematched, ctx, record } = await prematch("ok", { city: "Mumbai", area: "Ghatkopar" });
     expect(prematched).toMatchObject({ matchType: "area", source: "known_location", units: [{ display_name: "Arham Animal Ambulance, Ghatkopar" }] });

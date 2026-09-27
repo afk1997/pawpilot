@@ -232,10 +232,11 @@ function coveredNames(r: DirectoryAmbulance, lookup: MatchInput): string | null 
  * match each unit names the covered area it went through (`covers`). A match on the reporter's words also sets the
  * tool's state, as find_ambulances would, so a reply without a token still gets their card; a match on the known
  * location never does (`source`), since a reply about another place ("we don't cover Lonavala") must not get the
- * earlier place's card. A match on the words follows the fast path's precision rules (precisionIssue): when the words
- * also name another covered city, or reach a unit only through generic area names without its city ("Model Town"),
- * nothing is pre-matched at all (no block, no handles, no card), the model looks the place up itself with the city,
- * and the audit record says why (`skipped`). Any looser match, or more units, leaves the lookup to the model. The units
+ * earlier place's card. A match on the words follows the fast path's precision rules (precisionIssue), with the city
+ * the conversation already knows: when the words also name another covered city, or match a unit in a city other than
+ * the known one without naming it, or reach a unit only through generic area names without its city being named or
+ * known ("Model Town"), nothing is pre-matched at all (no block, no handles, no card), the model looks the place up
+ * itself with the city, and the audit record says why (`skipped`). Any looser match, or more units, leaves the lookup to the model. The units
  * are scrubbed as tool output is. `record`: the audit entry (name "prematch"), whatever the outcome; a failed lookup is
  * recorded with its error's class and code, and throws nothing.
  */
@@ -262,7 +263,7 @@ export async function prematchAmbulances(
     let skipped: PrecisionIssue | null = null;
     const matchType = result.match;
     if ((matchType === "area" || matchType === "city") && count >= 1 && count <= PREMATCH_MAX_UNITS) {
-      if (source === "words") skipped = precisionIssue(rows, input.query, result);
+      if (source === "words") skipped = precisionIssue(rows, input.query, result, { knownCity: input.knownLocation?.city ?? null });
       if (skipped === null) {
         const scrubbed = scrubDeep(
           result.candidates.map((r): PrematchedUnit => {

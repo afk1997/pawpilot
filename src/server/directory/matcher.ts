@@ -174,15 +174,25 @@ export type PrecisionIssue = "other_city" | "generic_area";
  * reaches a unit only through area names holding a GENERIC_AREA_WORDS word (areaNamesIn) and the text does not name that
  * unit's city ("Model Town, Ludhiana"). A unit reached through a plain name too ("Andheri West" also names Andheri) is
  * precise. Null when neither holds: "ghatkopar" and "Karve Nagar, Pune" are precise. Pure: rows in, issue out.
+ *
+ * `knownCity` (the pre-match only; the fast path answers before any city is known): the city the conversation already
+ * holds stands until the words name another, so a unit in a different city whose city the text does not name is
+ * other_city ("gaadi ghuma rahe the" after Mumbai is known is not Ahmedabad's Ghuma), and a known city equal to the
+ * unit's counts as named for generic_area ("Karve Nagar me" once Pune is known). It is not one of citiesNamed's: a text
+ * naming a new covered city ("sorry, it is in surat") is still precise.
  */
 export function precisionIssue(
   rows: DirectoryAmbulance[],
   text: string,
-  result: Pick<MatchResult, "match" | "candidates">
+  result: Pick<MatchResult, "match" | "candidates">,
+  context: { knownCity?: string | null } = {}
 ): PrecisionIssue | null {
   const named = citiesNamed(rows, text).map(normalize);
   if (named.some((c) => result.candidates.some((u) => normalize(u.city) !== c))) return "other_city";
-  const vague = (u: DirectoryAmbulance) => !named.includes(normalize(u.city)) && areaNamesIn(u, text).every(hasGenericAreaWord);
+  const known = context.knownCity ? normalize(context.knownCity) : "";
+  if (known.length > 0 && result.candidates.some((u) => normalize(u.city) !== known && !textNames(text, u.city))) return "other_city";
+  const cityGiven = (u: DirectoryAmbulance) => named.includes(normalize(u.city)) || normalize(u.city) === known;
+  const vague = (u: DirectoryAmbulance) => !cityGiven(u) && areaNamesIn(u, text).every(hasGenericAreaWord);
   if (result.match === "area" && result.candidates.some(vague)) return "generic_area";
   return null;
 }

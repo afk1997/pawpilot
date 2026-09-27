@@ -149,6 +149,49 @@ describe("pre-matched units", () => {
     expect(t.handles).toEqual({});
   });
 
+  it("holds later words to the city an earlier model turn recorded: Ahmedabad's Ghuma is not pre-matched once Mumbai is known", async () => {
+    await getDb().insert(ambulances).values(
+      { operatorId: ids.arhamOperatorId, label: "Ahmedabad", city: "Ahmedabad", area: null, state: "Gujarat", phone: "+919876500080", areasCovered: ["Satellite", "Ghuma"] }
+    );
+    const c = await conv();
+    await storeReporterMessage(c.id, { kind: "text", content: "Mumbai me kutta ghayal hai" });
+    const ask = "Mumbai mein kaunsa area?";
+    const backend = new FakeBackend([
+      okReply({ reply: ask, intent: "ambulance", location: { city: "Mumbai", area: null } }),
+      okReply({ reply: ask, intent: "ambulance", location: { city: "Mumbai", area: null } }),
+    ]);
+    expect((await runTurn(c.id, { backend })).kind).toBe("ok");
+    const query = "gaadi ghuma rahe the tab dekha";
+    await storeReporterMessage(c.id, { kind: "text", content: query });
+    const r = await runTurn(c.id, { backend });
+    expect(r.kind).toBe("ok");
+    expect(backend.calls[1].prompt).toContain("Location known so far: Mumbai\n");
+    expect(backend.calls[1].prompt).not.toContain("PRE-MATCHED");
+    const sent = (await outbound(c.id)).at(-1)!;
+    expect(sent.content).toBe(ask);
+    expect(sent.content).not.toMatch(/\d/);
+    const t = await turnOf(r.turnId!);
+    expect(t.toolCalls).toEqual([
+      { name: "prematch", input: { query }, output: { matchType: "area", count: 1, handles: [], skipped: "other_city" }, durationMs: expect.any(Number) },
+    ]);
+    expect(t.handles).toEqual({});
+  });
+
+  it("pre-matches a generic area name in the city an earlier turn recorded (Karve Nagar once Pune is known)", async () => {
+    const c = await conv();
+    await storeReporterMessage(c.id, { kind: "text", content: "Pune me kutta ghayal hai" });
+    const handle = makeHandle("ambulance", c.id, ids.puneA);
+    const backend = new FakeBackend([
+      okReply({ reply: "Pune mein kaunsa area?", intent: "ambulance", location: { city: "Pune", area: null } }),
+      okReply({ reply: `Please call {{AMB:${handle}}} right away.`, intent: "ambulance", location: { city: "Pune", area: "Karve Nagar" } }),
+    ]);
+    expect((await runTurn(c.id, { backend })).kind).toBe("ok");
+    await storeReporterMessage(c.id, { kind: "text", content: "Karve Nagar me" });
+    expect((await runTurn(c.id, { backend })).kind).toBe("ok");
+    expect(backend.calls[1].prompt).toContain(`${HEADER}\n- {{AMB:${handle}}} — Arham Animal Ambulance, PMC (Pune), covers Karve Nagar [match: area]\n`);
+    expect((await outbound(c.id)).at(-1)!.content).toBe("Please call +91 98765 00005 right away.");
+  });
+
   it("names the covered area an area match went through (Vikhroli, covered by the Ghatkopar unit)", async () => {
     const c = await answered();
     await storeReporterMessage(c.id, { kind: "text", content: "vikhroli station ke paas" });

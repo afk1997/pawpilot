@@ -316,8 +316,10 @@ describe("precisionIssue", () => {
     row({ id: "delhi", city: "Delhi", area: "Old Delhi", areasCovered: ["Model Town"] }),
     row({ id: "ludhiana", city: "Ludhiana", areasCovered: ["Model Town"] }),
     row({ id: "pmc", city: "Pune", area: "PMC", areasCovered: ["Karve Nagar"] }),
+    row({ id: "ahmedabad", city: "Ahmedabad", areasCovered: ["Satellite", "Ghuma"] }),
   ];
-  const issue = (text: string) => precisionIssue(withShared, text, matchAmbulances(withShared, { query: text }));
+  const issue = (text: string, knownCity?: string | null) =>
+    precisionIssue(withShared, text, matchAmbulances(withShared, { query: text }), { knownCity });
 
   it("is null for precise words: a plain area, a generic one with its city, several units of the named city", () => {
     expect(issue("ghatkopar me kutta ghayal hai")).toBeNull();
@@ -336,5 +338,21 @@ describe("precisionIssue", () => {
   it("is generic_area when some unit is reached only through generic names and its city is not named", () => {
     expect(issue("Karve Nagar me kutta ghayal hai")).toBe("generic_area");
     expect(issue("Model Town me kutta ghayal hai")).toBe("generic_area");
+  });
+
+  it("holds the words to the city the conversation knows, unless they name the unit's city", () => {
+    // A unit elsewhere, its city unnamed: the known city stands.
+    expect(issue("gaadi ghuma rahe the tab dekha", "Mumbai")).toBe("other_city");
+    expect(issue("Karve Nagar me", "Mumbai")).toBe("other_city");
+    // A new covered city named in the words, or a unit in the known city, is precise.
+    expect(issue("sorry, it is in surat", "Mumbai")).toBeNull();
+    expect(issue("vikhroli me ek aur kutta", "Mumbai")).toBeNull();
+    expect(issue("vikhroli me ek aur kutta", "Bombay")).toBeNull();
+    // The known city counts as named for generic_area.
+    expect(issue("Karve Nagar me", "Pune")).toBeNull();
+    expect(issue("Karve Nagar me")).toBe("generic_area");
+    // No known city: the words alone decide, as before.
+    expect(issue("gaadi ghuma rahe the tab dekha")).toBeNull();
+    expect(issue("gaadi ghuma rahe the tab dekha", null)).toBeNull();
   });
 });
