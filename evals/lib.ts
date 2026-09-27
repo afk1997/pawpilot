@@ -11,7 +11,7 @@ import { INTENTS, LANGUAGES } from "../src/server/types";
 import type { TurnOutcome } from "../src/server/worker/turn-runner";
 import type { StepExpect } from "./assertions";
 
-const OUTCOME_KINDS = ["noop", "locked", "human_mode", "welcome", "menu", "audio_only", "fallback", "ok", "failed"] as const satisfies readonly TurnOutcome["kind"][];
+const OUTCOME_KINDS = ["noop", "locked", "human_mode", "welcome", "menu", "audio_only", "fast_path", "fallback", "ok", "failed"] as const satisfies readonly TurnOutcome["kind"][];
 const INFO_TOPICS = ["donate", "volunteer", "about", "faq", "human_emergency", "helpline"] as const satisfies readonly InfoTopic[];
 
 const isRegExp = (source: string) => {

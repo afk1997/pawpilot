@@ -5,10 +5,18 @@ import { conversations, messages, turns, type Conversation, type Message, type N
 import type { InteraktResult } from "../interakt/client";
 import type { TurnStatus } from "../types";
 
-export async function createTurn(input: { conversationId: string; status: TurnStatus; model?: string | null; effort?: string | null }): Promise<Turn> {
+/** `structuredOutput` and `handles`: an audit known before the send (the fast path's), written with the row itself. */
+export async function createTurn(input: {
+  conversationId: string; status: TurnStatus; model?: string | null; effort?: string | null;
+  structuredOutput?: unknown; handles?: HandleMap | null;
+}): Promise<Turn> {
   const [row] = await getDb()
     .insert(turns)
-    .values({ conversationId: input.conversationId, status: input.status, model: input.model ?? null, effort: input.effort ?? null })
+    .values({
+      conversationId: input.conversationId, status: input.status, model: input.model ?? null, effort: input.effort ?? null,
+      ...(input.structuredOutput !== undefined && { structuredOutput: input.structuredOutput }),
+      ...(input.handles !== undefined && { handles: input.handles }),
+    })
     .returning();
   return row;
 }

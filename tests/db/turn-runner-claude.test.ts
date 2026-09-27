@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { asc, eq } from "drizzle-orm";
 import { resetDb, createConversation } from "../helpers/db";
 import { seedDirectory, type DirectoryIds } from "../helpers/fixtures";
+import { resetConfigForTests } from "@/server/config";
 import { getDb } from "@/server/db/client";
 import { ambulances, conversations, events, messages, turns } from "@/server/db/schema";
 import { storeReporterMessage } from "@/server/inbound/store";
@@ -37,6 +38,17 @@ const ghatkoparStep = async (input: TurnInput) => {
   const out = await findAmbulancesImpl(input.toolContext!, { city: "Mumbai", area: "Ghatkopar", query: "ghatkopar" });
   return okReply({ reply: `Yeh raha number: {{AMB:${out.candidates[0].handle}}}. Please turant call kijiye.`, language: "hi", intent: "ambulance", location: { city: "Mumbai", area: "Ghatkopar" } });
 };
+
+// These tests drive the model branch and the runner with single-unit first bursts ("surat", "ghatkopar"), which the
+// fast path would answer without the model: it is off here, and tests/db/fast-path.test.ts covers it.
+beforeEach(() => {
+  vi.stubEnv("FAST_PATH_ENABLED", "false");
+  resetConfigForTests();
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+  resetConfigForTests();
+});
 
 describe("runTurn with a backend", () => {
   beforeEach(async () => { await stopBoss(); await resetDb(); ids = await seedDirectory(); });

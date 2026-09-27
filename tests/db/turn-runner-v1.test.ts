@@ -36,6 +36,17 @@ function duringFirstSend(during: () => Promise<void>) {
   }) as typeof fetch);
 }
 
+// These tests drive the model branch and the runner with single-unit first bursts ("surat", "ghatkopar"), which the
+// fast path would answer without the model: it is off here, and tests/db/fast-path.test.ts covers it.
+beforeEach(() => {
+  vi.stubEnv("FAST_PATH_ENABLED", "false");
+  resetConfigForTests();
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+  resetConfigForTests();
+});
+
 describe("runTurn v1", () => {
   beforeEach(async () => { await stopBoss(); await resetDb(); await seedDirectory(); });
   afterEach(async () => { await stopBoss(); });

@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { resetConfigForTests } from "@/server/config";
 import { LANGUAGES } from "@/server/types";
 import {
-  formatIndianPhone, partnerSuffix, buildAmbulanceCard, buildMultiAmbulanceCard, buildHelplineCard,
+  formatIndianPhone, partnerSuffix, buildAmbulanceCard, buildAmbulanceCardTemplate, buildMultiAmbulanceCard, buildHelplineCard,
   buildClinicCard, renderNumberForToken, type CardAmbulance,
 } from "@/server/messages/cards";
 
@@ -33,6 +33,20 @@ describe("cards", () => {
   it("renders the token replacement with the partner label inline", () => {
     expect(renderNumberForToken(arham, "en")).toBe("+91 70000 00001");
     expect(renderNumberForToken(partner, "en")).toBe("+91 70000 00007 (operated by Hope for Indies Trust)");
+  });
+
+  it("builds a card's template: the token stands for what renderNumberForToken renders, the partner label included", () => {
+    const token = "{{AMB:amb_abcdefgh}}";
+    expect(buildAmbulanceCardTemplate(arham, "en", token)).toBe("Arham Animal Ambulance, Ghatkopar\n{{AMB:amb_abcdefgh}}\nPlease call them right away.");
+    expect(buildAmbulanceCardTemplate(partner, "hi", token)).toBe("Animal Ambulance, Wadala\n{{AMB:amb_abcdefgh}}\nकृपया उन्हें तुरंत कॉल करें।");
+    // Rendering the token back gives the card, the partner label on the number's line.
+    for (const lang of LANGUAGES) {
+      for (const row of [arham, partner]) {
+        const rendered = buildAmbulanceCardTemplate(row, lang, token).replace(token, renderNumberForToken(row, lang));
+        expect(rendered).toBe(buildAmbulanceCard(row, lang).replace(`${formatIndianPhone(row.phone)}\n(`, `${formatIndianPhone(row.phone)} (`));
+        expect(buildAmbulanceCardTemplate(row, lang, token)).not.toMatch(/\d/);
+      }
+    }
   });
 
   it("builds a multi card listing each unit", () => {

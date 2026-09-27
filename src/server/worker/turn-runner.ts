@@ -1,3 +1,4 @@
+import { getConfig } from "../config";
 import { openLockConnection } from "../db/client";
 import type { Message } from "../db/schema";
 import { detectLanguage } from "../lang";
@@ -10,6 +11,7 @@ import { pendingText } from "./fallback";
 import { deliverText } from "./deliver";
 import { createTurn, finishTurn, updateConversation } from "./persist";
 import { runClaudeTurn } from "./claude-turn";
+import { fastPathDecision, runFastPathTurn } from "./fast-path";
 import type { LLMBackend } from "../agent/types";
 import type { Language } from "../types";
 
@@ -23,7 +25,7 @@ export interface TurnDeps {
 }
 
 export type TurnOutcome = {
-  kind: "noop" | "locked" | "human_mode" | "welcome" | "menu" | "audio_only" | "fallback" | "ok" | "failed";
+  kind: "noop" | "locked" | "human_mode" | "welcome" | "menu" | "audio_only" | "fast_path" | "fallback" | "ok" | "failed";
   turnId?: string;
   requeued?: boolean;
 };
@@ -130,10 +132,22 @@ async function runTurnLocked(conversationId: string, deps: TurnDeps): Promise<Tu
     return { kind: "audio_only", turnId, requeued: await requeueIfPending(conversation.id) };
   }
 
+  const nowMs = deps.nowMs ?? (() => performance.now());
+  // The first burst with content that names one unit's place exactly gets that unit's card at once, without the model
+  // (fast-path.ts); FAST_PATH_ENABLED=false turns it off.
+  if (getConfig().fastPathEnabled) {
+    const startedMs = nowMs();
+    const decision = await fastPathDecision(conversation, pending);
+    if (decision.fire) {
+      const { unit, matchType } = decision;
+      const { turnId } = await runFastPathTurn({ conversation, pending, unit, matchType, lang, nowMs, startedMs });
+      return { kind: "fast_path", turnId, requeued: await requeueIfPending(conversation.id) };
+    }
+  }
+
   // Everything else goes to Claude, a bare greeting after the welcome included: the prompt answers it with one warm
   // line, never the menu again.
   const now = deps.now ?? (() => new Date());
-  const nowMs = deps.nowMs ?? (() => performance.now());
   const r = await runClaudeTurn({ conversation, pending, lang, welcomeJustSent, backend: deps.backend, now, nowMs });
   return { kind: r.outcome, turnId: r.turnId, requeued: await requeueIfPending(conversation.id) };
 }

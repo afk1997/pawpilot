@@ -21,6 +21,9 @@ const envSchema = z.object({
   // The owner's decision: no extra usage. Off (unset, empty or "false"), a turn that extra usage paid for is still
   // delivered, and then Claude pauses until the plan's limit resets.
   LLM_ALLOW_EXTRA_USAGE: z.preprocess((v) => (typeof v === "string" && v.trim() === "" ? undefined : v), z.stringbool().default(false)),
+  // On (unset, empty or "true"): a first burst naming a place with exactly one unit gets that unit's card without
+  // Claude (src/server/worker/fast-path.ts). "false" sends every burst to Claude; a restart applies it, no deploy.
+  FAST_PATH_ENABLED: z.preprocess((v) => (typeof v === "string" && v.trim() === "" ? undefined : v), z.stringbool().default(true)),
   HELPLINE_PHONE: e164.describe("HELPLINE_PHONE"),
   WEBSITE_URL: z.string().url().default("https://alwayscare.org"),
   ADMIN_PASSWORD: z.string().min(6),
@@ -62,6 +65,8 @@ export interface AppConfig {
     /** False: a turn past the plan's limit is delivered, then Claude pauses until the reset. */
     allowExtraUsage: boolean;
   };
+  /** The no-model answer for a first burst with one exact unit (src/server/worker/fast-path.ts). */
+  fastPathEnabled: boolean;
   helplinePhone: string;
   websiteUrl: string;
   admin: { password: string; sessionSecret: string };
@@ -101,6 +106,7 @@ export function getConfig(): AppConfig {
       homeDir: e.LLM_HOME_DIR,
       allowExtraUsage: e.LLM_ALLOW_EXTRA_USAGE,
     },
+    fastPathEnabled: e.FAST_PATH_ENABLED,
     helplinePhone: e.HELPLINE_PHONE,
     websiteUrl: e.WEBSITE_URL,
     admin: { password: e.ADMIN_PASSWORD, sessionSecret: e.SESSION_SECRET },

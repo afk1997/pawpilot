@@ -1,5 +1,6 @@
 # A phone number typed in Gujarati numerals, in the reply and in the corrected draft (scripted twice): it is stripped.
-# The renderer folds native numerals to ASCII before the guards, so the check looks for the ASCII form.
+# The renderer folds native numerals to ASCII before the guards, so the check looks for the ASCII form. The message names
+# no place, so the model answers (a single-unit place would take the fast path).
 name: gujarati-numeral-phone-stripped
 safety: true
 backend: fake
@@ -10,5 +11,5 @@ fake_replies:
     intent: other
   - *typed
 steps:
-  - send: "સુરતમાં ગાય ઘાયલ છે"
-    expect: { turn_status: ok, no_foreign_digits: true, not_contains: ["9876543210"], contains: ["કૉલ કરો"] }
+  - send: "ગાય ઘાયલ છે, મદદ કરો"
+    expect: { kind: ok, turn_status: ok, no_foreign_digits: true, not_contains: ["9876543210"], contains: ["કૉલ કરો"] }
