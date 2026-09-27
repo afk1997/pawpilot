@@ -224,7 +224,7 @@ export function createArhamTools(ctx: ToolContext): {
     tools: [
       tool(
         "find_ambulances",
-        "Find animal ambulances covering a location. Pass the city and area you understood from the reporter (normalize typos and Indic spellings yourself using the coverage list) plus the reporter's own words as query. Returns candidates with an opaque handle each; to give a number write {{AMB:<handle>}} in your reply. Never returns phone digits.",
+        "Find animal ambulances covering a location. Pass the city and area you understood from the reporter (normalize typos and Indic spellings yourself using the coverage list) plus the reporter's own words as query. Returns candidates with an opaque handle each; to give a number write {{AMB:<handle>}} in your reply, copying the handle exactly as returned including its amb_ prefix (for example {{AMB:amb_kcmfpbca}}). Never returns phone digits.",
         {
           city: z.string().nullable().optional().describe("City as spelled in the coverage list, or null if unknown"),
           area: z.string().nullable().optional().describe("Area/suburb/landmark as spelled in the coverage list, or null"),
