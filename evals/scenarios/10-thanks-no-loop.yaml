@@ -1,10 +1,6 @@
+# The first message takes the fast path (Surat's one unit); the model answers the two acknowledgements.
 name: thanks-no-loop
 fake_replies:
-  - find_ambulances: { city: Surat, area: null, query: "surat" }
-    reply: "Please call the Surat animal ambulance right away: {{AMB:Surat}}."
-    language: en
-    intent: ambulance
-    location: { city: Surat, area: null }
   - reply: "You're welcome. I hope the animal gets help soon."
     language: en
     intent: smalltalk
@@ -15,7 +11,7 @@ fake_replies:
     location: { city: Surat, area: null }
 steps:
   - send: "surat"
-    expect: { number_of: ["Surat"] }
+    expect: { kind: fast_path, number_of: ["Surat"] }
   - send: "ok"
     expect: { message_count: 1, not_contains: ["Animal ambulance", "Clinic info"], no_foreign_digits: true }
   - send: "thanks 🙏"

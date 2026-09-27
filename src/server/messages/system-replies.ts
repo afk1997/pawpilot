@@ -29,6 +29,11 @@ export function fallbackFoundIntro(lang: Language, count = 1): string {
   }, lang);
 }
 
+/** The one-line greeting a first message with content gets in place of the welcome list, before its answer. */
+export function firstContactGreeting(lang: Language): string {
+  return pick({ en: "Namaste! 🙏", hi: "नमस्ते! 🙏", mr: "नमस्कार! 🙏", gu: "નમસ્તે! 🙏" }, lang);
+}
+
 /** First line of a fallback reply when nothing matched. */
 export function fallbackNoMatch(lang: Language): string {
   return pick({

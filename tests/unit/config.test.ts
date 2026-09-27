@@ -112,6 +112,25 @@ describe("getConfig", () => {
     }
   });
 
+  it("keeps the fast path on unless FAST_PATH_ENABLED turns it off", () => {
+    try {
+      vi.stubEnv("FAST_PATH_ENABLED", undefined);
+      resetConfigForTests();
+      expect(getConfig().fastPathEnabled).toBe(true);
+      for (const [value, expected] of [["true", true], ["1", true], ["false", false], ["0", false], ["", true], [" ", true]] as const) {
+        vi.stubEnv("FAST_PATH_ENABLED", value);
+        resetConfigForTests();
+        expect(getConfig().fastPathEnabled, JSON.stringify(value)).toBe(expected);
+      }
+      vi.stubEnv("FAST_PATH_ENABLED", "maybe");
+      resetConfigForTests();
+      expect(() => getConfig()).toThrow(/FAST_PATH_ENABLED/);
+    } finally {
+      vi.unstubAllEnvs();
+      resetConfigForTests();
+    }
+  });
+
   it("trims the OAuth token, and reads one that is only whitespace as unset", () => {
     try {
       vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "  sk-ant-oat01-test\n");

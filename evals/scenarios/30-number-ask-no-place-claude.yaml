@@ -1,0 +1,8 @@
+# The model's own reply to a first message asking for "the number" with no place: no welcome list, one short line asking
+# the city and area (at most 200 characters), no helpline number, no description of the helpline. Needs the real model.
+name: number-ask-no-place-claude
+backend: claude
+first_contact: true
+steps:
+  - send: "aapka number konsa hai"
+    expect: { kind: ok, message_count: 1, intent: ambulance, not_contains: ["How may I assist", "Animal ambulance", "99999 00000"], regex: "city|area|kahan|kaha|kis|शहर|इलाक", max_chars: 200, no_foreign_digits: true }

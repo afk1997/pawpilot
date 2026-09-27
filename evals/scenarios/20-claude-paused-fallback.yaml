@@ -1,6 +1,10 @@
+# While Claude is paused, a first message naming one unit's area still gets the fast path's card (no model needed, no
+# flag); the next message gets the no-LLM fallback, which flags the conversation.
 name: claude-paused-fallback
 safety: true
 pause_claude: true
 steps:
   - send: "Ghatkopar"
+    expect: { kind: fast_path, turn_status: ok, number_of: ["Mumbai - Ghatkopar"], flagged: false, no_foreign_digits: true }
+  - send: "Ghatkopar station, the dog is bleeding"
     expect: { kind: fallback, turn_status: fallback, number_of: ["Mumbai - Ghatkopar"], flagged: true, no_foreign_digits: true }

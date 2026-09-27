@@ -90,17 +90,134 @@ function finish(candidates: DirectoryAmbulance[], match: MatchType): MatchResult
 }
 
 /**
- * Tier 1 — area exact: row.area or any areas_covered equals the needle, one of its tokens or two adjacent words of it
+ * Tier 1's test for one needle: a normalized area name equals the needle, one of its tokens or two adjacent words of it
  * ("vile parle" in "dog hurt near vile parle station").
  */
-function areaExact(pool: DirectoryAmbulance[], needle: string): DirectoryAmbulance[] {
+function namedBy(needle: string): (area: string) => boolean {
   const toks = tokensOf(needle);
   const words = needle.split(" ");
   const pairs = words.slice(1).map((w, i) => `${words[i]} ${w}`);
-  return pool.filter((r) => {
-    const areas = [r.area ?? "", ...r.areasCovered].map(normalize).filter(Boolean);
-    return areas.some((a) => a === needle || toks.includes(a) || pairs.includes(a));
+  return (a) => a === needle || toks.includes(a) || pairs.includes(a);
+}
+
+/** Tier 1 — area exact: row.area or any areas_covered is named by the needle (namedBy). */
+function areaExact(pool: DirectoryAmbulance[], needle: string): DirectoryAmbulance[] {
+  const named = namedBy(needle);
+  return pool.filter((r) => [r.area ?? "", ...r.areasCovered].map(normalize).filter(Boolean).some(named));
+}
+
+/**
+ * The row's area names (its area, then its areas_covered, as the directory spells them, each once) that `text` names
+ * as tier 1 reads it: the whole text, one of its tokens or two adjacent words, after normalize. For an exact area
+ * match, the names it went through ("Vikhroli" for a unit whose area is Ghatkopar).
+ */
+export function areaNamesIn(row: Pick<DirectoryAmbulance, "area" | "areasCovered">, text: string): string[] {
+  const needle = normalize(text);
+  if (needle.length === 0) return [];
+  const named = namedBy(needle);
+  return [...new Set([row.area ?? "", ...row.areasCovered])].filter((a) => {
+    const n = normalize(a);
+    return n.length > 0 && named(n);
   });
+}
+
+/** Whether `name`, normalized, is the normalized `text` or a run of its words ("navi mumbai" in "dog hurt in navi mumbai"). */
+export function textNames(text: string, name: string): boolean {
+  const n = normalize(name);
+  return n.length > 0 && ` ${normalize(text)} `.includes(` ${n} `);
+}
+
+/**
+ * The directory's cities `text` names, each once, as the rows spell them: a city whose name, normalized as the city
+ * tier reads it (aliases applied, so Bangalore is Bengaluru and मुंबई or મુંબઈ is Mumbai), is the whole text or a run
+ * of its words (textNames: one word, or a pair such as "navi mumbai"). A city inside a longer one ("mumbai" in "navi
+ * mumbai") counts as named too.
+ */
+export function citiesNamed(rows: DirectoryAmbulance[], text: string): string[] {
+  const hay = ` ${normalize(text)} `;
+  const found = new Map<string, string>();
+  for (const r of rows) {
+    const c = normalize(r.city);
+    if (c.length > 0 && !found.has(c) && hay.includes(` ${c} `)) found.set(c, r.city);
+  }
+  return [...found.values()];
+}
+
+/**
+ * Locality words so common that an area name holding one ("Model Town", "Vijay Nagar", "Mira Road") names a place in
+ * many cities: an exact area match that goes only through such names is not precise unless the text also names the
+ * unit's city (precisionIssue). A whole word of the area name, in any case. Not GENERIC_TOKENS, which keeps generic
+ * words from driving the loose tiers. The directory's area names are all in Latin script (the seed fixture's and
+ * ambulances-clinics.csv's alike), so the list is too; an Indic area name added to the directory needs its locality
+ * words here.
+ */
+export const GENERIC_AREA_WORDS = [
+  "nagar", "town", "colony", "road", "park", "garden", "vihar", "puram", "gunj", "ganj", "chowk", "market", "marg", "gali",
+  "society", "sector", "phase", "block", "layout", "extension", "enclave", "camp", "lines", "bazaar", "bazar", "basti",
+  "model", "new", "old", "east", "west", "north", "south", "central",
+] as const;
+
+const GENERIC_AREA_SET: ReadonlySet<string> = new Set(GENERIC_AREA_WORDS);
+
+/** Whether an area name holds a word of GENERIC_AREA_WORDS, as a whole word after normalize. */
+export function hasGenericAreaWord(areaName: string): boolean {
+  return normalize(areaName).split(" ").some((w) => GENERIC_AREA_SET.has(w));
+}
+
+/**
+ * Area names that are also everyday words, verb forms or surnames in English, Hindi, Marathi or Gujarati, so a message
+ * can hold one without naming the place: "ambli na jhad pase" (a tamarind tree), "gaadi ghuma rahe the" (turning), "khadki
+ * pase" (a lane's gate), "Hazra ji ka kutta" and "Lokhandwala ji" (surnames), "andheri raat" (a dark night), "khar" (a
+ * squirrel in Marathi), "sela" (a rice). Read like GENERIC_AREA_WORDS, as whole words of the area name, so an exact
+ * match through one alone needs the unit's city named or known too. Curated from the seed fixture's and
+ * ambulances-clinics.csv's area names; a new area name that is an everyday word belongs here. "andheri" is the one
+ * deliberate latency trade-off: Andheri is a busy Mumbai suburb, so its first messages without "Mumbai" now wait for
+ * the model (which still gives the number); drop it here to trade that back.
+ */
+export const EVERYDAY_AREA_NAMES = ["satellite", "ghuma", "ambli", "khadki", "lokhandwala", "hazra", "andheri", "khar", "sela"] as const;
+
+const VAGUE_AREA_WORDS: ReadonlySet<string> = new Set<string>([...GENERIC_AREA_WORDS, ...EVERYDAY_AREA_NAMES]);
+
+/**
+ * Whether an area name does not pin a place down on its own: it holds a word of GENERIC_AREA_WORDS ("Model Town") or of
+ * EVERYDAY_AREA_NAMES ("Satellite"), as a whole word after normalize.
+ */
+export function isVagueAreaName(areaName: string): boolean {
+  return normalize(areaName).split(" ").some((w) => VAGUE_AREA_WORDS.has(w));
+}
+
+/** Why an exact match on the reporter's words alone is not precise enough to act on without the model. */
+export type PrecisionIssue = "other_city" | "generic_area";
+
+/**
+ * The precision rules for an exact match (`result`) made on the reporter's words alone (`text`, the query it was made
+ * on), which the fast path's card and the Claude turn's pre-match both follow: other_city when the text names a
+ * directory city (citiesNamed) that is not every matched unit's ("Ghatkopar, Pune"); generic_area when an area match
+ * reaches a unit only through vague area names (isVagueAreaName: a GENERIC_AREA_WORDS or EVERYDAY_AREA_NAMES word, found
+ * by areaNamesIn) and the text does not name that unit's city ("Model Town, Ludhiana", "ambli na jhad pase"). A unit
+ * reached through a plain name too ("South Bopal" also names Bopal) is precise. Null when neither holds: "ghatkopar"
+ * and "Karve Nagar, Pune" are precise. Pure: rows in, issue out.
+ *
+ * `knownCity` (the pre-match only; the fast path answers before any city is known): the city the conversation already
+ * holds stands until the words name another, so a unit in a different city whose city the text does not name is
+ * other_city ("gaadi ghuma rahe the" after Mumbai is known is not Ahmedabad's Ghuma), and a known city equal to the
+ * unit's counts as named for generic_area ("Karve Nagar me" once Pune is known). It is not one of citiesNamed's: a text
+ * naming a new covered city ("sorry, it is in surat") is still precise.
+ */
+export function precisionIssue(
+  rows: DirectoryAmbulance[],
+  text: string,
+  result: Pick<MatchResult, "match" | "candidates">,
+  context: { knownCity?: string | null } = {}
+): PrecisionIssue | null {
+  const named = citiesNamed(rows, text).map(normalize);
+  if (named.some((c) => result.candidates.some((u) => normalize(u.city) !== c))) return "other_city";
+  const known = context.knownCity ? normalize(context.knownCity) : "";
+  if (known.length > 0 && result.candidates.some((u) => normalize(u.city) !== known && !textNames(text, u.city))) return "other_city";
+  const cityGiven = (u: DirectoryAmbulance) => named.includes(normalize(u.city)) || normalize(u.city) === known;
+  const vague = (u: DirectoryAmbulance) => !cityGiven(u) && areaNamesIn(u, text).every(isVagueAreaName);
+  if (result.match === "area" && result.candidates.some(vague)) return "generic_area";
+  return null;
 }
 
 /**

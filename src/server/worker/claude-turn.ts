@@ -5,7 +5,7 @@ import type { Language } from "../types";
 import { getBackend } from "../agent";
 import type { BackendErrorKind, LLMBackend, ObservedToolUse, TurnResult } from "../agent/types";
 import { HandleRegistry } from "../agent/handles";
-import { createArhamTools, SERVER_NAME, type ToolCallRecord, type ToolContext } from "../agent/tools";
+import { createArhamTools, prematchAmbulances, SERVER_NAME, type ToolCallRecord, type ToolContext } from "../agent/tools";
 import { buildSystemPrompt, buildTurnPrompt, formatIst } from "../agent/prompt";
 import { renderTranscript } from "../agent/transcript";
 import { findDigitRuns } from "../agent/scrub";
@@ -18,7 +18,7 @@ import { lastKnownLocation, loadHistory, sharedHandles } from "./gather";
 import { deliverText } from "./deliver";
 import { createTurn, finishTurn, flagConversation, loadConversationHandles, updateConversation } from "./persist";
 import { isClaudePaused, pauseClaude, recordOkTurn } from "./pause";
-import { runFallbackTurn } from "./fallback";
+import { pendingText, runFallbackTurn } from "./fallback";
 
 /** The wall-clock budget for a turn's backend calls, less a reserve for rendering, the send or the fallback. */
 export const TURN_BUDGET_MS = 100_000;
@@ -105,7 +105,8 @@ export async function runClaudeTurn(input: {
   conversation: Conversation;
   pending: Message[];
   lang: Language;
-  welcomeJustSent: boolean;
+  /** The conversation's first message, answered without the welcome list: the prompt says so and asks for a greeting. */
+  firstContact: boolean;
   /** getBackend() when absent. */
   backend?: LLMBackend;
   now: () => Date;
@@ -130,6 +131,8 @@ export async function runClaudeTurn(input: {
   // The audit, filled as the turn goes and kept on the turn row whichever way it ends.
   let registry: HandleRegistry | null = null;
   let toolContext: ToolContext | null = null;
+  /** The pre-match's audit entry (prematchAmbulances), listed before the model's own calls. */
+  let prematchRecord: ToolCallRecord | null = null;
   const unrecorded: ToolCallRecord[] = [];
   let usage: Record<string, unknown> | null = null;
   let backendCalls = 0;
@@ -140,7 +143,7 @@ export async function runClaudeTurn(input: {
    */
   let limitPause: { until: Date | null; extraUsage: boolean } | null = null;
   const audit = () => ({
-    toolCalls: [...(toolContext?.calls ?? []), ...unrecorded],
+    toolCalls: [...(prematchRecord ? [prematchRecord] : []), ...(toolContext?.calls ?? []), ...unrecorded],
     handles: registry?.toJSON() ?? null,
     usage: backendCalls === 0 ? null : { ...usage, backendCalls, ...(extraUsage && { extraUsage: true }) },
     latencyMs: Math.round(nowMs() - startedMs),
@@ -166,15 +169,26 @@ export async function runClaudeTurn(input: {
       return { kind: "fallback", reason: "backend_unavailable", message: fields.errorClass };
     }
 
+    // The reporter's words (or the place known so far) matched before the first call: an exact match of up to three
+    // units goes in the prompt with its handles, and the model needs no find_ambulances call for it. A failed lookup
+    // costs only that: it is logged and recorded, and the model looks the place up itself.
+    const pre = await prematchAmbulances(ctx, { query: pendingText(pending), knownLocation });
+    prematchRecord = pre.record;
+    if (pre.record.error) {
+      log.warn({ conversationId, ...pre.record.error }, "prematch failed; the model looks the place up itself");
+      await note(conversationId, "prematch_error", { turnId: turn.id, ...pre.record.error });
+    }
+
     const promptFor = (transcriptLimit: number, correction: string | null) =>
       buildTurnPrompt({
         nowIst: formatIst(now()),
         language: conversation.language,
         knownLocation,
         handlesShared,
-        welcomeJustSent: input.welcomeJustSent,
+        firstContact: input.firstContact,
         transcript: renderTranscript(history.slice(-transcriptLimit), pending, now()),
         correction,
+        prematched: pre.prematched,
       });
 
     /**

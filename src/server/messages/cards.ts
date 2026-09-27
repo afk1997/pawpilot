@@ -70,6 +70,14 @@ export function buildAmbulanceCard(row: CardAmbulance, lang: Language = "en"): s
   return lines.join("\n");
 }
 
+/**
+ * buildAmbulanceCard's template, for the stored reply the next transcript shows: `token` ({{AMB:<handle>}}) stands on
+ * the number's line for what renderNumberForToken renders, the number and a partner unit's label, so no digit is left.
+ */
+export function buildAmbulanceCardTemplate(row: CardAmbulance, lang: Language, token: string): string {
+  return [ambulanceDisplayName(row), token, CALL_PROMPT[lang] ?? CALL_PROMPT.en].join("\n");
+}
+
 const MULTI_HEADER: Record<Language, (n: number, place: string) => string> = {
   en: (n, p) => `${n} ambulances are available in ${p}. Please call any one of them:`,
   hi: (n, p) => `${p} में ${n} एम्बुलेंस उपलब्ध हैं। कृपया इनमें से किसी एक को कॉल करें:`,

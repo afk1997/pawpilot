@@ -131,9 +131,11 @@ describe("modelReplyOf", () => {
   it("returns the structured reply of a turn the model wrote", () => {
     expect(modelReplyOf({ status: "ok", model: "fake", handles: {}, structuredOutput: reply })).toEqual(reply);
   });
-  it("is null for the fallback, a system turn or no turn", () => {
+  it("is null for the fallback, a system turn, the fast path or no turn", () => {
     expect(modelReplyOf({ status: "fallback", model: "fallback", handles: null, structuredOutput: { matched: 1, matchType: "area", sent: "unit" } })).toBeNull();
     expect(modelReplyOf({ status: "ok", model: "system:audio", handles: null, structuredOutput: null })).toBeNull();
+    // The fast path writes a model-shaped structured output, but code wrote it: a step never judges it as the model's.
+    expect(modelReplyOf({ status: "ok", model: "fast_path", handles: {}, structuredOutput: { ...reply, fastPath: true } })).toBeNull();
     expect(modelReplyOf(null)).toBeNull();
   });
 });
@@ -210,10 +212,10 @@ describe("parseScenario", () => {
 describe("loadScenarios", () => {
   it("reads every scenario under evals/scenarios", () => {
     const scenarios = loadScenarios(fileURLToPath(new URL("../../../evals/scenarios", import.meta.url)));
-    expect(scenarios).toHaveLength(28);
-    expect(new Set(scenarios.map((s) => s.name)).size).toBe(28);
+    expect(scenarios).toHaveLength(31);
+    expect(new Set(scenarios.map((s) => s.name)).size).toBe(31);
     expect(scenarios.filter((s) => s.backend === "claude").map((s) => s.name)).toEqual([
-      "donate", "volunteer", "menu-tap-ambulance", "human-word-not-escalation-claude",
+      "donate", "volunteer", "menu-tap-ambulance", "human-word-not-escalation-claude", "number-ask-no-place-claude",
     ]);
   });
   it("lists every invalid file and every reused name in one error", () => {

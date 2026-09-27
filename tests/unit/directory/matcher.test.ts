@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { matchAmbulances, normalize, type DirectoryAmbulance } from "@/server/directory/matcher";
+import { areaNamesIn, citiesNamed, matchAmbulances, normalize, precisionIssue, textNames, type DirectoryAmbulance } from "@/server/directory/matcher";
 
 const row = (p: Partial<DirectoryAmbulance> & Pick<DirectoryAmbulance, "id" | "city">): DirectoryAmbulance => ({
   label: p.id, area: null, state: "X", areasCovered: [], category: "Animal Ambulance", phone: "+910000000000",
@@ -251,5 +251,110 @@ describe("matchAmbulances", () => {
       expect(parle.match).toBe("token");
       expect(ids(parle)).toEqual(["lokhandwala"]);
     });
+  });
+});
+
+describe("citiesNamed", () => {
+  const withPairs = [...rows, row({ id: "navi", city: "Navi Mumbai", areasCovered: ["Vashi"] }), row({ id: "mandvi", city: "Mandvi - Kutch", areasCovered: ["Mandvi - Kutch"] })];
+
+  it("finds each directory city the text names once, as the rows spell it", () => {
+    expect(citiesNamed(rows, "ghatkopar me kutta ghayal hai")).toEqual([]);
+    expect(citiesNamed(rows, "Ghatkopar, Mumbai")).toEqual(["Mumbai"]);
+    expect(citiesNamed(rows, "rajkot ya surat, rajkot")).toEqual(["Rajkot", "Surat"]);
+    expect(citiesNamed(rows, "")).toEqual([]);
+  });
+
+  it("reads the text as the city tier does: aliases, Devanagari and Gujarati names, suffixes", () => {
+    expect(citiesNamed(rows, "Bangalore, a cat is hurt")).toEqual(["Bengaluru"]);
+    expect(citiesNamed(rows, "मुंबई में कुत्ता घायल है")).toEqual(["Mumbai"]);
+    expect(citiesNamed(rows, "સુરતમાં ગાય ઘાયલ છે")).toEqual(["Surat"]);
+    expect(citiesNamed(rows, "Bombay")).toEqual(["Mumbai"]);
+  });
+
+  it("finds a city of two words as a pair, and never a word inside another word", () => {
+    expect(citiesNamed(withPairs, "dog hurt in Navi Mumbai")).toEqual(["Mumbai", "Navi Mumbai"]);
+    expect(citiesNamed(withPairs, "Mandvi, Kutch me gaay")).toEqual(["Mandvi - Kutch"]);
+    expect(citiesNamed(withPairs, "mandvi me gaay")).toEqual([]);
+    expect(citiesNamed(rows, "suratwala dog")).toEqual([]);
+  });
+});
+
+describe("areaNamesIn", () => {
+  const ghatkopar = rows.find((r) => r.id === "ghatkopar")!;
+
+  it("gives the unit's area names the text names as tier 1 reads it, as the directory spells them", () => {
+    expect(areaNamesIn(ghatkopar, "ghatkopar me kutta")).toEqual(["Ghatkopar"]);
+    expect(areaNamesIn(ghatkopar, "Vikhroli station ke paas")).toEqual(["Vikhroli"]);
+    expect(areaNamesIn(ghatkopar, "kurla ya vikhroli")).toEqual(["Vikhroli", "Kurla"]);
+    expect(areaNamesIn(ghatkopar, "घाटकोपर")).toEqual(["Ghatkopar"]);
+    expect(areaNamesIn(ghatkopar, "mumbai")).toEqual([]);
+    expect(areaNamesIn(ghatkopar, "")).toEqual([]);
+  });
+
+  it("finds a two-word name as a pair and a short name only as the whole text", () => {
+    const pune = row({ id: "pmc", city: "Pune", area: "PMC", areasCovered: ["Kothrud", "Karve Nagar"] });
+    expect(areaNamesIn(pune, "Karve Nagar, Pune")).toEqual(["Karve Nagar"]);
+    expect(areaNamesIn(pune, "PMC")).toEqual(["PMC"]);
+    expect(areaNamesIn(pune, "pmc area")).toEqual([]);
+  });
+});
+
+describe("textNames", () => {
+  it("is true for the whole text or a run of its words, after normalize", () => {
+    expect(textNames("Karve Nagar, Pune", "Pune")).toBe(true);
+    expect(textNames("karve nagar pune", "Karve Nagar")).toBe(true);
+    expect(textNames("मुंबईत", "Mumbai")).toBe(true);
+    expect(textNames("Karve Nagar", "PMC")).toBe(false);
+    expect(textNames("punekar", "Pune")).toBe(false);
+    expect(textNames("anything", "")).toBe(false);
+  });
+});
+
+describe("precisionIssue", () => {
+  const withShared = [
+    ...rows,
+    row({ id: "delhi", city: "Delhi", area: "Old Delhi", areasCovered: ["Model Town"] }),
+    row({ id: "ludhiana", city: "Ludhiana", areasCovered: ["Model Town"] }),
+    row({ id: "pmc", city: "Pune", area: "PMC", areasCovered: ["Karve Nagar"] }),
+    row({ id: "ahmedabad", city: "Ahmedabad", areasCovered: ["Satellite", "Ghuma"] }),
+  ];
+  const issue = (text: string, knownCity?: string | null) =>
+    precisionIssue(withShared, text, matchAmbulances(withShared, { query: text }), { knownCity });
+
+  it("is null for precise words: a plain area, a generic one with its city, several units of the named city", () => {
+    expect(issue("ghatkopar me kutta ghayal hai")).toBeNull();
+    expect(issue("Karve Nagar, Pune")).toBeNull();
+    expect(issue("rajkot me gaay ghayal hai")).toBeNull(); // two units, both in Rajkot
+  });
+
+  it("is other_city when a named city is not every matched unit's", () => {
+    expect(issue("Ghatkopar, Pune")).toBe("other_city");
+    // Model Town is both Delhi's and Ludhiana's: naming either city leaves the other city's unit in the match, which the
+    // model then narrows with a lookup restricted to the named city.
+    expect(issue("Model Town, Ludhiana, dog hurt")).toBe("other_city");
+    expect(issue("Model Town, Delhi")).toBe("other_city");
+  });
+
+  it("is generic_area when some unit is reached only through generic names and its city is not named", () => {
+    expect(issue("Karve Nagar me kutta ghayal hai")).toBe("generic_area");
+    expect(issue("Model Town me kutta ghayal hai")).toBe("generic_area");
+  });
+
+  it("holds the words to the city the conversation knows, unless they name the unit's city", () => {
+    // A unit elsewhere, its city unnamed: the known city stands.
+    expect(issue("gaadi ghuma rahe the tab dekha", "Mumbai")).toBe("other_city");
+    expect(issue("Karve Nagar me", "Mumbai")).toBe("other_city");
+    // A new covered city named in the words, or a unit in the known city, is precise.
+    expect(issue("sorry, it is in surat", "Mumbai")).toBeNull();
+    expect(issue("vikhroli me ek aur kutta", "Mumbai")).toBeNull();
+    expect(issue("vikhroli me ek aur kutta", "Bombay")).toBeNull();
+    // The known city counts as named for generic_area.
+    expect(issue("Karve Nagar me", "Pune")).toBeNull();
+    expect(issue("Karve Nagar me")).toBe("generic_area");
+    // No known city: the words alone decide. Ghuma is also a verb (EVERYDAY_AREA_NAMES), so it needs Ahmedabad named.
+    expect(issue("vikhroli me ek aur kutta")).toBeNull();
+    expect(issue("vikhroli me ek aur kutta", null)).toBeNull();
+    expect(issue("gaadi ghuma rahe the tab dekha")).toBe("generic_area");
+    expect(issue("gaadi ghuma rahe the, Ahmedabad")).toBeNull();
   });
 });

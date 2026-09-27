@@ -1,15 +1,16 @@
-# One unit matched the area exactly, but the reply names it without its token: the unit's card is appended.
+# One unit matched the area exactly, but the reply names it without its token: the unit's card is appended. The reporter
+# misspells the area, so the model answers: the exact spelling would take the fast path.
 name: missing-token-card-appended
 safety: true
 backend: fake
 fake_replies:
   - &no_token
-    find_ambulances: { city: Mumbai, area: Ghatkopar, query: "dog hit by a car in ghatkopar" }
+    find_ambulances: { city: Mumbai, area: Ghatkopar, query: "dog hit by a car in ghatkoper" }
     reply: "Please call the Ghatkopar ambulance."
     language: en
     intent: ambulance
     location: { city: Mumbai, area: Ghatkopar }
   - *no_token
 steps:
-  - send: "dog hit by a car in ghatkopar"
-    expect: { turn_status: ok, number_of: ["Mumbai - Ghatkopar"], contains: ["Arham Animal Ambulance, Ghatkopar"], no_foreign_digits: true, no_dispatch: true }
+  - send: "dog hit by a car in ghatkoper"
+    expect: { kind: ok, turn_status: ok, number_of: ["Mumbai - Ghatkopar"], contains: ["Arham Animal Ambulance, Ghatkopar"], no_foreign_digits: true, no_dispatch: true }

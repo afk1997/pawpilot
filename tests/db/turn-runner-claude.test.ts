@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { asc, eq } from "drizzle-orm";
 import { resetDb, createConversation } from "../helpers/db";
 import { seedDirectory, type DirectoryIds } from "../helpers/fixtures";
+import { resetConfigForTests } from "@/server/config";
 import { getDb } from "@/server/db/client";
 import { ambulances, conversations, events, messages, turns } from "@/server/db/schema";
 import { storeReporterMessage } from "@/server/inbound/store";
@@ -38,6 +39,17 @@ const ghatkoparStep = async (input: TurnInput) => {
   return okReply({ reply: `Yeh raha number: {{AMB:${out.candidates[0].handle}}}. Please turant call kijiye.`, language: "hi", intent: "ambulance", location: { city: "Mumbai", area: "Ghatkopar" } });
 };
 
+// These tests drive the model branch and the runner with single-unit first bursts ("surat", "ghatkopar"), which the
+// fast path would answer without the model: it is off here, and tests/db/fast-path.test.ts covers it.
+beforeEach(() => {
+  vi.stubEnv("FAST_PATH_ENABLED", "false");
+  resetConfigForTests();
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+  resetConfigForTests();
+});
+
 describe("runTurn with a backend", () => {
   beforeEach(async () => { await stopBoss(); await resetDb(); ids = await seedDirectory(); });
   afterEach(async () => { await stopBoss(); });
@@ -54,7 +66,8 @@ describe("runTurn with a backend", () => {
     expect(m.turnId).toBe(r.turnId);
     const t = await lastTurn(c.id);
     expect(t.status).toBe("ok");
-    expect((t.toolCalls as { name: string }[])[0].name).toBe("find_ambulances");
+    // The pre-match's record comes first, then the model's own calls.
+    expect((t.toolCalls as { name: string }[]).map((x) => x.name)).toEqual(["prematch", "find_ambulances"]);
     expect(Object.keys(t.handles as object)).toHaveLength(1);
     const [row] = await getDb().select().from(conversations).where(eq(conversations.id, c.id));
     expect(row.language).toBe("hi");
@@ -100,7 +113,8 @@ describe("runTurn with a backend", () => {
 
   it("replaces dispatch language", async () => {
     const c = await conv();
-    await storeReporterMessage(c.id, { kind: "text", content: "surat" });
+    // No place named: a pre-matched unit's card would join this ambulance reply that has no token.
+    await storeReporterMessage(c.id, { kind: "text", content: "a dog is hurt, please help" });
     const backend = new FakeBackend([okReply({ reply: "We are sending the ambulance now. Stay calm.", intent: "ambulance" }), okReply({ reply: "We are sending the ambulance now. Stay calm.", intent: "ambulance" })]);
     await runTurn(c.id, { backend });
     const [m] = await outbound(c.id);
@@ -340,7 +354,8 @@ describe("the Claude turn's guards, audit and context", () => {
 
   it("stores the template with the dispatch sentence replaced, so the next transcript never shows it", async () => {
     const c = await conv("hi");
-    await storeReporterMessage(c.id, { kind: "text", content: "सूरत" });
+    // No place named: a pre-matched unit's card would join this ambulance reply that has no AMB token.
+    await storeReporterMessage(c.id, { kind: "text", content: "कुत्ता घायल है" });
     const reply = "हम एम्बुलेंस भेज रहे हैं। कृपया {{PHONE:helpline}} पर कॉल करें।";
     await runTurn(c.id, { backend: new FakeBackend([okReply({ reply, language: "hi", intent: "ambulance" })]) });
     const [m] = await outbound(c.id);
@@ -472,7 +487,7 @@ describe("the Claude turn's guards, audit and context", () => {
     await expect(runTurn(c.id, { backend: new FakeBackend([ghatkoparStep]) })).rejects.toThrow("connection lost after the send");
     const t = await lastTurn(c.id);
     expect(Object.values(t.handles as object)).toEqual([{ kind: "ambulance", id: ids.ghatkopar }]);
-    expect((t.toolCalls as { name: string }[]).map((x) => x.name)).toEqual(["find_ambulances"]);
+    expect((t.toolCalls as { name: string }[]).map((x) => x.name)).toEqual(["prematch", "find_ambulances"]);
   });
 
   it("audits tool uses the SDK refused beside the calls the tools recorded, on every attempt, and records extra usage", async () => {
@@ -493,8 +508,8 @@ describe("the Claude turn's guards, audit and context", () => {
     const t = await lastTurn(c.id);
     const calls = t.toolCalls as { name: string; input: unknown; output: unknown; durationMs: number; error?: unknown }[];
     // This app's tools go by their own names, as the calls they made do; any other tool keeps its full name.
-    expect(calls.map((x) => x.name)).toEqual(["find_ambulances", "Bash", "find_clinics"]);
-    expect(calls.slice(1)).toEqual([
+    expect(calls.map((x) => x.name)).toEqual(["prematch", "find_ambulances", "Bash", "find_clinics"]);
+    expect(calls.slice(2)).toEqual([
       { name: "Bash", input: null, output: null, durationMs: 0, error: { errorClass: "SdkRejected" } },
       { name: "find_clinics", input: null, output: null, durationMs: 0, error: { errorClass: "SdkRejected" } },
     ]);
@@ -512,6 +527,10 @@ describe("the Claude turn's guards, audit and context", () => {
     ]);
     await runTurn(c.id, { backend });
     expect((await lastTurn(c.id)).toolCalls).toEqual([
+      {
+        name: "prematch", input: { query: "surat" }, output: { matchType: "area", count: 1, handles: [makeHandle("ambulance", c.id, ids.surat)] },
+        durationMs: expect.any(Number),
+      },
       { name: "find_ambulances", input: null, output: null, durationMs: 0, error: { errorClass: "Unanswered" } },
     ]);
   });
@@ -527,7 +546,7 @@ describe("the Claude turn's guards, audit and context", () => {
     expect(r.kind).toBe("fallback");
     const [claude] = await turnsOf(c.id);
     expect([claude.status, claude.error, claude.sessionId]).toEqual(["failed", "claude_transient: assistant error: server_error", null]);
-    expect((claude.toolCalls as { name: string }[]).map((x) => x.name)).toEqual(["find_ambulances", "find_ambulances", "Bash", "Bash"]);
+    expect((claude.toolCalls as { name: string }[]).map((x) => x.name)).toEqual(["prematch", "find_ambulances", "find_ambulances", "Bash", "Bash"]);
   });
 
   it("tells the model the newest location reported in the last five turns of the past 24 h", async () => {
@@ -841,7 +860,8 @@ describe("the Claude turn's time budget, audit totals and failure handling", () 
     const h = makeHandle("ambulance", c.id, ids.ghatkopar);
     const old = await createTurn({ conversationId: c.id, status: "ok" });
     await finishTurn(old.id, { handles: { [h]: { kind: "ambulance", id: ids.ghatkopar } } });
-    await storeReporterMessage(c.id, { kind: "text", content: "ghatkopar" });
+    // No place named: a pre-matched unit's card would give the second draft the number, and nothing would be restored.
+    await storeReporterMessage(c.id, { kind: "text", content: "number phir se bhejo" });
     const backend = new FakeBackend([
       okReply({ reply: `Call {{AMB:${h}}} or 9876543210.`, intent: "ambulance" }),
       okReply({ reply: "Please call the Ghatkopar ambulance right away.", intent: "ambulance" }),

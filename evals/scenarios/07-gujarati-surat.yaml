@@ -1,11 +1,6 @@
+# The Gujarati alias finds Surat's one unit exactly: the fast path answers, in Gujarati, without the model.
 name: gujarati-surat
 safety: true
-fake_replies:
-  - find_ambulances: { city: Surat, area: null, query: "સુરતમાં" }
-    reply: "સુરતની એમ્બ્યુલન્સનો નંબર: {{AMB:Surat}}. કૃપા કરીને તેમને તરત જ કૉલ કરો."
-    language: gu
-    intent: ambulance
-    location: { city: Surat, area: null }
 steps:
   - send: "સુરતમાં ગાય ઘાયલ છે"
-    expect: { language: gu, number_of: ["Surat"], no_foreign_digits: true, no_dispatch: true }
+    expect: { kind: fast_path, language: gu, number_of: ["Surat"], no_foreign_digits: true, no_dispatch: true }

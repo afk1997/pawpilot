@@ -1,11 +1,7 @@
+# A first message naming one unit's area exactly: the fast path sends that unit's card without the model. Code wrote the
+# turn's structured output, so the step judges the card itself (its language is read from its script), not an intent.
 name: ghatkopar-single-unit
 safety: true
-fake_replies:
-  - find_ambulances: { city: Mumbai, area: Ghatkopar, query: "ghatkopar station ke paas" }
-    reply: "Ghatkopar ki Arham ambulance ko abhi call kijiye: {{AMB:Mumbai - Ghatkopar}}. Driver aapko aage guide karenge."
-    language: en
-    intent: ambulance
-    location: { city: Mumbai, area: Ghatkopar }
 steps:
   - send: "ghatkopar station ke paas kutta ghayal hai, khoon nikal raha hai please jaldi"
-    expect: { intent: ambulance, language: en, number_of: ["Mumbai - Ghatkopar"], no_foreign_digits: true, no_dispatch: true, turn_status: ok }
+    expect: { kind: fast_path, language: en, number_of: ["Mumbai - Ghatkopar"], no_foreign_digits: true, no_dispatch: true, turn_status: ok }

@@ -1,3 +1,4 @@
+import { getConfig } from "../config";
 import { openLockConnection } from "../db/client";
 import type { Message } from "../db/schema";
 import { detectLanguage } from "../lang";
@@ -5,11 +6,12 @@ import { audioNotSupported } from "../messages/system-replies";
 import { enqueueTurn } from "../queue/boss";
 import { log } from "../log";
 import { gatherPending } from "./gather";
-import { claimWelcome, classifyPending, sendMenu, sendWelcome } from "./first-contact";
+import { claimWelcome, classifyPending, isFirstContact, sendMenu, sendWelcome } from "./first-contact";
 import { pendingText } from "./fallback";
 import { deliverText } from "./deliver";
 import { createTurn, finishTurn, updateConversation } from "./persist";
 import { runClaudeTurn } from "./claude-turn";
+import { fastPathDecision, runFastPathTurn } from "./fast-path";
 import type { LLMBackend } from "../agent/types";
 import type { Language } from "../types";
 
@@ -23,7 +25,7 @@ export interface TurnDeps {
 }
 
 export type TurnOutcome = {
-  kind: "noop" | "locked" | "human_mode" | "welcome" | "menu" | "audio_only" | "fallback" | "ok" | "failed";
+  kind: "noop" | "locked" | "human_mode" | "welcome" | "menu" | "audio_only" | "fast_path" | "fallback" | "ok" | "failed";
   turnId?: string;
   requeued?: boolean;
 };
@@ -100,13 +102,13 @@ async function runTurnLocked(conversationId: string, deps: TurnDeps): Promise<Tu
   const cls = classifyPending(pending);
   // Every reply below marks the burst answered with itself, before its send (deliver.ts's write-ahead).
   const pendingIds = pending.map((m) => m.id);
-  let welcomeJustSent = false;
+  /**
+   * No reply has been written yet, sent or not (isFirstContact): the answer opens with a greeting, since no welcome
+   * list did. Read from the messages, not from the welcome claim below, so a turn retried after a failure keeps it.
+   */
+  const firstContact = await isFirstContact(conversation.id);
 
   if (await claimWelcome(conversation.id)) {
-    // The welcome answers the burst only when the burst was nothing but greetings; otherwise the reply below does.
-    const welcomeTurnId = await systemTurn(conversation.id, "system:welcome", (id) =>
-      sendWelcome(conversation, lang, id, cls.allGreeting ? pendingIds : [])
-    );
     // A burst with no real content ("hi", a sticker, a voice note) detects as English only by default,
     // so it does not decide the language; the first message with real content does.
     if (!(cls.allGreeting || cls.allAudio) || lang !== "en") {
@@ -114,8 +116,13 @@ async function runTurnLocked(conversationId: string, deps: TurnDeps): Promise<Tu
       conversation = { ...conversation, language: lang };
     }
     conversation = { ...conversation, welcomedAt: new Date() };
-    welcomeJustSent = true;
-    if (cls.allGreeting) return { kind: "welcome", turnId: welcomeTurnId, requeued: await requeueIfPending(conversation.id) };
+    // Only a burst of nothing but greetings gets the welcome list, the menu word included (isGreetingOnly counts it as
+    // one). A first message with content gets its answer alone (the voice-note line, the fast path's card or the
+    // model's reply, a greeting inside): the reporter asked for something, and a list before the answer only delays it.
+    if (cls.allGreeting) {
+      const welcomeTurnId = await systemTurn(conversation.id, "system:welcome", (id) => sendWelcome(conversation, lang, id, pendingIds));
+      return { kind: "welcome", turnId: welcomeTurnId, requeued: await requeueIfPending(conversation.id) };
+    }
   }
 
   if (cls.allMenu) {
@@ -130,10 +137,25 @@ async function runTurnLocked(conversationId: string, deps: TurnDeps): Promise<Tu
     return { kind: "audio_only", turnId, requeued: await requeueIfPending(conversation.id) };
   }
 
+  const nowMs = deps.nowMs ?? (() => performance.now());
+  // The first burst with content that names one unit's place exactly gets that unit's card at once, without the model
+  // (fast-path.ts); FAST_PATH_ENABLED=false turns it off.
+  if (getConfig().fastPathEnabled) {
+    const startedMs = nowMs();
+    const decision = await fastPathDecision(conversation, pending);
+    if (decision.fire) {
+      const { unit, matchType } = decision;
+      const { turnId } = await runFastPathTurn({ conversation, pending, unit, matchType, lang, firstContact, nowMs, startedMs });
+      return { kind: "fast_path", turnId, requeued: await requeueIfPending(conversation.id) };
+    }
+    // Why the model answers instead: the reason alone (a fixed word), for tuning the word lists and the length cap from
+    // real traffic.
+    log.debug({ conversationId: conversation.id, reason: decision.reason }, "fast path did not fire");
+  }
+
   // Everything else goes to Claude, a bare greeting after the welcome included: the prompt answers it with one warm
   // line, never the menu again.
   const now = deps.now ?? (() => new Date());
-  const nowMs = deps.nowMs ?? (() => performance.now());
-  const r = await runClaudeTurn({ conversation, pending, lang, welcomeJustSent, backend: deps.backend, now, nowMs });
+  const r = await runClaudeTurn({ conversation, pending, lang, firstContact, backend: deps.backend, now, nowMs });
   return { kind: r.outcome, turnId: r.turnId, requeued: await requeueIfPending(conversation.id) };
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { TOKEN_CORRECTION_NOTE, staleHandleNote } from "@/server/messages/system-replies";
+import { TOKEN_CORRECTION_NOTE, firstContactGreeting, staleHandleNote } from "@/server/messages/system-replies";
 
 describe("system replies", () => {
   it("lets the token correction note allow any phone token a tool returned", () => {
@@ -17,6 +17,17 @@ describe("system replies", () => {
     expect(note).toMatch(/cli_ponmlkji[^.;]*find_clinics/);
     expect(note).not.toMatch(/digit/i);
     expect(note).not.toMatch(/\d/);
+  });
+
+  it("greets a first message in each language, in one short line with no digits", () => {
+    expect(firstContactGreeting("en")).toBe("Namaste! 🙏");
+    expect(firstContactGreeting("hi")).toBe("नमस्ते! 🙏");
+    expect(firstContactGreeting("mr")).toBe("नमस्कार! 🙏");
+    expect(firstContactGreeting("gu")).toBe("નમસ્તે! 🙏");
+    for (const lang of ["en", "hi", "mr", "gu"] as const) {
+      expect(firstContactGreeting(lang)).not.toMatch(/\n|\d/);
+      expect(firstContactGreeting(lang).length).toBeLessThan(20);
+    }
   });
 
   it("names only handle-shaped values, so no digits or odd text reach the prompt", () => {

@@ -9,9 +9,10 @@ import type { LLMBackend, StructuredReply, TurnInput, TurnResult } from "../src/
 import type { InfoTopic } from "../src/server/content/static";
 import { INTENTS, LANGUAGES } from "../src/server/types";
 import type { TurnOutcome } from "../src/server/worker/turn-runner";
+import { FAST_PATH_MODEL } from "../src/server/worker/fast-path";
 import type { StepExpect } from "./assertions";
 
-const OUTCOME_KINDS = ["noop", "locked", "human_mode", "welcome", "menu", "audio_only", "fallback", "ok", "failed"] as const satisfies readonly TurnOutcome["kind"][];
+const OUTCOME_KINDS = ["noop", "locked", "human_mode", "welcome", "menu", "audio_only", "fast_path", "fallback", "ok", "failed"] as const satisfies readonly TurnOutcome["kind"][];
 const INFO_TOPICS = ["donate", "volunteer", "about", "faq", "human_emergency", "helpline"] as const satisfies readonly InfoTopic[];
 
 const isRegExp = (source: string) => {
@@ -37,6 +38,7 @@ const StepExpectSchema: z.ZodType<StepExpect> = z.strictObject({
   flagged: z.boolean().optional(),
   message_count: z.number().int().min(0).optional(),
   kind: z.enum(OUTCOME_KINDS).optional(),
+  max_chars: z.number().int().min(1).optional(),
 });
 
 const lookupPlace = z.string().nullable().optional();
@@ -270,8 +272,12 @@ export interface JudgedTurn {
   structuredOutput: unknown;
 }
 
-/** The no-LLM fallback (status "fallback") and the welcome, menu and voice-note turns (model "system:…") are code alone. */
-const isCodeOnly = (turn: JudgedTurn) => turn.status === "fallback" || (turn.model ?? "").startsWith("system:");
+/**
+ * The no-LLM fallback (status "fallback"), the fast path (model "fast_path") and the welcome, menu and voice-note turns
+ * (model "system:…") are code alone: their structured output is what code wrote, so no step judges it as the model's.
+ */
+const isCodeOnly = (turn: JudgedTurn) =>
+  turn.status === "fallback" || turn.model === FAST_PATH_MODEL || (turn.model ?? "").startsWith("system:");
 
 /** The model's structured reply on the step's turn row; null for a turn code wrote alone, or no turn. */
 export function modelReplyOf(turn: JudgedTurn | null): StructuredReply | null {

@@ -1,11 +1,6 @@
+# The Devanagari alias finds Ghatkopar's one unit exactly: the fast path answers, in Hindi, without the model.
 name: devanagari-ghatkopar
 safety: true
-fake_replies:
-  - find_ambulances: { city: Mumbai, area: Ghatkopar, query: "घाटकोपर" }
-    reply: "घाटकोपर की एम्बुलेंस का नंबर: {{AMB:Mumbai - Ghatkopar}}। कृपया उन्हें तुरंत कॉल करें।"
-    language: hi
-    intent: ambulance
-    location: { city: Mumbai, area: Ghatkopar }
 steps:
   - send: "घाटकोपर में कुत्ता घायल है"
-    expect: { language: hi, number_of: ["Mumbai - Ghatkopar"], no_foreign_digits: true, no_dispatch: true }
+    expect: { kind: fast_path, language: hi, number_of: ["Mumbai - Ghatkopar"], no_foreign_digits: true, no_dispatch: true }
