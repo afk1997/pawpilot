@@ -4,4 +4,4 @@ safety: true
 steps:
   - send_kind: location
     place: "Karve Nagar, Pune"
-    expect: { kind: fast_path, intent: ambulance, number_of: ["Pune - PMC"], no_foreign_digits: true, no_dispatch: true }
+    expect: { kind: fast_path, number_of: ["Pune - PMC"], no_foreign_digits: true, no_dispatch: true }

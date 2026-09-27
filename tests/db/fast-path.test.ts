@@ -14,6 +14,7 @@ import { resetConfigForTests } from "@/server/config";
 import { setFetchForTests } from "@/server/interakt/client";
 import * as repo from "@/server/directory/repo";
 import * as deliver from "@/server/worker/deliver";
+import { createTurn } from "@/server/worker/persist";
 import { log } from "@/server/log";
 import { welcomeText } from "@/server/messages/welcome";
 import type { Language } from "@/server/types";
@@ -187,6 +188,53 @@ describe("the fast path", () => {
     const next = new FakeBackend([okReply({ reply: "Please call the number above.", intent: "ambulance" })]);
     expect((await runTurn(afterFast.id, { backend: next })).kind).toBe("ok");
     expect(next.calls).toHaveLength(1);
+  });
+
+  it("counts only a reply that answered the reporter: the fallback's or a person's, never the welcome, the voice-note line or a system row", async () => {
+    const debug = vi.spyOn(log, "debug").mockImplementation(() => undefined);
+    const withReply = async (origin: "fallback" | "human" | "system", turnModel: string | null) => {
+      const c = await conv();
+      const turn = turnModel === null ? null : await createTurn({ conversationId: c.id, status: "ok", model: turnModel });
+      await getDb().insert(messages).values({ conversationId: c.id, role: "assistant", origin, content: "an earlier reply", turnId: turn?.id ?? null });
+      await storeReporterMessage(c.id, { kind: "text", content: "ghatkopar me kutta ghayal hai" });
+      return c;
+    };
+    // The no-LLM fallback's reply and a person's (no turn) answered the reporter: the model reads the next burst.
+    for (const c of [await withReply("fallback", "fallback"), await withReply("human", null), await withReply("fallback", null)]) {
+      const backend = new FakeBackend([okReply({ reply: "Please call the number above.", intent: "ambulance" })]);
+      expect((await runTurn(c.id, { backend })).kind).toBe("ok");
+      expect(backend.calls).toHaveLength(1);
+      expect(debug).toHaveBeenCalledWith({ conversationId: c.id, reason: "answered_before" }, "fast path did not fire");
+    }
+    // A system row with no turn, or the welcome's, answered nothing: the fast path still fires, with no greeting.
+    for (const c of [await withReply("system", null), await withReply("system", "system:welcome")]) {
+      expect((await runTurn(c.id, { backend: untouched() })).kind).toBe("fast_path");
+      expect((await outbound(c.id)).at(-1)!.content).toBe(GHATKOPAR_EN);
+    }
+    // The voice-note line, sent for real.
+    const voice = await conv();
+    await storeReporterMessage(voice.id, { kind: "audio", content: "", mediaUrl: "https://x/a.ogg" });
+    expect((await runTurn(voice.id)).kind).toBe("audio_only");
+    await storeReporterMessage(voice.id, { kind: "text", content: "ghatkopar me kutta ghayal hai" });
+    expect((await runTurn(voice.id, { backend: untouched() })).kind).toBe("fast_path");
+    expect((await outbound(voice.id)).at(-1)!.content).toBe(GHATKOPAR_EN);
+  });
+
+  it("gives a partner unit's card with its operator named, and its template the token alone", async () => {
+    const [unit] = await getDb()
+      .insert(ambulances)
+      .values({ operatorId: ids.blueCrossOperatorId, label: "Jamnagar - Blue Cross", city: "Jamnagar", area: null, state: "Gujarat", phone: "+919876500079", areasCovered: ["Jamnagar"] })
+      .returning();
+    const c = await conv({ language: "hi" });
+    await storeReporterMessage(c.id, { kind: "text", content: "जामनगर में गाय घायल है" });
+    const r = await runTurn(c.id, { backend: untouched() });
+    expect(r.kind).toBe("fast_path");
+    const [m] = await outbound(c.id);
+    expect(m.content).toBe("नमस्ते! 🙏 आपके इलाके की एनिमल एम्बुलेंस यह रही:\n\nAnimal Ambulance, Jamnagar\n+91 98765 00079\n(Blue Cross द्वारा संचालित)\nकृपया उन्हें तुरंत कॉल करें।");
+    // The token renders the number with the operator's label (renderNumberForToken), so the template has no line for it.
+    const token = `{{AMB:${makeHandle("ambulance", c.id, unit.id)}}}`;
+    expect(m.contentTemplate).toBe(`नमस्ते! 🙏 आपके इलाके की एनिमल एम्बुलेंस यह रही:\n\nAnimal Ambulance, Jamnagar\n${token}\nकृपया उन्हें तुरंत कॉल करें।`);
+    expect((await turnOf(r.turnId!)).structuredOutput).toMatchObject({ location: { city: "Jamnagar", area: null }, matchType: "area" });
   });
 
   it("is off when FAST_PATH_ENABLED is false", async () => {

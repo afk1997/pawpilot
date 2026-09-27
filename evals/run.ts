@@ -54,6 +54,9 @@ process.env.INTERAKT_API_KEY = "eval-never-sends";
 process.env.ADMIN_PASSWORD ??= "eval-only";
 process.env.SESSION_SECRET ??= "eval-only-session-secret-of-32-chars";
 process.env.LLM_BACKEND = useClaude ? "claude-code" : "fake";
+// The scenarios expect the fast path on (01, 03, 06, 07, 10, 17, 20, 31): a FAST_PATH_ENABLED=false in .env.local must not
+// fail them.
+process.env.FAST_PATH_ENABLED = "true";
 if (!useClaude) delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
 resetConfigForTests();
 

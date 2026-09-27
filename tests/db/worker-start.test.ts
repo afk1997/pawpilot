@@ -82,12 +82,13 @@ describe("startWorker", () => {
   it("processes a queued turn end to end and heartbeats", async () => {
     const c = await createConversation({ isTest: true, phone: "+91TEST_worker" });
     await getDb().update(conversations).set({ welcomedAt: new Date() }).where(eq(conversations.id, c.id));
-    await storeReporterMessage(c.id, { kind: "text", content: "Surat" });
+    // No place in it, so the fast path leaves it to the backend (the fake one here), which this test exercises.
+    await storeReporterMessage(c.id, { kind: "text", content: "a dog is hurt near my house, please help" });
     const worker = await startWorker({ concurrency: 1, heartbeatMs: 200 });
     try {
       await enqueueTurn(c.id, { immediate: true });
       const deadline = Date.now() + 15_000;
-      let out: { content: string }[] = [];
+      let out: { content: string; origin: string }[] = [];
       while (Date.now() < deadline) {
         out = (await getDb().select().from(messages).where(eq(messages.conversationId, c.id))).filter((m) => m.role === "assistant");
         if (out.length > 0) break;
@@ -95,6 +96,7 @@ describe("startWorker", () => {
       }
       expect(out.length).toBeGreaterThanOrEqual(1);
       expect(out[0].content.length).toBeGreaterThan(0);
+      expect(out[0].origin).toBe("agent");
       await new Promise((r) => setTimeout(r, 400));
       expect((await getWorkerState()).lastHeartbeatAt).not.toBeNull();
     } finally {

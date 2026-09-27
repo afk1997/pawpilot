@@ -131,9 +131,11 @@ describe("modelReplyOf", () => {
   it("returns the structured reply of a turn the model wrote", () => {
     expect(modelReplyOf({ status: "ok", model: "fake", handles: {}, structuredOutput: reply })).toEqual(reply);
   });
-  it("is null for the fallback, a system turn or no turn", () => {
+  it("is null for the fallback, a system turn, the fast path or no turn", () => {
     expect(modelReplyOf({ status: "fallback", model: "fallback", handles: null, structuredOutput: { matched: 1, matchType: "area", sent: "unit" } })).toBeNull();
     expect(modelReplyOf({ status: "ok", model: "system:audio", handles: null, structuredOutput: null })).toBeNull();
+    // The fast path writes a model-shaped structured output, but code wrote it: a step never judges it as the model's.
+    expect(modelReplyOf({ status: "ok", model: "fast_path", handles: {}, structuredOutput: { ...reply, fastPath: true } })).toBeNull();
     expect(modelReplyOf(null)).toBeNull();
   });
 });

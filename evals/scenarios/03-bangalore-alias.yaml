@@ -3,4 +3,4 @@ name: bangalore-alias
 safety: true
 steps:
   - send: "Bangalore, a cat is hurt"
-    expect: { kind: fast_path, intent: ambulance, number_of: ["Bengaluru"], no_foreign_digits: true, no_dispatch: true }
+    expect: { kind: fast_path, number_of: ["Bengaluru"], no_foreign_digits: true, no_dispatch: true }
