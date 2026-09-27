@@ -2,6 +2,7 @@ import { and, eq, inArray, or } from "drizzle-orm";
 import { getDb } from "../db/client";
 import { messages, turns, type Conversation, type Message } from "../db/schema";
 import { HandleRegistry } from "../agent/handles";
+import { maskDigitRuns } from "../agent/scrub";
 import { loadActiveAmbulances } from "../directory/repo";
 import { areaNamesIn, citiesNamed, matchAmbulances, normalize, type DirectoryAmbulance } from "../directory/matcher";
 import { buildAmbulanceCard, buildAmbulanceCardTemplate } from "../messages/cards";
@@ -164,8 +165,9 @@ export async function fastPathDecision(
  * (deliverText's write-ahead). A card that was not delivered leaves the turn failed with delivery_failed, as on every
  * other turn; the conversation is never flagged for the fast path itself. The language is stored, as the fallback
  * does, when the conversation has none and the burst is more than greetings. On the conversation's first message
- * (`firstContact`), which got no welcome list, the card opens with a one-line greeting. `startedMs`: when the check
- * began, on the `nowMs` clock, for the turn's latency.
+ * (`firstContact`), which got no welcome list, the card opens with a one-line greeting. The stored template carries
+ * the token for the number and no other phone-shaped run (maskDigitRuns). `startedMs`: when the check began, on the
+ * `nowMs` clock, for the turn's latency.
  */
 export async function runFastPathTurn(input: {
   conversation: Conversation;
@@ -183,7 +185,10 @@ export async function runFastPathTurn(input: {
   const token = `{{AMB:${registry.ambulance(unit.id)}}}`;
   const intro = `${input.firstContact ? `${firstContactGreeting(lang)} ` : ""}${fallbackFoundIntro(lang)}`;
   const text = `${intro}\n\n${buildAmbulanceCard(unit, lang)}`;
-  const template = `${intro}\n\n${buildAmbulanceCardTemplate(unit, lang, token)}`;
+  // The template feeds the next transcript, which must never show digits: a phone-shaped run in the unit's name, area
+  // or city cell (ingest only warns about one) goes in as the transcript's "[number sent]" marker, as the scrubber reads
+  // runs. A handle holds no digit, so the token stays whole; the reporter's text is unchanged.
+  const template = maskDigitRuns(`${intro}\n\n${buildAmbulanceCardTemplate(unit, lang, token)}`, "[number sent]");
   const turn = await createTurn({
     conversationId: conversation.id,
     status: "ok",

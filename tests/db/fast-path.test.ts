@@ -112,6 +112,27 @@ describe("the fast path", () => {
     expect(t.handles).toEqual({ [makeHandle("ambulance", c.id, unit.id)]: { kind: "ambulance", id: unit.id } });
   });
 
+  it("masks a phone-shaped run in a unit's directory cells in the stored template, keeping the token whole", async () => {
+    const [unit] = await getDb()
+      .insert(ambulances)
+      .values({
+        operatorId: ids.arhamOperatorId, label: "Nagpur - Sitabuldi", city: "Nagpur", area: "Sitabuldi 98765 00123", state: "Maharashtra",
+        phone: "+919876500078", areasCovered: ["Sitabuldi"],
+      })
+      .returning();
+    const c = await conv();
+    await storeReporterMessage(c.id, { kind: "text", content: "Sitabuldi, Nagpur" });
+    const r = await runTurn(c.id, { backend: untouched() });
+    expect(r.kind).toBe("fast_path");
+    const [m] = await outbound(c.id);
+    // What the reporter gets is the directory as it stands.
+    expect(m.content).toContain("Arham Animal Ambulance, Sitabuldi 98765 00123\n+91 98765 00078\n");
+    const token = `{{AMB:${makeHandle("ambulance", c.id, unit.id)}}}`;
+    expect(m.contentTemplate).toContain(`Arham Animal Ambulance, Sitabuldi [number sent]\n${token}\nPlease call them right away.`);
+    expect(findDigitRuns(m.contentTemplate!)).toEqual([]);
+    expect((await turnOf(r.turnId!)).structuredOutput).toMatchObject({ reply: m.contentTemplate });
+  });
+
   it("answers a labelled location pin", async () => {
     const c = await conv();
     await storeReporterMessage(c.id, { kind: "location", content: "Karve Nagar, Pune", placeLabel: "Karve Nagar, Pune", lat: 18.5, lng: 73.8 });
