@@ -212,10 +212,11 @@ describe("parseScenario", () => {
 describe("loadScenarios", () => {
   it("reads every scenario under evals/scenarios", () => {
     const scenarios = loadScenarios(fileURLToPath(new URL("../../../evals/scenarios", import.meta.url)));
-    expect(scenarios).toHaveLength(31);
-    expect(new Set(scenarios.map((s) => s.name)).size).toBe(31);
+    expect(scenarios).toHaveLength(33);
+    expect(new Set(scenarios.map((s) => s.name)).size).toBe(33);
     expect(scenarios.filter((s) => s.backend === "claude").map((s) => s.name)).toEqual([
       "donate", "volunteer", "menu-tap-ambulance", "human-word-not-escalation-claude", "number-ask-no-place-claude",
+      "driver-unreachable-after-fast-path-claude", "about-first-contact-claude",
     ]);
   });
   it("lists every invalid file and every reused name in one error", () => {

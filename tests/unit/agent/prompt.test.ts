@@ -139,7 +139,7 @@ describe("prompts", () => {
       },
     });
     expect(t).toContain(
-      "PRE-MATCHED UNITS (the system looked up the location known so far (Ghatkopar, Mumbai), not the reporter's new words, which matched no covered place; use these handles only if the reporter still needs a unit there — for any other place call find_ambulances)\n" +
+      "PRE-MATCHED UNITS (the system looked up the location known so far (Ghatkopar, Mumbai), not the reporter's new words, which the code could not match to a place; use these handles only if the reporter still needs a unit there — for any other place call find_ambulances)\n" +
         "- {{AMB:amb_kcmfpbca}} — Arham Animal Ambulance, Ghatkopar (Mumbai) [match: area]\n"
     );
     expect(t).not.toContain("looked up the reporter's words");

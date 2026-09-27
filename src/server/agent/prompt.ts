@@ -95,7 +95,7 @@ export interface TurnContext {
  */
 function prematchedBlock(p: Prematched, place: string): string[] {
   const header = p.source === "known_location"
-    ? `PRE-MATCHED UNITS (the system looked up the location known so far (${place}), not the reporter's new words, which matched no covered place; use these handles only if the reporter still needs a unit there — for any other place call find_ambulances)`
+    ? `PRE-MATCHED UNITS (the system looked up the location known so far (${place}), not the reporter's new words, which the code could not match to a place; use these handles only if the reporter still needs a unit there — for any other place call find_ambulances)`
     : "PRE-MATCHED UNITS (the system already looked up the reporter's words; use these handles directly — do not call find_ambulances again unless the reporter means a different place)";
   return [
     header,

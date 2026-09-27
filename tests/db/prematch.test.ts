@@ -23,7 +23,7 @@ const outbound = async (id: string) =>
 const turnOf = async (id: string) => (await getDb().select().from(turns).where(eq(turns.id, id)))[0];
 const HEADER = "PRE-MATCHED UNITS (the system already looked up the reporter's words; use these handles directly — do not call find_ambulances again unless the reporter means a different place)";
 const knownHeader = (place: string) =>
-  `PRE-MATCHED UNITS (the system looked up the location known so far (${place}), not the reporter's new words, which matched no covered place; use these handles only if the reporter still needs a unit there — for any other place call find_ambulances)`;
+  `PRE-MATCHED UNITS (the system looked up the location known so far (${place}), not the reporter's new words, which the code could not match to a place; use these handles only if the reporter still needs a unit there — for any other place call find_ambulances)`;
 
 /** A conversation the model has already answered once, so its next burst goes to the model, not the fast path. */
 async function answered() {
@@ -170,6 +170,31 @@ describe("pre-matched units", () => {
     const sent = (await outbound(c.id)).at(-1)!;
     expect(sent.content).toBe(ask);
     expect(sent.content).not.toMatch(/\d/);
+    const t = await turnOf(r.turnId!);
+    expect(t.toolCalls).toEqual([
+      { name: "prematch", input: { query }, output: { matchType: "area", count: 1, handles: [], skipped: "other_city" }, durationMs: expect.any(Number) },
+    ]);
+    expect(t.handles).toEqual({});
+  });
+
+  it("holds later words to the known city on a plain area name too: Surat's Vesu is not pre-matched once Mumbai is known", async () => {
+    const c = await conv();
+    await storeReporterMessage(c.id, { kind: "text", content: "Mumbai me kutta ghayal hai" });
+    const ask = "Mumbai mein kaunsa area?";
+    const backend = new FakeBackend([
+      okReply({ reply: ask, intent: "ambulance", location: { city: "Mumbai", area: null } }),
+      okReply({ reply: ask, intent: "ambulance", location: { city: "Mumbai", area: null } }),
+    ]);
+    expect((await runTurn(c.id, { backend })).kind).toBe("ok");
+    const query = "Vesu me ek aur kutta";
+    await storeReporterMessage(c.id, { kind: "text", content: query });
+    const r = await runTurn(c.id, { backend });
+    expect(r.kind).toBe("ok");
+    expect(backend.calls[1].prompt).not.toContain("PRE-MATCHED");
+    // What the reporter sees: the question as scripted, never Surat's card or number.
+    const sent = (await outbound(c.id)).at(-1)!;
+    expect(sent.content).toBe(ask);
+    expect(sent.content).not.toContain("98765 00003");
     const t = await turnOf(r.turnId!);
     expect(t.toolCalls).toEqual([
       { name: "prematch", input: { query }, output: { matchType: "area", count: 1, handles: [], skipped: "other_city" }, durationMs: expect.any(Number) },

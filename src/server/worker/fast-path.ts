@@ -42,7 +42,8 @@ export const OTHER_INTENT_WORDS = [
   "not picking", "picking up", "switch off", "switched off", "not responding", "no answer", "no response", "unable to reach",
   "nahi lag", "nahi lagta", "lag nahi", "phone band", "number band", "phone busy", "number busy", "busy aa", "busy hai",
   "didn't pick", "did not pick", "didn't answer", "did not answer", "didnt pick", "didnt answer", "switchoff", "switch-off",
-  "उचल", "नहीं लग", "लग नहीं", "नही लग", "लागत नाही", "स्विच", "લાગતો નથી", "લાગતું નથી", "ઉપાડત",
+  "phone off", "number off", "phone not working", "number not working", "lagta nahi",
+  "उचल", "नहीं लग", "लग नहीं", "नही लग", "लागत नाही", "स्विच", "લાગતો નથી", "લાગતું નથી", "ઉપાડત", "लागला नाही", "સ્વીચ ઓફ",
   // A hurt person: the model relays the emergency numbers. A child only with an accident cue: "bachcha" and "बच्चा" are
   // also an animal's young ("kutte ka bachcha ghayal hai" is a puppy).
   "aadmi", "admi", "vyakti", "आदमी", "व्यक्ति", "माणूस", "વ્યક્તિ", "માણસ",
@@ -66,7 +67,11 @@ const APOSTROPHE_RE = /[\u2018\u2019\u02BC\u0060\u00B4]/g;
  * apostrophe as "'" ("didn’t" is "didn't"), and every whitespace run as one space, so a phrase's space matches a line
  * break or a double space too.
  */
-const intentForm = (s: string) => s.normalize("NFC").replace(NUKTA_RE, "").replace(APOSTROPHE_RE, "'").replace(/\s+/g, " ");
+/** Latin spellings of "nahi" a phone keyboard produces, read as "nahi" (whole words only, so a place word is never touched). */
+const NAHI_RE = /(?<![\p{L}\p{M}\p{N}])(?:nahin|nhi|nai|nahee|nahii)(?![\p{L}\p{M}\p{N}])/giu;
+
+const intentForm = (s: string) =>
+  s.normalize("NFC").replace(NUKTA_RE, "").replace(APOSTROPHE_RE, "'").replace(/\s+/g, " ").replace(NAHI_RE, "nahi");
 
 /** An entry as a literal in the pattern: a regex character in it ("switch-off" has none today) never acts as one. */
 const literal = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -205,7 +210,19 @@ export async function runFastPathTurn(input: {
       notes: "fast path: exact single-unit match", matched: 1, matchType, sent: "unit", fastPath: true,
     },
   });
-  const message = await deliverText(conversation, { text, template, origin: "system", turnId: turn.id, answers: pending.map((m) => m.id) });
+  let message: Message;
+  try {
+    message = await deliverText(conversation, { text, template, origin: "system", turnId: turn.id, answers: pending.map((m) => m.id) });
+  } catch (e) {
+    // The write-ahead threw, so nothing was sent or marked: the turn row must not stay "ok" beside no reply. The throw
+    // then propagates and the job retries.
+    try {
+      await finishTurn(turn.id, { status: "failed", error: "write_ahead_failed" });
+    } catch {
+      log.warn({ conversationId: conversation.id, turnId: turn.id }, "fast path turn not marked failed");
+    }
+    throw e;
+  }
   // From here the card is out: a throw propagates, since answering again would send a second reply.
   const delivered = message.deliveryStatus !== "failed";
   await finishTurn(turn.id, {

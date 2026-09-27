@@ -1,4 +1,5 @@
-# The first message takes the fast path (Surat's one unit); the model answers the two acknowledgements.
+# The first message takes the fast path (Surat's one unit); the model answers the two acknowledgements in one short
+# line each, without sending the Surat number again (the known-location block offers it).
 name: thanks-no-loop
 fake_replies:
   - reply: "You're welcome. I hope the animal gets help soon."
@@ -13,6 +14,6 @@ steps:
   - send: "surat"
     expect: { kind: fast_path, number_of: ["Surat"] }
   - send: "ok"
-    expect: { message_count: 1, not_contains: ["Animal ambulance", "Clinic info"], no_foreign_digits: true }
+    expect: { message_count: 1, not_contains: ["Animal ambulance", "Clinic info", "+91 98765 00003"], max_chars: 200, no_foreign_digits: true }
   - send: "thanks 🙏"
-    expect: { message_count: 1, not_contains: ["Animal ambulance", "Clinic info"], no_foreign_digits: true }
+    expect: { message_count: 1, not_contains: ["Animal ambulance", "Clinic info", "+91 98765 00003"], max_chars: 200, no_foreign_digits: true }
