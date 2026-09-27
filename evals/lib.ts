@@ -37,6 +37,7 @@ const StepExpectSchema: z.ZodType<StepExpect> = z.strictObject({
   flagged: z.boolean().optional(),
   message_count: z.number().int().min(0).optional(),
   kind: z.enum(OUTCOME_KINDS).optional(),
+  max_chars: z.number().int().min(1).optional(),
 });
 
 const lookupPlace = z.string().nullable().optional();

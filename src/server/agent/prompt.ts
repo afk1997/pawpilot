@@ -41,10 +41,13 @@ OTHER REQUESTS
 - Requests for a human, complaints, or anything you cannot handle: say so plainly, include {{PHONE:helpline}}, and set needs_human to true.
 - Short acknowledgements ("ok", "thanks", "🙏"): one short warm line. No menu, no "anything else?" every time.
 - A bare greeting (hi, hello, namaste) after the welcome gets one short warm line asking how we can help — never the menu again, never a repeated welcome.
+- A request for "the number" or "your number" with no place (for example "aapka number konsa hai") is an ambulance request: ask the city and area in one line, intent "ambulance".
 
 STYLE
 - Reply in the reporter's language and script. Hinglish stays Hinglish (Latin script). Mirror switches.
-- Two to five short sentences. WhatsApp formatting only: *bold*, _italic_, line breaks. No markdown headings, no bullet lists, no **double asterisks**. At most one emoji.
+- Match the reporter's length: a short message gets a one- or two-line reply. Five short sentences is the maximum, never the target. WhatsApp formatting only: *bold*, _italic_, line breaks. No markdown headings, no bullet lists, no **double asterisks**. At most one emoji.
+- When you need the place, ask for it in ONE line (for example "Aap kis city aur area mein hain? Batayein, main turant number bhejta hoon.") and nothing else.
+- Never describe what the helpline is or how it works, and never send the menu. Include {{PHONE:helpline}} only when you cannot help (out of coverage, an unreachable driver, a request for a person, a tool error), never as a routine extra.
 - Warm, calm, practical. Ask at most one clarifying question per reply.
 - Remember everything said earlier in this chat; the transcript is your memory.
 - A transcript line marked [not delivered] never reached the reporter; give that information again if it is still needed.
@@ -64,12 +67,17 @@ Set needs_human to true only when the reporter asks for a person, cannot reach a
 "notes" is one internal line for the admin page.`;
 }
 
+/** The turn prompt's line for the conversation's first message, which got no welcome list. */
+export const FIRST_CONTACT_LINE =
+  'FIRST CONTACT: this is the reporter\'s first message and no welcome was sent. Open with a one-line greeting in the reporter\'s language ("Namaste!") and answer directly; never send the menu or describe what the helpline is.';
+
 export interface TurnContext {
   nowIst: string;
   language: Language | null;
   knownLocation: { city: string | null; area: string | null } | null;
   handlesShared: string[];
-  welcomeJustSent: boolean;
+  /** The conversation's first message, answered without the welcome list: the prompt asks for a greeting and a direct answer. */
+  firstContact: boolean;
   transcript: string;
   correction: string | null;
   /** Units the code already matched to the reporter's words (prematchAmbulances); null or absent: none. */
@@ -97,7 +105,7 @@ export function buildTurnPrompt(ctx: TurnContext): string {
     `Location known so far: ${loc}`,
     `Handles already shared in this chat: ${ctx.handlesShared.length ? ctx.handlesShared.join(", ") : "none"}`,
   ];
-  if (ctx.welcomeJustSent) lines.push("The welcome menu was just sent by the system. Do not greet again; answer the reporter's message directly.");
+  if (ctx.firstContact) lines.push(FIRST_CONTACT_LINE);
   if (ctx.prematched && ctx.prematched.units.length > 0) lines.push("", ...prematchedBlock(ctx.prematched));
   lines.push("", "TRANSCRIPT", ctx.transcript, "");
   // Last, right before the instruction, so the correction is the freshest thing the model reads.

@@ -1,0 +1,8 @@
+# A bare "hi" gets the welcome list; the place that follows gets its number (the fast path, here) and no second welcome.
+name: hi-then-place
+first_contact: true
+steps:
+  - send: "hi"
+    expect: { kind: welcome, message_count: 1, contains: ["Animal ambulance"] }
+  - send: "ghatkopar"
+    expect: { kind: fast_path, message_count: 1, number_of: ["Mumbai - Ghatkopar"], not_contains: ["How may I assist"], no_foreign_digits: true }

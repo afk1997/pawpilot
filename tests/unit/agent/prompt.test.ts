@@ -61,6 +61,14 @@ describe("prompts", () => {
     expect(p).toContain("Set needs_human to true only when the reporter asks for a person, cannot reach a driver, complains, a tool returns lookup_failed, or the request is something this helpline cannot handle at all. An out-of-coverage place, or severe or urgent wording, never sets needs_human on its own.");
     expect(p).not.toContain("or you cannot help them");
   });
+  it("system prompt pins brevity: the reporter's length, a one-line place question, no helpline description, no routine helpline number", () => {
+    const p = systemPrompt();
+    expect(p).toContain("Match the reporter's length: a short message gets a one- or two-line reply. Five short sentences is the maximum, never the target.");
+    expect(p).toContain('When you need the place, ask for it in ONE line (for example "Aap kis city aur area mein hain? Batayein, main turant number bhejta hoon.") and nothing else.');
+    expect(p).toContain("Never describe what the helpline is or how it works, and never send the menu. Include {{PHONE:helpline}} only when you cannot help (out of coverage, an unreachable driver, a request for a person, a tool error), never as a routine extra.");
+    expect(p).toContain('A request for "the number" or "your number" with no place (for example "aapka number konsa hai") is an ambulance request: ask the city and area in one line, intent "ambulance".');
+    expect(p).not.toContain("Two to five short sentences");
+  });
   it("system prompt says a [number sent] on an undelivered line never reached the reporter, and forbids writing the marker", () => {
     const p = systemPrompt();
     expect(p).toContain("[number sent] in the transcript stands for a phone number that was already sent, unless the line is marked [not delivered], in which case the reporter did not receive it.");
@@ -69,18 +77,18 @@ describe("prompts", () => {
   it("turn prompt includes context lines and the transcript", () => {
     const t = buildTurnPrompt({
       nowIst: "Thu 25 Sep 2026, 10:03 IST", language: "hi", knownLocation: { city: "Mumbai", area: null },
-      handlesShared: ["amb_1a2b3c4d"], welcomeJustSent: true, transcript: "[10:03] Reporter: hi", correction: null,
+      handlesShared: ["amb_1a2b3c4d"], firstContact: true, transcript: "[10:03] Reporter: hi", correction: null,
     });
     expect(t).toContain("Current time: Thu 25 Sep 2026, 10:03 IST");
     expect(t).toContain("Language so far: hi");
     expect(t).toContain("Location known so far: Mumbai");
     expect(t).toContain("amb_1a2b3c4d");
-    expect(t).toContain("The welcome menu was just sent");
+    expect(t).toContain('FIRST CONTACT: this is the reporter\'s first message and no welcome was sent. Open with a one-line greeting in the reporter\'s language ("Namaste!") and answer directly; never send the menu or describe what the helpline is.');
     expect(t).toContain("[10:03] Reporter: hi");
-    expect(buildTurnPrompt({ nowIst: "x", language: null, knownLocation: null, handlesShared: [], welcomeJustSent: false, transcript: "t", correction: "SYSTEM CORRECTION: fix" })).toContain("SYSTEM CORRECTION: fix");
+    expect(buildTurnPrompt({ nowIst: "x", language: null, knownLocation: null, handlesShared: [], firstContact: false, transcript: "t", correction: "SYSTEM CORRECTION: fix" })).toContain("SYSTEM CORRECTION: fix");
   });
-  it("turn prompt renders every location shape, an empty handle list and no welcome line", () => {
-    const ctx: TurnContext = { nowIst: "x", language: null, knownLocation: null, handlesShared: [], welcomeJustSent: false, transcript: "t", correction: null };
+  it("turn prompt renders every location shape, an empty handle list and no first-contact line", () => {
+    const ctx: TurnContext = { nowIst: "x", language: null, knownLocation: null, handlesShared: [], firstContact: false, transcript: "t", correction: null };
     expect(buildTurnPrompt(ctx)).toContain("Location known so far: unknown\n");
     expect(buildTurnPrompt({ ...ctx, knownLocation: { city: null, area: null } })).toContain("Location known so far: unknown\n");
     expect(buildTurnPrompt({ ...ctx, knownLocation: { city: null, area: "Ghatkopar" } })).toContain("Location known so far: Ghatkopar\n");
@@ -88,10 +96,10 @@ describe("prompts", () => {
     const t = buildTurnPrompt(ctx);
     expect(t).toContain("Language so far: unknown");
     expect(t).toContain("Handles already shared in this chat: none");
-    expect(t).not.toContain("The welcome menu was just sent");
+    expect(t).not.toContain("FIRST CONTACT");
   });
   it("turn prompt lists pre-matched units with their tokens, after the context and before the transcript", () => {
-    const ctx: TurnContext = { nowIst: "x", language: "en", knownLocation: null, handlesShared: [], welcomeJustSent: false, transcript: "[10:03] Reporter: ghatkopar", correction: null };
+    const ctx: TurnContext = { nowIst: "x", language: "en", knownLocation: null, handlesShared: [], firstContact: false, transcript: "[10:03] Reporter: ghatkopar", correction: null };
     const arham = { handle: "amb_kcmfpbca", display_name: "Arham Animal Ambulance, Ghatkopar", city: "Mumbai", area: "Ghatkopar", operator_name: "Arham Yuva Seva Group", operator_is_arham: true };
     const partner = { handle: "amb_pbcdefgh", display_name: "Animal Ambulance, Rajkot", city: "Rajkot", area: null, operator_name: "Blue Cross", operator_is_arham: false };
     const header = "PRE-MATCHED UNITS (the system already looked up the reporter's words; use these handles directly — do not call find_ambulances again unless the reporter means a different place)";
@@ -106,7 +114,7 @@ describe("prompts", () => {
 
   it("turn prompt puts the correction last, right before the closing instruction", () => {
     const t = buildTurnPrompt({
-      nowIst: "x", language: "en", knownLocation: null, handlesShared: [], welcomeJustSent: true,
+      nowIst: "x", language: "en", knownLocation: null, handlesShared: [], firstContact: true,
       transcript: "[10:03] Reporter: Surat", correction: "SYSTEM CORRECTION: fix",
     });
     expect(t).toMatch(/\n\[10:03\] Reporter: Surat\n\nSYSTEM CORRECTION: fix\nWrite the next assistant reply now\.$/);

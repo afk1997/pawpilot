@@ -17,6 +17,8 @@ export interface StepExpect {
   flagged?: boolean;
   message_count?: number;
   kind?: string;
+  /** Every reply of the step is at most this many characters: the brevity check. */
+  max_chars?: number;
 }
 
 export interface StepActual {
@@ -62,5 +64,8 @@ export function checkStep(expect: StepExpect, actual: StepActual): string[] {
   if (expect.flagged !== undefined && actual.flagged !== expect.flagged) fails.push(`flagged: expected ${expect.flagged}, got ${actual.flagged}`);
   if (expect.message_count !== undefined && actual.messages.length !== expect.message_count) fails.push(`message_count: expected ${expect.message_count}, got ${actual.messages.length}`);
   if (expect.kind && actual.outcomeKind !== expect.kind) fails.push(`kind: expected ${expect.kind}, got ${actual.outcomeKind}`);
+  if (expect.max_chars !== undefined) {
+    for (const m of actual.messages) if (m.content.length > expect.max_chars) fails.push(`max_chars: a reply has ${m.content.length} characters, over ${expect.max_chars}`);
+  }
   return fails;
 }

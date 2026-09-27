@@ -21,6 +21,11 @@ describe("checkStep", () => {
   it("checks language by script when the structured output is missing", () => {
     expect(checkStep({ language: "gu" }, actual("સુરત", { structured: null }))).toEqual([]);
   });
+  it("fails any reply of the step longer than max_chars", () => {
+    expect(checkStep({ max_chars: 20 }, actual("short"))).toEqual([]);
+    expect(checkStep({ max_chars: 20 }, actual("a".repeat(21)))).toEqual(["max_chars: a reply has 21 characters, over 20"]);
+    expect(checkStep({ max_chars: 20 }, { ...actual("short"), messages: [{ content: "short" }, { content: "b".repeat(30) }] })).toEqual(["max_chars: a reply has 30 characters, over 20"]);
+  });
   it("fails a step whose turn fell back unless the step expects the fallback", () => {
     expect(checkStep({ number_of: ["Mumbai - Ghatkopar"] }, actual("+91 70000 00001", { turnStatus: "fallback" }))).toEqual(["turn_status: the turn fell back, which the step does not expect"]);
     expect(checkStep({ turn_status: "fallback" }, actual("+91 70000 00001", { turnStatus: "fallback" }))).toEqual([]);

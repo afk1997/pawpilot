@@ -182,18 +182,23 @@ describe("the fast path", () => {
     expect(findDigitRuns(prompt)).toEqual([]);
   });
 
-  it("sends the card after the welcome on first contact: the welcome does not count as an answer", async () => {
+  it("sends the card alone on first contact, greeting first; a welcome sent for a bare greeting does not count as an answer", async () => {
     const c = await conv({ welcomed: false });
     await storeReporterMessage(c.id, { kind: "text", content: "ghatkopar me kutta ghayal hai" });
     const r = await runTurn(c.id, { backend: untouched() });
     expect(r.kind).toBe("fast_path");
-    expect((await outbound(c.id)).map((m) => [m.kind, m.content])).toEqual([["interactive", welcomeText("en")], ["text", GHATKOPAR_EN]]);
+    const out = await outbound(c.id);
+    expect(out.map((m) => [m.kind, m.content])).toEqual([["text", `Namaste! 🙏 ${GHATKOPAR_EN}`]]);
+    expect(out[0].contentTemplate).toMatch(/^Namaste! 🙏 Here is the animal ambulance for your area:\n\n/);
+    expect(out[0].contentTemplate).not.toMatch(/\d/);
+    expect((await conversationRow(c.id)).welcomedAt).not.toBeNull();
 
     const greeted = await conv({ welcomed: false });
     await storeReporterMessage(greeted.id, { kind: "text", content: "hi" });
     expect((await runTurn(greeted.id)).kind).toBe("welcome");
     await storeReporterMessage(greeted.id, { kind: "text", content: "ghatkopar" });
     expect((await runTurn(greeted.id, { backend: untouched() })).kind).toBe("fast_path");
+    expect((await outbound(greeted.id)).map((m) => [m.kind, m.content])).toEqual([["interactive", welcomeText("en")], ["text", GHATKOPAR_EN]]);
   });
 
   it("marks the turn failed with delivery_failed when the card was not delivered, keeping the burst answered", async () => {

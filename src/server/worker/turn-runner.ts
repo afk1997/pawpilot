@@ -102,13 +102,10 @@ async function runTurnLocked(conversationId: string, deps: TurnDeps): Promise<Tu
   const cls = classifyPending(pending);
   // Every reply below marks the burst answered with itself, before its send (deliver.ts's write-ahead).
   const pendingIds = pending.map((m) => m.id);
-  let welcomeJustSent = false;
+  /** The conversation's first message, answered without the welcome list: its reply opens with a greeting instead. */
+  let firstContact = false;
 
   if (await claimWelcome(conversation.id)) {
-    // The welcome answers the burst only when the burst was nothing but greetings; otherwise the reply below does.
-    const welcomeTurnId = await systemTurn(conversation.id, "system:welcome", (id) =>
-      sendWelcome(conversation, lang, id, cls.allGreeting ? pendingIds : [])
-    );
     // A burst with no real content ("hi", a sticker, a voice note) detects as English only by default,
     // so it does not decide the language; the first message with real content does.
     if (!(cls.allGreeting || cls.allAudio) || lang !== "en") {
@@ -116,8 +113,14 @@ async function runTurnLocked(conversationId: string, deps: TurnDeps): Promise<Tu
       conversation = { ...conversation, language: lang };
     }
     conversation = { ...conversation, welcomedAt: new Date() };
-    welcomeJustSent = true;
-    if (cls.allGreeting) return { kind: "welcome", turnId: welcomeTurnId, requeued: await requeueIfPending(conversation.id) };
+    // Only a burst of nothing but greetings, or the menu word, gets the welcome list. A first message with content
+    // gets its answer alone (the voice-note line, the fast path's card or the model's reply, a greeting inside): the
+    // reporter asked for something, and a list before the answer only delays it.
+    if (cls.allGreeting || cls.allMenu) {
+      const welcomeTurnId = await systemTurn(conversation.id, "system:welcome", (id) => sendWelcome(conversation, lang, id, pendingIds));
+      return { kind: "welcome", turnId: welcomeTurnId, requeued: await requeueIfPending(conversation.id) };
+    }
+    firstContact = true;
   }
 
   if (cls.allMenu) {
@@ -140,7 +143,7 @@ async function runTurnLocked(conversationId: string, deps: TurnDeps): Promise<Tu
     const decision = await fastPathDecision(conversation, pending);
     if (decision.fire) {
       const { unit, matchType } = decision;
-      const { turnId } = await runFastPathTurn({ conversation, pending, unit, matchType, lang, nowMs, startedMs });
+      const { turnId } = await runFastPathTurn({ conversation, pending, unit, matchType, lang, firstContact, nowMs, startedMs });
       return { kind: "fast_path", turnId, requeued: await requeueIfPending(conversation.id) };
     }
   }
@@ -148,6 +151,6 @@ async function runTurnLocked(conversationId: string, deps: TurnDeps): Promise<Tu
   // Everything else goes to Claude, a bare greeting after the welcome included: the prompt answers it with one warm
   // line, never the menu again.
   const now = deps.now ?? (() => new Date());
-  const r = await runClaudeTurn({ conversation, pending, lang, welcomeJustSent, backend: deps.backend, now, nowMs });
+  const r = await runClaudeTurn({ conversation, pending, lang, firstContact, backend: deps.backend, now, nowMs });
   return { kind: r.outcome, turnId: r.turnId, requeued: await requeueIfPending(conversation.id) };
 }

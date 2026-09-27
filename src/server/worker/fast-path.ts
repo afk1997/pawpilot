@@ -5,7 +5,7 @@ import { HandleRegistry } from "../agent/handles";
 import { loadActiveAmbulances } from "../directory/repo";
 import { matchAmbulances, type DirectoryAmbulance } from "../directory/matcher";
 import { buildAmbulanceCard, buildAmbulanceCardTemplate } from "../messages/cards";
-import { fallbackFoundIntro } from "../messages/system-replies";
+import { fallbackFoundIntro, firstContactGreeting } from "../messages/system-replies";
 import { recordEvent } from "../inbound/store";
 import { isGreetingOnly } from "../lang";
 import { log, safeErrorFields } from "../log";
@@ -112,8 +112,9 @@ export async function fastPathDecision(
  * template carries in place of the number), and the burst is marked answered with the reply before the send
  * (deliverText's write-ahead). A card that was not delivered leaves the turn failed with delivery_failed, as on every
  * other turn; the conversation is never flagged for the fast path itself. The language is stored, as the fallback
- * does, when the conversation has none and the burst is more than greetings. `startedMs`: when the check began, on the
- * `nowMs` clock, for the turn's latency.
+ * does, when the conversation has none and the burst is more than greetings. On the conversation's first message
+ * (`firstContact`), which got no welcome list, the card opens with a one-line greeting. `startedMs`: when the check
+ * began, on the `nowMs` clock, for the turn's latency.
  */
 export async function runFastPathTurn(input: {
   conversation: Conversation;
@@ -121,13 +122,15 @@ export async function runFastPathTurn(input: {
   unit: DirectoryAmbulance;
   matchType: "area" | "city";
   lang: Language;
+  /** The conversation's first message: no welcome list went out, so the card greets first. */
+  firstContact?: boolean;
   nowMs: () => number;
   startedMs: number;
 }): Promise<{ turnId: string }> {
   const { conversation, pending, unit, matchType, lang } = input;
   const registry = new HandleRegistry(conversation.id);
   const token = `{{AMB:${registry.ambulance(unit.id)}}}`;
-  const intro = fallbackFoundIntro(lang);
+  const intro = `${input.firstContact ? `${firstContactGreeting(lang)} ` : ""}${fallbackFoundIntro(lang)}`;
   const text = `${intro}\n\n${buildAmbulanceCard(unit, lang)}`;
   const template = `${intro}\n\n${buildAmbulanceCardTemplate(unit, lang, token)}`;
   const turn = await createTurn({

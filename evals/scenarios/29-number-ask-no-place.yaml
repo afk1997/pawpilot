@@ -1,0 +1,12 @@
+# A first message asking for "the number" with no place: no welcome list, one short line asking the city and area, no
+# helpline number. The fake backend scripts the reply; the model's own behaviour is number-ask-no-place-claude.
+name: number-ask-no-place
+first_contact: true
+fake_replies:
+  - reply: "Namaste! Aap kis city aur area mein hain? Batayein, main turant ambulance ka number bhejta hoon."
+    language: en
+    intent: ambulance
+    location: { city: null, area: null }
+steps:
+  - send: "aapka number konsa hai"
+    expect: { kind: ok, message_count: 1, intent: ambulance, not_contains: ["How may I assist", "Animal ambulance", "99999 00000"], regex: "city|area|kahan|kis", max_chars: 200, no_foreign_digits: true }

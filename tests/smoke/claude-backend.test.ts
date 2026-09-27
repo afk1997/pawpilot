@@ -27,7 +27,7 @@ run("ClaudeCodeBackend smoke (spends Max usage)", () => {
     const res = await backend.runTurn({
       conversationId: "smoke",
       systemPrompt: buildSystemPrompt({ coverage: await getCoverageSummary(), websiteUrl: "https://alwayscare.org" }),
-      prompt: buildTurnPrompt({ nowIst: formatIst(new Date()), language: null, knownLocation: null, handlesShared: [], welcomeJustSent: true, correction: null,
+      prompt: buildTurnPrompt({ nowIst: formatIst(new Date()), language: null, knownLocation: null, handlesShared: [], firstContact: true, correction: null,
         transcript: "--- NEW MESSAGES (answer these) ---\n[10:03] Reporter: ghatkopar station ke paas kutta ghayal hai please jaldi" }),
       toolServer: server, allowedToolNames, timeoutMs: 60_000,
     });

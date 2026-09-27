@@ -105,7 +105,8 @@ export async function runClaudeTurn(input: {
   conversation: Conversation;
   pending: Message[];
   lang: Language;
-  welcomeJustSent: boolean;
+  /** The conversation's first message, answered without the welcome list: the prompt says so and asks for a greeting. */
+  firstContact: boolean;
   /** getBackend() when absent. */
   backend?: LLMBackend;
   now: () => Date;
@@ -184,7 +185,7 @@ export async function runClaudeTurn(input: {
         language: conversation.language,
         knownLocation,
         handlesShared,
-        welcomeJustSent: input.welcomeJustSent,
+        firstContact: input.firstContact,
         transcript: renderTranscript(history.slice(-transcriptLimit), pending, now()),
         correction,
         prematched: pre.prematched,
