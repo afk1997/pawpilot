@@ -103,13 +103,43 @@ describe("prompts", () => {
     const arham = { handle: "amb_kcmfpbca", display_name: "Arham Animal Ambulance, Ghatkopar", city: "Mumbai", area: "Ghatkopar", operator_name: "Arham Yuva Seva Group", operator_is_arham: true };
     const partner = { handle: "amb_pbcdefgh", display_name: "Animal Ambulance, Rajkot", city: "Rajkot", area: null, operator_name: "Blue Cross", operator_is_arham: false };
     const header = "PRE-MATCHED UNITS (the system already looked up the reporter's words; use these handles directly — do not call find_ambulances again unless the reporter means a different place)";
-    expect(buildTurnPrompt({ ...ctx, prematched: { matchType: "area", units: [arham] } })).toContain(
+    expect(buildTurnPrompt({ ...ctx, prematched: { matchType: "area", source: "words", units: [arham] } })).toContain(
       `Handles already shared in this chat: none\n\n${header}\n- {{AMB:amb_kcmfpbca}} — Arham Animal Ambulance, Ghatkopar (Mumbai) [match: area]\n\nTRANSCRIPT\n`
     );
-    expect(buildTurnPrompt({ ...ctx, prematched: { matchType: "city", units: [partner, { ...partner, handle: "amb_ponmlkji", operator_name: "Hope for Indies Trust" }] } })).toContain(
+    expect(buildTurnPrompt({ ...ctx, prematched: { matchType: "city", source: "words", units: [partner, { ...partner, handle: "amb_ponmlkji", operator_name: "Hope for Indies Trust" }] } })).toContain(
       `${header}\n- {{AMB:amb_pbcdefgh}} — Animal Ambulance, Rajkot (Rajkot), operated by Blue Cross [match: city]\n- {{AMB:amb_ponmlkji}} — Animal Ambulance, Rajkot (Rajkot), operated by Hope for Indies Trust [match: city]\n\nTRANSCRIPT\n`
     );
     for (const prematched of [undefined, null]) expect(buildTurnPrompt({ ...ctx, prematched })).not.toContain("PRE-MATCHED UNITS");
+  });
+
+  it("turn prompt names the covered area an area match went through, before a partner's operator", () => {
+    const ctx: TurnContext = { nowIst: "x", language: "en", knownLocation: null, handlesShared: [], firstContact: false, transcript: "t", correction: null };
+    const unit = { handle: "amb_kcmfpbca", display_name: "Arham Animal Ambulance, Ghatkopar", city: "Mumbai", area: "Ghatkopar", operator_name: "Arham Yuva Seva Group", operator_is_arham: true };
+    expect(buildTurnPrompt({ ...ctx, prematched: { matchType: "area", source: "words", units: [{ ...unit, covers: "Vikhroli" }] } })).toContain(
+      "- {{AMB:amb_kcmfpbca}} — Arham Animal Ambulance, Ghatkopar (Mumbai), covers Vikhroli [match: area]\n"
+    );
+    const partner = { ...unit, display_name: "Animal Ambulance, Rajkot", city: "Rajkot", area: null, operator_name: "Blue Cross", operator_is_arham: false, covers: "Gondal Road" };
+    expect(buildTurnPrompt({ ...ctx, prematched: { matchType: "area", source: "words", units: [partner] } })).toContain(
+      "- {{AMB:amb_kcmfpbca}} — Animal Ambulance, Rajkot (Rajkot), covers Gondal Road, operated by Blue Cross [match: area]\n"
+    );
+    expect(buildTurnPrompt({ ...ctx, prematched: { matchType: "area", source: "words", units: [{ ...unit, covers: null }] } })).toContain(
+      "- {{AMB:amb_kcmfpbca}} — Arham Animal Ambulance, Ghatkopar (Mumbai) [match: area]\n"
+    );
+  });
+
+  it("turn prompt says when the pre-matched units are for the location known so far, not the reporter's words", () => {
+    const t = buildTurnPrompt({
+      nowIst: "x", language: "en", knownLocation: { city: "Mumbai", area: "Ghatkopar" }, handlesShared: [], firstContact: false, transcript: "t", correction: null,
+      prematched: {
+        matchType: "area", source: "known_location",
+        units: [{ handle: "amb_kcmfpbca", display_name: "Arham Animal Ambulance, Ghatkopar", city: "Mumbai", area: "Ghatkopar", operator_name: "Arham Yuva Seva Group", operator_is_arham: true }],
+      },
+    });
+    expect(t).toContain(
+      "PRE-MATCHED UNITS (the system looked up the location known so far (Ghatkopar, Mumbai), not the reporter's new words, which matched no covered place; use these handles only if the reporter still needs a unit there — for any other place call find_ambulances)\n" +
+        "- {{AMB:amb_kcmfpbca}} — Arham Animal Ambulance, Ghatkopar (Mumbai) [match: area]\n"
+    );
+    expect(t).not.toContain("looked up the reporter's words");
   });
 
   it("turn prompt puts the correction last, right before the closing instruction", () => {

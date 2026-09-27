@@ -9,6 +9,7 @@ import { runTurn } from "@/server/worker/turn-runner";
 import { stopBoss } from "@/server/queue/boss";
 import { FakeBackend, okReply } from "@/server/agent/fake-backend";
 import { makeHandle } from "@/server/agent/handles";
+import { findDigitRuns } from "@/server/agent/scrub";
 import type { ToolCallRecord } from "@/server/agent/tools";
 import type { TurnInput } from "@/server/agent/types";
 import { resetConfigForTests } from "@/server/config";
@@ -21,6 +22,8 @@ const outbound = async (id: string) =>
   (await getDb().select().from(messages).where(eq(messages.conversationId, id)).orderBy(asc(messages.createdAt))).filter((m) => m.role === "assistant");
 const turnOf = async (id: string) => (await getDb().select().from(turns).where(eq(turns.id, id)))[0];
 const HEADER = "PRE-MATCHED UNITS (the system already looked up the reporter's words; use these handles directly — do not call find_ambulances again unless the reporter means a different place)";
+const knownHeader = (place: string) =>
+  `PRE-MATCHED UNITS (the system looked up the location known so far (${place}), not the reporter's new words, which matched no covered place; use these handles only if the reporter still needs a unit there — for any other place call find_ambulances)`;
 
 /** A conversation the model has already answered once, so its next burst goes to the model, not the fast path. */
 async function answered() {
@@ -95,21 +98,37 @@ describe("pre-matched units", () => {
     expect(t.handles).toEqual({});
   });
 
-  it("uses the place known so far when the reporter's words name none", async () => {
+  it("offers the units of the place known so far when the words match none, without arming their card", async () => {
     const c = await conv();
     await storeReporterMessage(c.id, { kind: "text", content: "ghatkopar me kutta ghayal hai" });
     expect((await runTurn(c.id)).kind).toBe("fast_path");
-    await storeReporterMessage(c.id, { kind: "text", content: "the driver is not answering" });
+    const query = "ek aur kutta Lonavala me ghayal hai";
+    await storeReporterMessage(c.id, { kind: "text", content: query });
     const handle = makeHandle("ambulance", c.id, ids.ghatkopar);
-    const backend = new FakeBackend([okReply({ reply: "Please call {{PHONE:helpline}}.", intent: "ambulance", needs_human: true })]);
+    const reply = "Sorry, we don't cover Lonavala yet. Please contact a local animal rescue group there.";
+    const backend = new FakeBackend([okReply({ reply, intent: "ambulance", needs_human: false, location: { city: "Lonavala", area: null } })]);
     const r = await runTurn(c.id, { backend });
-    expect(backend.calls[0].prompt).toContain(`${HEADER}\n- {{AMB:${handle}}} — Arham Animal Ambulance, Ghatkopar (Mumbai) [match: area]\n`);
+    expect(r.kind).toBe("ok");
+    const prompt = backend.calls[0].prompt;
+    expect(prompt).toContain(`${knownHeader("Ghatkopar, Mumbai")}\n- {{AMB:${handle}}} — Arham Animal Ambulance, Ghatkopar (Mumbai) [match: area]\n`);
+    expect(prompt).not.toContain(HEADER);
+    // An ambulance reply with no token, about another place: the earlier place's card is not appended.
+    const sent = (await outbound(c.id)).at(-1)!;
+    expect(sent.content).toBe(reply);
+    expect(findDigitRuns(sent.content)).toEqual([]);
+    expect(sent.content).not.toMatch(/\d/);
     expect((await turnOf(r.turnId!)).toolCalls).toEqual([
-      {
-        name: "prematch", input: { city: "Mumbai", area: "Ghatkopar", query: "the driver is not answering" },
-        output: { matchType: "area", count: 1, handles: [handle] }, durationMs: expect.any(Number),
-      },
+      { name: "prematch", input: { city: "Mumbai", area: "Ghatkopar", query }, output: { matchType: "area", count: 1, handles: [handle] }, durationMs: expect.any(Number) },
     ]);
+  });
+
+  it("names the covered area an area match went through (Vikhroli, covered by the Ghatkopar unit)", async () => {
+    const c = await answered();
+    await storeReporterMessage(c.id, { kind: "text", content: "vikhroli station ke paas" });
+    const handle = makeHandle("ambulance", c.id, ids.ghatkopar);
+    const backend = new FakeBackend([okReply({ reply: `Please call {{AMB:${handle}}} right away.`, intent: "ambulance" })]);
+    expect((await runTurn(c.id, { backend })).kind).toBe("ok");
+    expect(backend.calls[0].prompt).toContain(`${HEADER}\n- {{AMB:${handle}}} — Arham Animal Ambulance, Ghatkopar (Mumbai), covers Vikhroli [match: area]\n`);
   });
 
   it("uses the reporter's words, not the place known so far, when they name a place", async () => {

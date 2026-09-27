@@ -80,16 +80,28 @@ export interface TurnContext {
   firstContact: boolean;
   transcript: string;
   correction: string | null;
-  /** Units the code already matched to the reporter's words (prematchAmbulances); null or absent: none. */
+  /**
+   * Units the code already matched (prematchAmbulances) to the reporter's words or, when they matched no place, to the
+   * location known so far; null or absent: none.
+   */
   prematched?: Prematched | null;
 }
 
-/** The pre-matched units, one line each: the token to write, the unit, its city, a partner's operator and the match. */
-function prematchedBlock(p: Prematched): string[] {
+/**
+ * The pre-matched units, one line each: the token to write, the unit, its city, the covered area an area match went
+ * through, a partner's operator and the match. The header says what was looked up: the reporter's words, or the
+ * location known so far (`place`), whose units the model reuses only if the reporter still needs that place.
+ */
+function prematchedBlock(p: Prematched, place: string): string[] {
+  const header = p.source === "known_location"
+    ? `PRE-MATCHED UNITS (the system looked up the location known so far (${place}), not the reporter's new words, which matched no covered place; use these handles only if the reporter still needs a unit there — for any other place call find_ambulances)`
+    : "PRE-MATCHED UNITS (the system already looked up the reporter's words; use these handles directly — do not call find_ambulances again unless the reporter means a different place)";
   return [
-    "PRE-MATCHED UNITS (the system already looked up the reporter's words; use these handles directly — do not call find_ambulances again unless the reporter means a different place)",
+    header,
     ...p.units.map(
-      (u) => `- {{AMB:${u.handle}}} — ${u.display_name} (${u.city})${u.operator_is_arham ? "" : `, operated by ${u.operator_name}`} [match: ${p.matchType}]`
+      (u) =>
+        `- {{AMB:${u.handle}}} — ${u.display_name} (${u.city})${u.covers ? `, covers ${u.covers}` : ""}` +
+        `${u.operator_is_arham ? "" : `, operated by ${u.operator_name}`} [match: ${p.matchType}]`
     ),
   ];
 }
@@ -106,7 +118,7 @@ export function buildTurnPrompt(ctx: TurnContext): string {
     `Handles already shared in this chat: ${ctx.handlesShared.length ? ctx.handlesShared.join(", ") : "none"}`,
   ];
   if (ctx.firstContact) lines.push(FIRST_CONTACT_LINE);
-  if (ctx.prematched && ctx.prematched.units.length > 0) lines.push("", ...prematchedBlock(ctx.prematched));
+  if (ctx.prematched && ctx.prematched.units.length > 0) lines.push("", ...prematchedBlock(ctx.prematched, loc));
   lines.push("", "TRANSCRIPT", ctx.transcript, "");
   // Last, right before the instruction, so the correction is the freshest thing the model reads.
   if (ctx.correction) lines.push(ctx.correction);

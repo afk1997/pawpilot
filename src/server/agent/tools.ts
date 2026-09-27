@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { Language } from "../types";
 import { HandleRegistry } from "./handles";
 import { loadActiveAmbulances, loadActiveClinics } from "../directory/repo";
-import { matchAmbulances, normalize, type DirectoryAmbulance, type MatchInput, type MatchResult, type MatchType } from "../directory/matcher";
+import { areaNamesIn, matchAmbulances, normalize, type DirectoryAmbulance, type MatchInput, type MatchResult, type MatchType } from "../directory/matcher";
 import { ambulanceDisplayName } from "../messages/cards";
 import { getStaticInfo, type InfoContent, type InfoTopic } from "../content/static";
 import { asciiDigits, PHONE_RUN_RE } from "../digits";
@@ -194,10 +194,18 @@ export async function findAmbulancesImpl(
 }
 
 /** A unit the pre-match hands the model in the turn prompt (buildTurnPrompt's PRE-MATCHED UNITS). */
-export type PrematchedUnit = Pick<AmbulanceCandidate, "handle" | "display_name" | "city" | "area" | "operator_name" | "operator_is_arham">;
+export type PrematchedUnit = Pick<AmbulanceCandidate, "handle" | "display_name" | "city" | "area" | "operator_name" | "operator_is_arham"> & {
+  /** The area names an exact area match went through besides the one the display name shows ("Vikhroli"); null or absent: none. */
+  covers?: string | null;
+};
 
 export interface Prematched {
   matchType: "area" | "city";
+  /**
+   * What was looked up: the reporter's words, or, when they matched no place, the location known so far. Only a match
+   * on the words sets the tool's state (the card fallback): units for the known location are only offered to the model.
+   */
+  source: "words" | "known_location";
   units: PrematchedUnit[];
 }
 
@@ -205,12 +213,25 @@ export interface Prematched {
 const PREMATCH_MAX_UNITS = 3;
 
 /**
+ * The unit's area names the lookup's needles (its area, then the reporter's words) name as tier 1 reads them, leaving
+ * out the place its display name already shows, each once and joined; null when none is left.
+ */
+function coveredNames(r: DirectoryAmbulance, lookup: MatchInput): string | null {
+  const shown = normalize(r.area && r.area.trim().length > 0 ? r.area : r.city);
+  const names = [lookup.area ?? "", lookup.query].flatMap((needle) => areaNamesIn(r, needle)).filter((n) => normalize(n) !== shown);
+  return names.length > 0 ? [...new Set(names)].join(", ") : null;
+}
+
+/**
  * find_ambulances run by code before the model's first call, on the reporter's words (`query`), and when they match
  * no place at all, again with the place known so far as its city and area. An exact match (area or city) of one to
- * PREMATCH_MAX_UNITS units issues their handles and sets the tool's state, as find_ambulances would, so the model can
- * give them without calling it and a reply without a token still gets their card; any looser match, or more units,
- * leaves the lookup to the model. The units are scrubbed as tool output is. `record`: the audit entry (name
- * "prematch"), whatever the outcome; a failed lookup is recorded with its error's class and code, and throws nothing.
+ * PREMATCH_MAX_UNITS units issues their handles, so the model can give them without calling the tool; for an area
+ * match each unit names the covered area it went through (`covers`). A match on the reporter's words also sets the
+ * tool's state, as find_ambulances would, so a reply without a token still gets their card; a match on the known
+ * location never does (`source`), since a reply about another place ("we don't cover Lonavala") must not get the
+ * earlier place's card. Any looser match, or more units, leaves the lookup to the model. The units are scrubbed as tool
+ * output is. `record`: the audit entry (name "prematch"), whatever the outcome; a failed lookup is recorded with its
+ * error's class and code, and throws nothing.
  */
 export async function prematchAmbulances(
   ctx: ToolContext,
@@ -221,26 +242,31 @@ export async function prematchAmbulances(
   try {
     const rows = await loadActiveAmbulances();
     let result = matchAmbulances(rows, lookup);
+    let source: Prematched["source"] = "words";
     const known = input.knownLocation;
     if (result.match === null && known && (known.city || known.area)) {
       lookup = { city: known.city, area: known.area, query: input.query };
       result = matchAmbulances(rows, lookup);
+      source = "known_location";
     }
     const count = result.candidates.length;
     let prematched: Prematched | null = null;
     let removed = false;
-    if ((result.match === "area" || result.match === "city") && count >= 1 && count <= PREMATCH_MAX_UNITS) {
+    const matchType = result.match;
+    if ((matchType === "area" || matchType === "city") && count >= 1 && count <= PREMATCH_MAX_UNITS) {
       const scrubbed = scrubDeep(
         result.candidates.map((r): PrematchedUnit => {
           const { handle, display_name, city, area, operator_name, operator_is_arham } = ambulanceCandidate(ctx, r);
-          return { handle, display_name, city, area, operator_name, operator_is_arham };
+          return { handle, display_name, city, area, operator_name, operator_is_arham, covers: matchType === "area" ? coveredNames(r, lookup) : null };
         })
       );
       removed = scrubbed.removed;
       if (removed) log.warn({ conversationId: ctx.conversationId, tool: "prematch" }, "digits removed from tool output");
-      prematched = { matchType: result.match, units: scrubbed.value };
-      ctx.lastAmbulanceCandidates = result.candidates;
-      ctx.lastAmbulanceMatch = result.match;
+      prematched = { matchType, source, units: scrubbed.value };
+      if (source === "words") {
+        ctx.lastAmbulanceCandidates = result.candidates;
+        ctx.lastAmbulanceMatch = matchType;
+      }
     }
     const output = { matchType: result.match, count, handles: prematched?.units.map((u) => u.handle) ?? [] };
     return { prematched, record: { name: "prematch", input: lookup, output, durationMs: Date.now() - started, ...(removed && { scrubbed: true }) } };
