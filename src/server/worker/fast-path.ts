@@ -3,7 +3,7 @@ import { getDb } from "../db/client";
 import { messages, turns, type Conversation, type Message } from "../db/schema";
 import { HandleRegistry } from "../agent/handles";
 import { loadActiveAmbulances } from "../directory/repo";
-import { matchAmbulances, type DirectoryAmbulance } from "../directory/matcher";
+import { areaNamesIn, citiesNamed, matchAmbulances, normalize, type DirectoryAmbulance } from "../directory/matcher";
 import { buildAmbulanceCard, buildAmbulanceCardTemplate } from "../messages/cards";
 import { fallbackFoundIntro, firstContactGreeting } from "../messages/system-replies";
 import { recordEvent } from "../inbound/store";
@@ -44,9 +44,54 @@ export function hasOtherIntentWord(text: string): boolean {
   return OTHER_INTENT_RE.test(text.normalize("NFC").replace(NUKTA_RE, ""));
 }
 
-export type FastPathDecision =
+/**
+ * Locality words so common that an area name holding one ("Model Town", "Vijay Nagar", "Mira Road") names a place in
+ * many cities: an area match that goes only through such names takes the fast path only when the text also names the
+ * unit's city. A whole word of the area name, in any case. The directory's area names are all in Latin script (the
+ * seed fixture's and ambulances-clinics.csv's alike), so the list is too; an Indic area name added to the directory
+ * needs its locality words here.
+ */
+export const GENERIC_AREA_WORDS = [
+  "nagar", "town", "colony", "road", "park", "garden", "vihar", "puram", "gunj", "ganj", "chowk", "market", "marg", "gali",
+  "society", "sector", "phase", "block", "layout", "extension", "enclave", "camp", "lines", "bazaar", "bazar", "basti",
+  "model", "new", "old", "east", "west", "north", "south", "central",
+] as const;
+
+const GENERIC_AREA_SET: ReadonlySet<string> = new Set(GENERIC_AREA_WORDS);
+
+/** Whether an area name holds a word of GENERIC_AREA_WORDS, as a whole word after normalize. */
+export function hasGenericAreaWord(areaName: string): boolean {
+  return normalize(areaName).split(" ").some((w) => GENERIC_AREA_SET.has(w));
+}
+
+export type PlaceDecision =
   | { fire: true; unit: DirectoryAmbulance; matchType: "area" | "city" }
-  | { fire: false; reason: "burst" | "too_long" | "other_intent" | "answered_before" | "no_single_match" | "error" };
+  | { fire: false; reason: "no_single_match" | "other_city" | "generic_area" };
+
+export type FastPathDecision =
+  | Extract<PlaceDecision, { fire: true }>
+  | { fire: false; reason: "burst" | "too_long" | "other_intent" | "answered_before" | "no_single_match" | "other_city" | "generic_area" | "error" };
+
+/**
+ * The fast path's place checks, pure (rows in, decision out). The text alone must match exactly one unit by area or
+ * city (the fallback's rule for an exact place); it must name no directory city but that unit's (citiesNamed: "Ghatkopar,
+ * Pune" is other_city); and an area match fires only through an area name of the unit with no GENERIC_AREA_WORDS word,
+ * or when the text names the unit's city ("Karve Nagar, Pune" fires, "Model Town, Ludhiana" is generic_area). A text
+ * naming both a plain and a generic name of the unit ("Andheri West") fires on the plain one.
+ */
+export function placeDecision(rows: DirectoryAmbulance[], text: string): PlaceDecision {
+  const match = matchAmbulances(rows, { query: text });
+  const matchType = match.match;
+  if ((matchType !== "area" && matchType !== "city") || match.candidates.length !== 1) return { fire: false, reason: "no_single_match" };
+  const unit = match.candidates[0];
+  const unitCity = normalize(unit.city);
+  const cities = citiesNamed(rows, text).map(normalize);
+  if (cities.some((c) => c !== unitCity)) return { fire: false, reason: "other_city" };
+  if (matchType === "area" && !cities.includes(unitCity) && areaNamesIn(unit, text).every(hasGenericAreaWord)) {
+    return { fire: false, reason: "generic_area" };
+  }
+  return { fire: true, unit, matchType };
+}
 
 /** What the fast path reads: text, and location pins that carry a place label. A photo, a voice note or a sticker is the model's. */
 const readable = (m: Message) => m.kind === "text" || (m.kind === "location" && !!m.placeLabel?.trim());
@@ -73,10 +118,11 @@ async function answeredBefore(conversationId: string): Promise<boolean> {
 
 /**
  * Whether this burst gets a unit's card without the model: the conversation's first answered burst, only text and
- * labelled pins, at most FAST_PATH_MAX_CHARS, no word of OTHER_INTENT_WORDS, and the reporter's words alone matching
- * exactly one unit by area or city (the fallback's rule for an exact place). Cheapest checks first: the directory is
- * loaded (`loadRows`) only for a burst that passed the rest. Never throws: a failed check is logged and recorded as a
- * fast_path_error event (the error's class and code only), and the model answers instead.
+ * labelled pins, at most FAST_PATH_MAX_CHARS, no word of OTHER_INTENT_WORDS, and the reporter's words alone passing
+ * placeDecision (exactly one unit by area or city, no other city named, no area match through generic names alone).
+ * Cheapest checks first: the directory is loaded (`loadRows`) only for a burst that passed the rest. Never throws: a
+ * failed check is logged and recorded as a fast_path_error event (the error's class and code only), and the model
+ * answers instead. `reason` says why it did not fire.
  */
 export async function fastPathDecision(
   conversation: Conversation,
@@ -89,11 +135,7 @@ export async function fastPathDecision(
     if (text.length > FAST_PATH_MAX_CHARS) return { fire: false, reason: "too_long" };
     if (hasOtherIntentWord(text)) return { fire: false, reason: "other_intent" };
     if (await answeredBefore(conversation.id)) return { fire: false, reason: "answered_before" };
-    const match = matchAmbulances(await loadRows(), { query: text });
-    if ((match.match === "area" || match.match === "city") && match.candidates.length === 1) {
-      return { fire: true, unit: match.candidates[0], matchType: match.match };
-    }
-    return { fire: false, reason: "no_single_match" };
+    return placeDecision(await loadRows(), text);
   } catch (e) {
     const fields = safeErrorFields(e);
     log.warn({ conversationId: conversation.id, ...fields }, "fast path check failed; the model answers");

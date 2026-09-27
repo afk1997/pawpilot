@@ -121,13 +121,16 @@ describe("the fast path", () => {
   });
 
   it.each([
-    ["another intent in the burst", [{ kind: "text", content: "ghatkopar clinic ka number do" }]],
-    ["a city with more than one unit", [{ kind: "text", content: "Mumbai" }]],
-    ["a place matched only loosely", [{ kind: "text", content: "Ghatkoparr" }]],
-    ["a photo in the burst", [{ kind: "image", content: "ghatkopar", mediaUrl: "https://x/p.jpg" }]],
-    ["a pin without a place label", [{ kind: "location", content: "", placeLabel: null, lat: 19.08, lng: 72.9 }]],
-    ["a text over 300 characters", [{ kind: "text", content: `ghatkopar me kutta ghayal hai. ${"bahut khoon nikal raha hai, jaldi madad chahiye. ".repeat(6)}` }]],
-  ] as const)("leaves %s to the model", async (_case, burst) => {
+    ["another intent in the burst", [{ kind: "text", content: "ghatkopar clinic ka number do" }], "other_intent"],
+    ["a city with more than one unit", [{ kind: "text", content: "Mumbai" }], "no_single_match"],
+    ["a place matched only loosely", [{ kind: "text", content: "Ghatkoparr" }], "no_single_match"],
+    ["a unit's area with another city named", [{ kind: "text", content: "Ghatkopar, Pune me kutta ghayal hai" }], "other_city"],
+    ["an area name with a generic locality word and no city", [{ kind: "text", content: "Karve Nagar me kutta ghayal hai" }], "generic_area"],
+    ["a photo in the burst", [{ kind: "image", content: "ghatkopar", mediaUrl: "https://x/p.jpg" }], "burst"],
+    ["a pin without a place label", [{ kind: "location", content: "", placeLabel: null, lat: 19.08, lng: 72.9 }], "burst"],
+    ["a text over 300 characters", [{ kind: "text", content: `ghatkopar me kutta ghayal hai. ${"bahut khoon nikal raha hai, jaldi madad chahiye. ".repeat(6)}` }], "too_long"],
+  ] as const)("leaves %s to the model, logging why", async (_case, burst, reason) => {
+    const debug = vi.spyOn(log, "debug").mockImplementation(() => undefined);
     const c = await conv();
     for (const m of burst) await storeReporterMessage(c.id, m);
     const backend = new FakeBackend([okReply({ reply: "Which area are you in?", intent: "ambulance" })]);
@@ -135,6 +138,7 @@ describe("the fast path", () => {
     expect(r.kind).toBe("ok");
     expect(backend.calls).toHaveLength(1);
     expect(await eventsOf("fast_path")).toEqual([]);
+    expect(debug).toHaveBeenCalledWith({ conversationId: c.id, reason }, "fast path did not fire");
   });
 
   it("leaves every burst after the first answered one to the model: after the model's reply, or a fast path's", async () => {

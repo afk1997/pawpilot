@@ -146,6 +146,9 @@ async function runTurnLocked(conversationId: string, deps: TurnDeps): Promise<Tu
       const { turnId } = await runFastPathTurn({ conversation, pending, unit, matchType, lang, firstContact, nowMs, startedMs });
       return { kind: "fast_path", turnId, requeued: await requeueIfPending(conversation.id) };
     }
+    // Why the model answers instead: the reason alone (a fixed word), for tuning the word lists and the length cap from
+    // real traffic.
+    log.debug({ conversationId: conversation.id, reason: decision.reason }, "fast path did not fire");
   }
 
   // Everything else goes to Claude, a bare greeting after the welcome included: the prompt answers it with one warm

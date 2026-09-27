@@ -90,17 +90,57 @@ function finish(candidates: DirectoryAmbulance[], match: MatchType): MatchResult
 }
 
 /**
- * Tier 1 — area exact: row.area or any areas_covered equals the needle, one of its tokens or two adjacent words of it
+ * Tier 1's test for one needle: a normalized area name equals the needle, one of its tokens or two adjacent words of it
  * ("vile parle" in "dog hurt near vile parle station").
  */
-function areaExact(pool: DirectoryAmbulance[], needle: string): DirectoryAmbulance[] {
+function namedBy(needle: string): (area: string) => boolean {
   const toks = tokensOf(needle);
   const words = needle.split(" ");
   const pairs = words.slice(1).map((w, i) => `${words[i]} ${w}`);
-  return pool.filter((r) => {
-    const areas = [r.area ?? "", ...r.areasCovered].map(normalize).filter(Boolean);
-    return areas.some((a) => a === needle || toks.includes(a) || pairs.includes(a));
+  return (a) => a === needle || toks.includes(a) || pairs.includes(a);
+}
+
+/** Tier 1 — area exact: row.area or any areas_covered is named by the needle (namedBy). */
+function areaExact(pool: DirectoryAmbulance[], needle: string): DirectoryAmbulance[] {
+  const named = namedBy(needle);
+  return pool.filter((r) => [r.area ?? "", ...r.areasCovered].map(normalize).filter(Boolean).some(named));
+}
+
+/**
+ * The row's area names (its area, then its areas_covered, as the directory spells them, each once) that `text` names
+ * as tier 1 reads it: the whole text, one of its tokens or two adjacent words, after normalize. For an exact area
+ * match, the names it went through ("Vikhroli" for a unit whose area is Ghatkopar).
+ */
+export function areaNamesIn(row: Pick<DirectoryAmbulance, "area" | "areasCovered">, text: string): string[] {
+  const needle = normalize(text);
+  if (needle.length === 0) return [];
+  const named = namedBy(needle);
+  return [...new Set([row.area ?? "", ...row.areasCovered])].filter((a) => {
+    const n = normalize(a);
+    return n.length > 0 && named(n);
   });
+}
+
+/** Whether `name`, normalized, is the normalized `text` or a run of its words ("navi mumbai" in "dog hurt in navi mumbai"). */
+export function textNames(text: string, name: string): boolean {
+  const n = normalize(name);
+  return n.length > 0 && ` ${normalize(text)} `.includes(` ${n} `);
+}
+
+/**
+ * The directory's cities `text` names, each once, as the rows spell them: a city whose name, normalized as the city
+ * tier reads it (aliases applied, so Bangalore is Bengaluru and मुंबई or મુંબઈ is Mumbai), is the whole text or a run
+ * of its words (textNames: one word, or a pair such as "navi mumbai"). A city inside a longer one ("mumbai" in "navi
+ * mumbai") counts as named too.
+ */
+export function citiesNamed(rows: DirectoryAmbulance[], text: string): string[] {
+  const hay = ` ${normalize(text)} `;
+  const found = new Map<string, string>();
+  for (const r of rows) {
+    const c = normalize(r.city);
+    if (c.length > 0 && !found.has(c) && hay.includes(` ${c} `)) found.set(c, r.city);
+  }
+  return [...found.values()];
 }
 
 /**
