@@ -21,15 +21,24 @@ export const FAST_PATH_MODEL = "fast_path";
 export const FAST_PATH_MAX_CHARS = 300;
 
 /**
- * Words that say the reporter wants something besides an ambulance number (a clinic, to donate or volunteer, a person,
- * a complaint, a wrong number): a burst holding one goes to the model even when it names a place. The one list, in
- * Latin script (English and Hinglish), Devanagari (Hindi and Marathi) and Gujarati.
+ * Words that say the reporter wants something besides a new ambulance number (a clinic, to donate or volunteer, a
+ * person, a complaint, a wrong number, a driver who does not answer, help for a hurt human): a burst holding one goes to
+ * the model even when it names a place. The one list, in Latin script (English and Hinglish), Devanagari (Hindi and
+ * Marathi) and Gujarati, the bot's own menu words included. A Latin word here must start no covered place's name:
+ * "band" would block Bandra, and "man" and "accident" are left out as too broad.
  */
 export const OTHER_INTENT_WORDS = [
   "clinic", "clinik", "hospital", "doctor", "dawakhana", "क्लिनिक", "दवाखाना", "अस्पताल", "डॉक्टर", "દવાખાન", "હોસ્પિટલ",
   "donate", "donation", "daan", "दान", "દાન", "volunteer", "स्वयंसेवक", "સ્વયંસેવક",
   "human", "insaan", "इंसान", "person", "talk", "baat", "complaint", "shikayat", "शिकायत", "ફરિયાદ",
   "wrong", "galat", "गलत", "ખોટ",
+  // A driver who does not answer: the model gives another unit and the helpline (the prompt's rule 8).
+  "utha", "uthaya", "uthata", "uthate", "uthaate", "switched", "unreachable", "reachable", "answering",
+  "उठा", "उठाया", "उठाता", "बंद", "ઉપાડ", "બંધ",
+  // A hurt person: the model relays the emergency numbers.
+  "aadmi", "admi", "vyakti", "आदमी", "व्यक्ति", "माणूस", "વ્યક્તિ", "માણસ",
+  // The menu's own words (welcome.ts) and Marathi-only words: a complaint, a donation.
+  "वालंटियर", "वॉलंटियर", "ક્લિનિક", "तक्रार", "देणगी",
 ] as const;
 
 /**
