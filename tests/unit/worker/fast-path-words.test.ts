@@ -20,7 +20,8 @@ describe("fast path other-intent words", () => {
       "not picking", "picking up", "switch off", "switched off", "not responding", "no answer", "no response", "unable to reach",
       "nahi lag", "nahi lagta", "lag nahi", "phone band", "number band", "phone busy", "number busy", "busy aa", "busy hai",
       "didn't pick", "did not pick", "didn't answer", "did not answer", "didnt pick", "didnt answer", "switchoff", "switch-off",
-      "उचल", "नहीं लग", "लग नहीं", "नही लग", "लागत नाही", "स्विच", "લાગતો નથી", "લાગતું નથી", "ઉપાડત",
+  "phone off", "number off", "phone not working", "number not working", "lagta nahi",
+      "उचल", "नहीं लग", "लग नहीं", "नही लग", "लागत नाही", "स्विच", "લાગતો નથી", "લાગતું નથી", "ઉપાડત", "लागला नाही", "સ્વીચ ઓફ",
       "aadmi", "admi", "vyakti", "आदमी", "व्यक्ति", "माणूस", "વ્યક્તિ", "માણસ",
       "ladka", "ladke", "ladki", "aurat", "woman", "boy", "girl", "man is", "man has", "man got", "man was",
       "लड़का", "लड़के", "लड़की", "औरत", "मुलगा", "मुलगी", "बाळ", "બાળક", "છોકરો", "છોકરી",
@@ -80,8 +81,20 @@ describe("fast path other-intent words", () => {
       ["didn't pick, a phone's curly apostrophe", "Ghatkopar ambulance driver didn\u2019t pick up"],
       ["didnt pick, no apostrophe", "Ghatkopar driver didnt pick up the phone"],
       ["didnt answer, no apostrophe", "Ghatkopar ambulance didnt answer"],
+      ["nahin, read as nahi", "Ghatkopar ambulance ka phone nahin lag raha"],
+      ["nhi, read as nahi", "Ghatkopar ambulance ka phone nhi lag rha"],
+      ["phone off", "Ghatkopar ambulance ka phone off hai"],
+      ["number not working", "Ghatkopar ambulance number not working"],
+      ["lagta nahi", "Ghatkopar ambulance ka phone lagta nahi"],
+      ["लागला नाही", "घाटकोपर एम्बुलन्सचा फोन लागला नाही"],
+      ["સ્વીચ ઓફ", "ઘાટકોપર એમ્બ્યુલન્સનો ફોન સ્વીચ ઓફ છે"],
     ])("goes to the model for %s: %s", async (_entry, text) => {
       expect(await decide(text)).toEqual({ fire: false, reason: "other_intent" });
+    });
+
+    it("folds a spelling only as a whole word, so a report with 'nai' (new) is not read as an unreachable driver", () => {
+      expect(hasOtherIntentWord("Ghatkopar ki nai gali me kutta ghayal hai")).toBe(false);
+      expect(hasOtherIntentWord("Ghatkopar ambulance ka phone nai lag raha")).toBe(true);
     });
 
     it("reads an entry with or without its nukta, and a phrase across any whitespace", () => {

@@ -1,0 +1,8 @@
+# A first message asking what we are: no welcome list, a short answer from get_info("about"), intent faq. Needs the real
+# model (the fake backend never reads the prompt).
+name: about-first-contact-claude
+backend: claude
+first_contact: true
+steps:
+  - send: "what is arham always care?"
+    expect: { kind: ok, message_count: 1, intent: faq, regex: "Arham|rescue|ambulance", not_contains: ["How may I assist"], no_foreign_digits: true, no_dispatch: true, max_chars: 600 }

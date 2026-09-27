@@ -1,0 +1,10 @@
+# After the fast path gave Surat's one unit, the reporter says the driver's phone is not answering. Rule 8: another unit
+# if there is one (Surat has none), the helpline number, needs_human → the conversation is flagged. The known-location
+# block offers the same unit; the model must not just repeat it. Needs the real model.
+name: driver-unreachable-after-fast-path-claude
+backend: claude
+steps:
+  - send: "surat"
+    expect: { kind: fast_path, number_of: ["Surat"] }
+  - send: "driver phone nahi utha raha"
+    expect: { kind: ok, message_count: 1, flagged: true, contains: ["+91 99999 00000"], no_foreign_digits: true, no_dispatch: true, max_chars: 400 }

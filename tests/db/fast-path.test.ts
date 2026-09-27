@@ -302,6 +302,8 @@ describe("the fast path", () => {
     expect(await outbound(c.id)).toEqual([]);
     expect((await getDb().select().from(messages).where(eq(messages.id, sent.id!)))[0].answeredTurnId).toBeNull();
     expect((await conversationRow(c.id)).welcomedAt).not.toBeNull();
+    // The orphan turn is visibly failed, never "ok" beside no reply.
+    expect((await getDb().select().from(turns).where(eq(turns.conversationId, c.id))).map((t) => [t.model, t.status, t.error])).toEqual([["fast_path", "failed", "write_ahead_failed"]]);
     // The job's retry: still the reporter's first contact, so the card still opens with the greeting.
     const r = await runTurn(c.id, { backend: untouched() });
     expect(r.kind).toBe("fast_path");
