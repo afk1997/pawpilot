@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import type { DirectoryAmbulance } from "@/server/directory/matcher";
-import { GENERIC_AREA_WORDS, hasGenericAreaWord, placeDecision } from "@/server/worker/fast-path";
+import { GENERIC_AREA_WORDS, hasGenericAreaWord, type DirectoryAmbulance } from "@/server/directory/matcher";
+import { placeDecision } from "@/server/worker/fast-path";
 
 /** A directory-like unit with a dummy phone: the place columns are what the fast path reads. */
 const unit = (id: string, city: string, area: string | null, areasCovered: string[]): DirectoryAmbulance => ({

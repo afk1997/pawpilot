@@ -1,0 +1,79 @@
+import { describe, it, expect, afterEach, vi } from "vitest";
+import { HandleRegistry, makeHandle } from "@/server/agent/handles";
+import { prematchAmbulances, type ToolContext } from "@/server/agent/tools";
+import type { DirectoryAmbulance } from "@/server/directory/matcher";
+import * as repo from "@/server/directory/repo";
+
+/** A directory-like unit with a dummy phone. */
+const unit = (id: string, city: string, area: string | null, areasCovered: string[]): DirectoryAmbulance => ({
+  id, label: id, city, area, state: "X", areasCovered, category: "Animal Ambulance", phone: "+910000000000",
+  operatorName: "Arham Yuva Seva Group", operatorIsArham: true,
+});
+
+const rows: DirectoryAmbulance[] = [
+  unit("ghatkopar", "Mumbai", "Ghatkopar", ["Ghatkopar", "Vikhroli"]),
+  unit("malad", "Mumbai", "Malad", ["Malad", "Kandivali"]),
+  unit("pmc", "Pune", "PMC", ["Kothrud", "Karve Nagar"]),
+  unit("pcmc", "Pune", "PCMC", ["Pimpri", "Chinchwad"]),
+  unit("ahmedabad", "Ahmedabad", null, ["Satellite", "Ghuma"]),
+  unit("delhi", "Delhi", "Old Delhi", ["Model Town", "Shalimar Bagh"]),
+];
+
+const CONV = "conversation-unit";
+const context = (): ToolContext => ({
+  conversationId: CONV, language: "en", registry: new HandleRegistry(CONV), calls: [], lastAmbulanceCandidates: null, lastAmbulanceMatch: null,
+});
+const prematch = async (query: string, knownLocation: { city: string | null; area: string | null } | null = null) => {
+  vi.spyOn(repo, "loadActiveAmbulances").mockResolvedValue(rows);
+  const ctx = context();
+  const r = await prematchAmbulances(ctx, { query, knownLocation });
+  return { ...r, ctx };
+};
+
+describe("prematchAmbulances and the fast path's precision rules", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("still pre-matches a unit's own area named alone (ghatkopar), arming the card", async () => {
+    const { prematched, record, ctx } = await prematch("ghatkopar");
+    const handle = makeHandle("ambulance", CONV, "ghatkopar");
+    expect(prematched).toEqual({
+      matchType: "area", source: "words",
+      units: [{ handle, display_name: "Arham Animal Ambulance, Ghatkopar", city: "Mumbai", area: "Ghatkopar", operator_name: "Arham Yuva Seva Group", operator_is_arham: true, covers: null }],
+    });
+    expect([ctx.lastAmbulanceCandidates?.map((u) => u.id), ctx.lastAmbulanceMatch]).toEqual([["ghatkopar"], "area"]);
+    expect(record.output).toEqual({ matchType: "area", count: 1, handles: [handle] });
+  });
+
+  it("still pre-matches a generic area name when the words name the unit's city (Karve Nagar, Pune)", async () => {
+    const { prematched, record, ctx } = await prematch("Karve Nagar, Pune");
+    const handle = makeHandle("ambulance", CONV, "pmc");
+    expect(prematched).toMatchObject({ matchType: "area", source: "words", units: [{ handle, display_name: "Arham Animal Ambulance, PMC", covers: "Karve Nagar" }] });
+    expect(ctx.lastAmbulanceMatch).toBe("area");
+    expect(record.output).toEqual({ matchType: "area", count: 1, handles: [handle] });
+  });
+
+  it.each([
+    ["Mumbai me gaadi ghuma rahe the, kutta ghayal ho gaya", "other_city"],
+    ["Ghatkopar, Pune", "other_city"],
+    ["Model Town me kutta ghayal hai", "generic_area"],
+    ["Model Town, Ludhiana", "generic_area"],
+  ])("pre-matches nothing for %s (%s): no block, no handle, no armed card", async (query, skipped) => {
+    const { prematched, record, ctx } = await prematch(query);
+    expect(prematched).toBeNull();
+    expect([ctx.lastAmbulanceCandidates, ctx.lastAmbulanceMatch]).toEqual([null, null]);
+    expect(ctx.registry.toJSON()).toEqual({});
+    expect(record).toEqual({ name: "prematch", input: { query }, output: { matchType: "area", count: 1, handles: [], skipped }, durationMs: expect.any(Number) });
+  });
+
+  it("pre-matches Model Town when the words name Delhi", async () => {
+    const { prematched } = await prematch("Model Town, Delhi, dog injured");
+    expect(prematched).toMatchObject({ source: "words", units: [{ display_name: "Arham Animal Ambulance, Old Delhi", covers: "Model Town" }] });
+  });
+
+  it("leaves the known location's lookup as it was: offered, never armed, never checked against the words", async () => {
+    const { prematched, ctx, record } = await prematch("ok", { city: "Mumbai", area: "Ghatkopar" });
+    expect(prematched).toMatchObject({ matchType: "area", source: "known_location", units: [{ display_name: "Arham Animal Ambulance, Ghatkopar" }] });
+    expect(ctx.lastAmbulanceMatch).toBeNull();
+    expect(record.output).not.toHaveProperty("skipped");
+  });
+});

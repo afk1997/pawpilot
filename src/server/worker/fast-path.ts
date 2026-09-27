@@ -4,7 +4,7 @@ import { messages, turns, type Conversation, type Message } from "../db/schema";
 import { HandleRegistry } from "../agent/handles";
 import { maskDigitRuns } from "../agent/scrub";
 import { loadActiveAmbulances } from "../directory/repo";
-import { areaNamesIn, citiesNamed, matchAmbulances, normalize, textNames, type DirectoryAmbulance } from "../directory/matcher";
+import { matchAmbulances, precisionIssue, textNames, type DirectoryAmbulance, type PrecisionIssue } from "../directory/matcher";
 import { buildAmbulanceCard, buildAmbulanceCardTemplate } from "../messages/cards";
 import { fallbackFoundIntro, firstContactGreeting } from "../messages/system-replies";
 import { recordEvent } from "../inbound/store";
@@ -54,53 +54,28 @@ export function hasOtherIntentWord(text: string): boolean {
   return OTHER_INTENT_RE.test(text.normalize("NFC").replace(NUKTA_RE, ""));
 }
 
-/**
- * Locality words so common that an area name holding one ("Model Town", "Vijay Nagar", "Mira Road") names a place in
- * many cities: an area match that goes only through such names takes the fast path only when the text also names the
- * unit's city. A whole word of the area name, in any case. The directory's area names are all in Latin script (the
- * seed fixture's and ambulances-clinics.csv's alike), so the list is too; an Indic area name added to the directory
- * needs its locality words here.
- */
-export const GENERIC_AREA_WORDS = [
-  "nagar", "town", "colony", "road", "park", "garden", "vihar", "puram", "gunj", "ganj", "chowk", "market", "marg", "gali",
-  "society", "sector", "phase", "block", "layout", "extension", "enclave", "camp", "lines", "bazaar", "bazar", "basti",
-  "model", "new", "old", "east", "west", "north", "south", "central",
-] as const;
-
-const GENERIC_AREA_SET: ReadonlySet<string> = new Set(GENERIC_AREA_WORDS);
-
-/** Whether an area name holds a word of GENERIC_AREA_WORDS, as a whole word after normalize. */
-export function hasGenericAreaWord(areaName: string): boolean {
-  return normalize(areaName).split(" ").some((w) => GENERIC_AREA_SET.has(w));
-}
-
 export type PlaceDecision =
   | { fire: true; unit: DirectoryAmbulance; matchType: "area" | "city" }
-  | { fire: false; reason: "no_single_match" | "other_city" | "generic_area" };
+  | { fire: false; reason: "no_single_match" | PrecisionIssue };
 
 export type FastPathDecision =
   | Extract<PlaceDecision, { fire: true }>
-  | { fire: false; reason: "burst" | "too_long" | "other_intent" | "answered_before" | "no_single_match" | "other_city" | "generic_area" | "error" };
+  | { fire: false; reason: "burst" | "too_long" | "other_intent" | "answered_before" | "no_single_match" | PrecisionIssue | "error" };
 
 /**
  * The fast path's place checks, pure (rows in, decision out). The text alone must match exactly one unit by area or
- * city (the fallback's rule for an exact place); it must name no directory city but that unit's (citiesNamed: "Ghatkopar,
- * Pune" is other_city); and an area match fires only through an area name of the unit with no GENERIC_AREA_WORDS word,
- * or when the text names the unit's city ("Karve Nagar, Pune" fires, "Model Town, Ludhiana" is generic_area). A text
- * naming both a plain and a generic name of the unit ("Andheri West") fires on the plain one.
+ * city (the fallback's rule for an exact place) and pass the matcher's precision rules (precisionIssue): no directory
+ * city named but that unit's ("Ghatkopar, Pune" is other_city), and an area match through an area name of the unit with
+ * no GENERIC_AREA_WORDS word, or with the unit's city named ("Karve Nagar, Pune" fires, "Model Town, Ludhiana" is
+ * generic_area). A text naming both a plain and a generic name of the unit ("Andheri West") fires on the plain one.
  */
 export function placeDecision(rows: DirectoryAmbulance[], text: string): PlaceDecision {
   const match = matchAmbulances(rows, { query: text });
   const matchType = match.match;
   if ((matchType !== "area" && matchType !== "city") || match.candidates.length !== 1) return { fire: false, reason: "no_single_match" };
-  const unit = match.candidates[0];
-  const unitCity = normalize(unit.city);
-  const cities = citiesNamed(rows, text).map(normalize);
-  if (cities.some((c) => c !== unitCity)) return { fire: false, reason: "other_city" };
-  if (matchType === "area" && !cities.includes(unitCity) && areaNamesIn(unit, text).every(hasGenericAreaWord)) {
-    return { fire: false, reason: "generic_area" };
-  }
-  return { fire: true, unit, matchType };
+  const issue = precisionIssue(rows, text, match);
+  if (issue) return { fire: false, reason: issue };
+  return { fire: true, unit: match.candidates[0], matchType };
 }
 
 /** What the fast path reads: text, and location pins that carry a place label. A photo, a voice note or a sticker is the model's. */

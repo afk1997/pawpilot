@@ -3,7 +3,7 @@ import { asc, eq } from "drizzle-orm";
 import { resetDb, createConversation } from "../helpers/db";
 import { seedDirectory, type DirectoryIds } from "../helpers/fixtures";
 import { getDb } from "@/server/db/client";
-import { events, messages, turns } from "@/server/db/schema";
+import { ambulances, events, messages, turns } from "@/server/db/schema";
 import { storeReporterMessage } from "@/server/inbound/store";
 import { runTurn } from "@/server/worker/turn-runner";
 import { stopBoss } from "@/server/queue/boss";
@@ -120,6 +120,33 @@ describe("pre-matched units", () => {
     expect((await turnOf(r.turnId!)).toolCalls).toEqual([
       { name: "prematch", input: { city: "Mumbai", area: "Ghatkopar", query }, output: { matchType: "area", count: 1, handles: [handle] }, durationMs: expect.any(Number) },
     ]);
+  });
+
+  it.each([
+    // The Ahmedabad unit covers Ghuma, a word of this Hinglish sentence; Mumbai, which the reporter names, is another city.
+    ["another covered city in the words", "Mumbai me gaadi ghuma rahe the, kutta ghayal ho gaya", "Mumbai mein kaunse area mein hain?", "other_city"],
+    // Model Town is a Delhi unit's area and a common locality name in many cities; the reporter names no city.
+    ["only a generic area name, the unit's city unnamed", "Model Town me kutta ghayal hai", "Aap kis city mein hain?", "generic_area"],
+  ] as const)("pre-matches nothing for %s, so a reply asking for the place gets no wrong-city card", async (_case, text, reply, skipped) => {
+    await getDb().insert(ambulances).values([
+      { operatorId: ids.arhamOperatorId, label: "Ahmedabad", city: "Ahmedabad", area: null, state: "Gujarat", phone: "+919876500080", areasCovered: ["Satellite", "Ghuma"] },
+      { operatorId: ids.arhamOperatorId, label: "Delhi - Old Delhi", city: "Delhi", area: "Old Delhi", state: "Delhi", phone: "+919876500081", areasCovered: ["Model Town", "Shalimar Bagh"] },
+    ]);
+    const c = await conv();
+    await storeReporterMessage(c.id, { kind: "text", content: text });
+    const backend = new FakeBackend([okReply({ reply, intent: "ambulance" })]);
+    const r = await runTurn(c.id, { backend });
+    // The fast path declined it first (the same rules), so the model answered.
+    expect(r.kind).toBe("ok");
+    expect(backend.calls[0].prompt).not.toContain("PRE-MATCHED");
+    const sent = (await outbound(c.id)).at(-1)!;
+    expect(sent.content).toBe(reply);
+    expect(sent.content).not.toMatch(/\d/);
+    const t = await turnOf(r.turnId!);
+    expect(t.toolCalls).toEqual([
+      { name: "prematch", input: { query: text }, output: { matchType: "area", count: 1, handles: [], skipped }, durationMs: expect.any(Number) },
+    ]);
+    expect(t.handles).toEqual({});
   });
 
   it("names the covered area an area match went through (Vikhroli, covered by the Ghatkopar unit)", async () => {

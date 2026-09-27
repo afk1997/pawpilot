@@ -3,7 +3,10 @@ import { z } from "zod";
 import type { Language } from "../types";
 import { HandleRegistry } from "./handles";
 import { loadActiveAmbulances, loadActiveClinics } from "../directory/repo";
-import { areaNamesIn, matchAmbulances, normalize, type DirectoryAmbulance, type MatchInput, type MatchResult, type MatchType } from "../directory/matcher";
+import {
+  areaNamesIn, matchAmbulances, normalize, precisionIssue, type DirectoryAmbulance, type MatchInput, type MatchResult, type MatchType,
+  type PrecisionIssue,
+} from "../directory/matcher";
 import { ambulanceDisplayName } from "../messages/cards";
 import { getStaticInfo, type InfoContent, type InfoTopic } from "../content/static";
 import { asciiDigits, PHONE_RUN_RE } from "../digits";
@@ -229,9 +232,12 @@ function coveredNames(r: DirectoryAmbulance, lookup: MatchInput): string | null 
  * match each unit names the covered area it went through (`covers`). A match on the reporter's words also sets the
  * tool's state, as find_ambulances would, so a reply without a token still gets their card; a match on the known
  * location never does (`source`), since a reply about another place ("we don't cover Lonavala") must not get the
- * earlier place's card. Any looser match, or more units, leaves the lookup to the model. The units are scrubbed as tool
- * output is. `record`: the audit entry (name "prematch"), whatever the outcome; a failed lookup is recorded with its
- * error's class and code, and throws nothing.
+ * earlier place's card. A match on the words follows the fast path's precision rules (precisionIssue): when the words
+ * also name another covered city, or reach a unit only through generic area names without its city ("Model Town"),
+ * nothing is pre-matched at all (no block, no handles, no card), the model looks the place up itself with the city,
+ * and the audit record says why (`skipped`). Any looser match, or more units, leaves the lookup to the model. The units
+ * are scrubbed as tool output is. `record`: the audit entry (name "prematch"), whatever the outcome; a failed lookup is
+ * recorded with its error's class and code, and throws nothing.
  */
 export async function prematchAmbulances(
   ctx: ToolContext,
@@ -252,23 +258,28 @@ export async function prematchAmbulances(
     const count = result.candidates.length;
     let prematched: Prematched | null = null;
     let removed = false;
+    /** Why an exact match on the words was left to the model: the words alone do not pin the place down. */
+    let skipped: PrecisionIssue | null = null;
     const matchType = result.match;
     if ((matchType === "area" || matchType === "city") && count >= 1 && count <= PREMATCH_MAX_UNITS) {
-      const scrubbed = scrubDeep(
-        result.candidates.map((r): PrematchedUnit => {
-          const { handle, display_name, city, area, operator_name, operator_is_arham } = ambulanceCandidate(ctx, r);
-          return { handle, display_name, city, area, operator_name, operator_is_arham, covers: matchType === "area" ? coveredNames(r, lookup) : null };
-        })
-      );
-      removed = scrubbed.removed;
-      if (removed) log.warn({ conversationId: ctx.conversationId, tool: "prematch" }, "digits removed from tool output");
-      prematched = { matchType, source, units: scrubbed.value };
-      if (source === "words") {
-        ctx.lastAmbulanceCandidates = result.candidates;
-        ctx.lastAmbulanceMatch = matchType;
+      if (source === "words") skipped = precisionIssue(rows, input.query, result);
+      if (skipped === null) {
+        const scrubbed = scrubDeep(
+          result.candidates.map((r): PrematchedUnit => {
+            const { handle, display_name, city, area, operator_name, operator_is_arham } = ambulanceCandidate(ctx, r);
+            return { handle, display_name, city, area, operator_name, operator_is_arham, covers: matchType === "area" ? coveredNames(r, lookup) : null };
+          })
+        );
+        removed = scrubbed.removed;
+        if (removed) log.warn({ conversationId: ctx.conversationId, tool: "prematch" }, "digits removed from tool output");
+        prematched = { matchType, source, units: scrubbed.value };
+        if (source === "words") {
+          ctx.lastAmbulanceCandidates = result.candidates;
+          ctx.lastAmbulanceMatch = matchType;
+        }
       }
     }
-    const output = { matchType: result.match, count, handles: prematched?.units.map((u) => u.handle) ?? [] };
+    const output = { matchType: result.match, count, handles: prematched?.units.map((u) => u.handle) ?? [], ...(skipped !== null && { skipped }) };
     return { prematched, record: { name: "prematch", input: lookup, output, durationMs: Date.now() - started, ...(removed && { scrubbed: true }) } };
   } catch (e) {
     return { prematched: null, record: { name: "prematch", input: lookup, output: null, durationMs: Date.now() - started, error: safeErrorFields(e) } };

@@ -144,6 +144,50 @@ export function citiesNamed(rows: DirectoryAmbulance[], text: string): string[] 
 }
 
 /**
+ * Locality words so common that an area name holding one ("Model Town", "Vijay Nagar", "Mira Road") names a place in
+ * many cities: an exact area match that goes only through such names is not precise unless the text also names the
+ * unit's city (precisionIssue). A whole word of the area name, in any case. Not GENERIC_TOKENS, which keeps generic
+ * words from driving the loose tiers. The directory's area names are all in Latin script (the seed fixture's and
+ * ambulances-clinics.csv's alike), so the list is too; an Indic area name added to the directory needs its locality
+ * words here.
+ */
+export const GENERIC_AREA_WORDS = [
+  "nagar", "town", "colony", "road", "park", "garden", "vihar", "puram", "gunj", "ganj", "chowk", "market", "marg", "gali",
+  "society", "sector", "phase", "block", "layout", "extension", "enclave", "camp", "lines", "bazaar", "bazar", "basti",
+  "model", "new", "old", "east", "west", "north", "south", "central",
+] as const;
+
+const GENERIC_AREA_SET: ReadonlySet<string> = new Set(GENERIC_AREA_WORDS);
+
+/** Whether an area name holds a word of GENERIC_AREA_WORDS, as a whole word after normalize. */
+export function hasGenericAreaWord(areaName: string): boolean {
+  return normalize(areaName).split(" ").some((w) => GENERIC_AREA_SET.has(w));
+}
+
+/** Why an exact match on the reporter's words alone is not precise enough to act on without the model. */
+export type PrecisionIssue = "other_city" | "generic_area";
+
+/**
+ * The precision rules for an exact match (`result`) made on the reporter's words alone (`text`, the query it was made
+ * on), which the fast path's card and the Claude turn's pre-match both follow: other_city when the text names a
+ * directory city (citiesNamed) that is not every matched unit's ("Ghatkopar, Pune"); generic_area when an area match
+ * reaches a unit only through area names holding a GENERIC_AREA_WORDS word (areaNamesIn) and the text does not name that
+ * unit's city ("Model Town, Ludhiana"). A unit reached through a plain name too ("Andheri West" also names Andheri) is
+ * precise. Null when neither holds: "ghatkopar" and "Karve Nagar, Pune" are precise. Pure: rows in, issue out.
+ */
+export function precisionIssue(
+  rows: DirectoryAmbulance[],
+  text: string,
+  result: Pick<MatchResult, "match" | "candidates">
+): PrecisionIssue | null {
+  const named = citiesNamed(rows, text).map(normalize);
+  if (named.some((c) => result.candidates.some((u) => normalize(u.city) !== c))) return "other_city";
+  const vague = (u: DirectoryAmbulance) => !named.includes(normalize(u.city)) && areaNamesIn(u, text).every(hasGenericAreaWord);
+  if (result.match === "area" && result.candidates.some(vague)) return "generic_area";
+  return null;
+}
+
+/**
  * Neighbour-map keys for a needle: each word, each adjacent word pair
  * ("vile parle") and, when it has at most three words, the needle itself.
  * Keys match exactly, so a word that contains a key ("kharab") finds nothing.

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { areaNamesIn, citiesNamed, matchAmbulances, normalize, textNames, type DirectoryAmbulance } from "@/server/directory/matcher";
+import { areaNamesIn, citiesNamed, matchAmbulances, normalize, precisionIssue, textNames, type DirectoryAmbulance } from "@/server/directory/matcher";
 
 const row = (p: Partial<DirectoryAmbulance> & Pick<DirectoryAmbulance, "id" | "city">): DirectoryAmbulance => ({
   label: p.id, area: null, state: "X", areasCovered: [], category: "Animal Ambulance", phone: "+910000000000",
@@ -307,5 +307,34 @@ describe("textNames", () => {
     expect(textNames("Karve Nagar", "PMC")).toBe(false);
     expect(textNames("punekar", "Pune")).toBe(false);
     expect(textNames("anything", "")).toBe(false);
+  });
+});
+
+describe("precisionIssue", () => {
+  const withShared = [
+    ...rows,
+    row({ id: "delhi", city: "Delhi", area: "Old Delhi", areasCovered: ["Model Town"] }),
+    row({ id: "ludhiana", city: "Ludhiana", areasCovered: ["Model Town"] }),
+    row({ id: "pmc", city: "Pune", area: "PMC", areasCovered: ["Karve Nagar"] }),
+  ];
+  const issue = (text: string) => precisionIssue(withShared, text, matchAmbulances(withShared, { query: text }));
+
+  it("is null for precise words: a plain area, a generic one with its city, several units of the named city", () => {
+    expect(issue("ghatkopar me kutta ghayal hai")).toBeNull();
+    expect(issue("Karve Nagar, Pune")).toBeNull();
+    expect(issue("rajkot me gaay ghayal hai")).toBeNull(); // two units, both in Rajkot
+  });
+
+  it("is other_city when a named city is not every matched unit's", () => {
+    expect(issue("Ghatkopar, Pune")).toBe("other_city");
+    // Model Town is both Delhi's and Ludhiana's: naming either city leaves the other city's unit in the match, which the
+    // model then narrows with a lookup restricted to the named city.
+    expect(issue("Model Town, Ludhiana, dog hurt")).toBe("other_city");
+    expect(issue("Model Town, Delhi")).toBe("other_city");
+  });
+
+  it("is generic_area when some unit is reached only through generic names and its city is not named", () => {
+    expect(issue("Karve Nagar me kutta ghayal hai")).toBe("generic_area");
+    expect(issue("Model Town me kutta ghayal hai")).toBe("generic_area");
   });
 });
