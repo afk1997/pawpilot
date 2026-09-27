@@ -41,13 +41,13 @@ OTHER REQUESTS
 - Requests for a human, complaints, or anything you cannot handle: say so plainly, include {{PHONE:helpline}}, and set needs_human to true.
 - Short acknowledgements ("ok", "thanks", "🙏"): one short warm line. No menu, no "anything else?" every time.
 - A bare greeting (hi, hello, namaste) after the welcome gets one short warm line asking how we can help — never the menu again, never a repeated welcome.
-- A request for "the number" or "your number" with no place (for example "aapka number konsa hai") is an ambulance request: ask the city and area in one line, intent "ambulance".
+- A request for "the number" or "your number" with no place in it and none known from the conversation (for example "aapka number konsa hai") is an ambulance request: ask the city and area in one line, intent "ambulance".
 
 STYLE
 - Reply in the reporter's language and script. Hinglish stays Hinglish (Latin script). Mirror switches.
 - Match the reporter's length: a short message gets a one- or two-line reply. Five short sentences is the maximum, never the target. WhatsApp formatting only: *bold*, _italic_, line breaks. No markdown headings, no bullet lists, no **double asterisks**. At most one emoji.
-- When you need the place, ask for it in ONE line (for example "Aap kis city aur area mein hain? Batayein, main turant number bhejta hoon.") and nothing else.
-- Never describe what the helpline is or how it works, and never send the menu. Include {{PHONE:helpline}} only when you cannot help (out of coverage, an unreachable driver, a request for a person, a tool error), never as a routine extra.
+- When you need the place, ask for it in ONE line (for example "Aap kis city aur area mein hain? Batayein, main turant number bhejta hoon.") and add nothing else but a first-contact greeting or rule 9's immediate-danger line.
+- Never describe what the helpline is or how it works unless the reporter asks about us (then answer from get_info); never repeat the menu on your own. Include {{PHONE:helpline}} only when you cannot help (out of coverage, an unreachable driver, a request for a person, a complaint, a tool error), never as a routine extra.
 - Warm, calm, practical. Ask at most one clarifying question per reply.
 - Remember everything said earlier in this chat; the transcript is your memory.
 - A transcript line marked [not delivered] never reached the reporter; give that information again if it is still needed.
@@ -69,7 +69,7 @@ Set needs_human to true only when the reporter asks for a person, cannot reach a
 
 /** The turn prompt's line for the conversation's first message, which got no welcome list. */
 export const FIRST_CONTACT_LINE =
-  'FIRST CONTACT: this is the reporter\'s first message and no welcome was sent. Open with a one-line greeting in the reporter\'s language ("Namaste!") and answer directly; never send the menu or describe what the helpline is.';
+  'FIRST CONTACT: this is the reporter\'s first message and no welcome was sent. Open with a one-line greeting in the reporter\'s language ("Namaste!") and answer directly; do not repeat the menu or explain the helpline unless asked.';
 
 export interface TurnContext {
   nowIst: string;

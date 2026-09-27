@@ -64,10 +64,12 @@ describe("prompts", () => {
   it("system prompt pins brevity: the reporter's length, a one-line place question, no helpline description, no routine helpline number", () => {
     const p = systemPrompt();
     expect(p).toContain("Match the reporter's length: a short message gets a one- or two-line reply. Five short sentences is the maximum, never the target.");
-    expect(p).toContain('When you need the place, ask for it in ONE line (for example "Aap kis city aur area mein hain? Batayein, main turant number bhejta hoon.") and nothing else.');
-    expect(p).toContain("Never describe what the helpline is or how it works, and never send the menu. Include {{PHONE:helpline}} only when you cannot help (out of coverage, an unreachable driver, a request for a person, a tool error), never as a routine extra.");
-    expect(p).toContain('A request for "the number" or "your number" with no place (for example "aapka number konsa hai") is an ambulance request: ask the city and area in one line, intent "ambulance".');
+    expect(p).toContain('When you need the place, ask for it in ONE line (for example "Aap kis city aur area mein hain? Batayein, main turant number bhejta hoon.") and add nothing else but a first-contact greeting or rule 9\'s immediate-danger line.');
+    expect(p).toContain("Never describe what the helpline is or how it works unless the reporter asks about us (then answer from get_info); never repeat the menu on your own. Include {{PHONE:helpline}} only when you cannot help (out of coverage, an unreachable driver, a request for a person, a complaint, a tool error), never as a routine extra.");
+    expect(p).toContain('A request for "the number" or "your number" with no place in it and none known from the conversation (for example "aapka number konsa hai") is an ambulance request: ask the city and area in one line, intent "ambulance".');
     expect(p).not.toContain("Two to five short sentences");
+    // The about/FAQ rule and the no-description rule agree: a question about us is answered from get_info.
+    expect(p).toContain("Donations, volunteering, about, FAQ: call get_info and answer from it");
   });
   it("system prompt says a [number sent] on an undelivered line never reached the reporter, and forbids writing the marker", () => {
     const p = systemPrompt();
@@ -83,7 +85,7 @@ describe("prompts", () => {
     expect(t).toContain("Language so far: hi");
     expect(t).toContain("Location known so far: Mumbai");
     expect(t).toContain("amb_1a2b3c4d");
-    expect(t).toContain('FIRST CONTACT: this is the reporter\'s first message and no welcome was sent. Open with a one-line greeting in the reporter\'s language ("Namaste!") and answer directly; never send the menu or describe what the helpline is.');
+    expect(t).toContain('FIRST CONTACT: this is the reporter\'s first message and no welcome was sent. Open with a one-line greeting in the reporter\'s language ("Namaste!") and answer directly; do not repeat the menu or explain the helpline unless asked.');
     expect(t).toContain("[10:03] Reporter: hi");
     expect(buildTurnPrompt({ nowIst: "x", language: null, knownLocation: null, handlesShared: [], firstContact: false, transcript: "t", correction: "SYSTEM CORRECTION: fix" })).toContain("SYSTEM CORRECTION: fix");
   });

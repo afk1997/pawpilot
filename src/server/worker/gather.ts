@@ -27,10 +27,13 @@ export async function loadHistory(conversationId: string, limit = 30): Promise<M
   return rows.reverse();
 }
 
-/** A location Claude reported longer ago than this is no longer known. */
+/** A location recorded longer ago than this is no longer known. */
 const LOCATION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
-/** The newest location Claude reported in the conversation's last five turns, if within LOCATION_MAX_AGE_MS of now. */
+/**
+ * The location the last turn recorded: the newest `location` in the structured output of the conversation's last five
+ * turns (Claude's report, or the place a fast path matched), if within LOCATION_MAX_AGE_MS of now.
+ */
 export async function lastKnownLocation(conversationId: string, now: Date): Promise<{ city: string | null; area: string | null } | null> {
   const rows = await getDb()
     .select({ structuredOutput: turns.structuredOutput })

@@ -13,6 +13,7 @@ import { findDigitRuns } from "@/server/agent/scrub";
 import { resetConfigForTests } from "@/server/config";
 import { setFetchForTests } from "@/server/interakt/client";
 import * as repo from "@/server/directory/repo";
+import * as deliver from "@/server/worker/deliver";
 import { log } from "@/server/log";
 import { welcomeText } from "@/server/messages/welcome";
 import type { Language } from "@/server/types";
@@ -32,6 +33,8 @@ const eventsOf = async (kind: string) => getDb().select().from(events).where(eq(
 const untouched = () => new FakeBackend([okReply({ reply: "the model was called", intent: "other" })]);
 
 const GHATKOPAR_EN = "Here is the animal ambulance for your area:\n\nArham Animal Ambulance, Ghatkopar\n+91 70000 00001\nPlease call them right away.";
+/** A conversation with no reply yet is at first contact, whatever its welcome claim says: its card opens with this. */
+const GREETING_EN = "Namaste! 🙏 ";
 
 describe("the fast path", () => {
   beforeEach(async () => { await stopBoss(); await resetDb(); ids = await seedDirectory(); });
@@ -52,10 +55,10 @@ describe("the fast path", () => {
     expect(backend.calls).toHaveLength(0);
 
     const handle = makeHandle("ambulance", c.id, ids.ghatkopar);
-    const template = `Here is the animal ambulance for your area:\n\nArham Animal Ambulance, Ghatkopar\n{{AMB:${handle}}}\nPlease call them right away.`;
+    const template = `${GREETING_EN}Here is the animal ambulance for your area:\n\nArham Animal Ambulance, Ghatkopar\n{{AMB:${handle}}}\nPlease call them right away.`;
     const out = await outbound(c.id);
     expect(out.map((m) => [m.origin, m.kind, m.turnId, m.deliveryStatus, m.content, m.contentTemplate])).toEqual([
-      ["system", "text", r.turnId, "test_skipped", GHATKOPAR_EN, template],
+      ["system", "text", r.turnId, "test_skipped", `${GREETING_EN}${GHATKOPAR_EN}`, template],
     ]);
     expect(template).not.toMatch(/\d/);
 
@@ -83,7 +86,7 @@ describe("the fast path", () => {
     const r = await runTurn(c.id, { backend: untouched() });
     expect(r.kind).toBe("fast_path");
     const [m] = await outbound(c.id);
-    expect(m.content).toBe("आपके इलाके की एनिमल एम्बुलेंस यह रही:\n\nArham Animal Ambulance, Ghatkopar\n+91 70000 00001\nकृपया उन्हें तुरंत कॉल करें।");
+    expect(m.content).toBe("नमस्ते! 🙏 आपके इलाके की एनिमल एम्बुलेंस यह रही:\n\nArham Animal Ambulance, Ghatkopar\n+91 70000 00001\nकृपया उन्हें तुरंत कॉल करें।");
     expect((await turnOf(r.turnId!)).structuredOutput).toMatchObject({ language: "hi", intent: "ambulance" });
     expect((await conversationRow(c.id)).language).toBe("hi");
   });
@@ -106,7 +109,7 @@ describe("the fast path", () => {
     await storeReporterMessage(c.id, { kind: "text", content: "Nagpur, injured cow" });
     const r = await runTurn(c.id, { backend: untouched() });
     expect(r.kind).toBe("fast_path");
-    expect((await outbound(c.id))[0].content).toBe("Here is the animal ambulance for your area:\n\nArham Animal Ambulance, Nagpur\n+91 98765 00077\nPlease call them right away.");
+    expect((await outbound(c.id))[0].content).toBe(`${GREETING_EN}Here is the animal ambulance for your area:\n\nArham Animal Ambulance, Nagpur\n+91 98765 00077\nPlease call them right away.`);
     const t = await turnOf(r.turnId!);
     expect(t.structuredOutput).toMatchObject({ matchType: "city", location: { city: "Nagpur", area: null } });
     expect(t.handles).toEqual({ [makeHandle("ambulance", c.id, unit.id)]: { kind: "ambulance", id: unit.id } });
@@ -133,12 +136,18 @@ describe("the fast path", () => {
     expect((await turnOf(r.turnId!)).structuredOutput).toMatchObject({ reply: m.contentTemplate });
   });
 
-  it("answers a labelled location pin", async () => {
+  it("answers a labelled location pin, recording the unit's city, and its area only when the reporter named it", async () => {
     const c = await conv();
     await storeReporterMessage(c.id, { kind: "location", content: "Karve Nagar, Pune", placeLabel: "Karve Nagar, Pune", lat: 18.5, lng: 73.8 });
     const r = await runTurn(c.id, { backend: untouched() });
     expect(r.kind).toBe("fast_path");
     expect((await outbound(c.id))[0].content).toContain("Arham Animal Ambulance, PMC\n+91 98765 00005");
+    // PMC is the unit's area, not the reporter's: the place known from here on is Pune.
+    expect((await turnOf(r.turnId!)).structuredOutput).toMatchObject({ location: { city: "Pune", area: null } });
+    await storeReporterMessage(c.id, { kind: "text", content: "thanks" });
+    const backend = new FakeBackend([okReply({ reply: "You're welcome.", intent: "smalltalk" })]);
+    expect((await runTurn(c.id, { backend })).kind).toBe("ok");
+    expect(backend.calls[0].prompt).toContain("Location known so far: Pune\n");
   });
 
   it.each([
@@ -199,7 +208,7 @@ describe("the fast path", () => {
     expect((await runTurn(c.id, { backend })).kind).toBe("ok");
     const handle = makeHandle("ambulance", c.id, ids.ghatkopar);
     const prompt = backend.calls[0].prompt;
-    expect(prompt).toMatch(/\] System: Here is the animal ambulance for your area:\n {2}\n {2}Arham Animal Ambulance, Ghatkopar\n {2}\{\{AMB:amb_[a-p]{8}\}\}\n {2}Please call them right away\./);
+    expect(prompt).toMatch(/\] System: Namaste! 🙏 Here is the animal ambulance for your area:\n {2}\n {2}Arham Animal Ambulance, Ghatkopar\n {2}\{\{AMB:amb_[a-p]{8}\}\}\n {2}Please call them right away\./);
     expect(prompt).toContain(`{{AMB:${handle}}}`);
     expect(prompt).toContain(`Handles already shared in this chat: ${handle}`);
     expect(prompt).toContain("Location known so far: Ghatkopar, Mumbai");
@@ -224,6 +233,21 @@ describe("the fast path", () => {
     await storeReporterMessage(greeted.id, { kind: "text", content: "ghatkopar" });
     expect((await runTurn(greeted.id, { backend: untouched() })).kind).toBe("fast_path");
     expect((await outbound(greeted.id)).map((m) => [m.kind, m.content])).toEqual([["interactive", welcomeText("en")], ["text", GHATKOPAR_EN]]);
+  });
+
+  it("still greets when a first burst is retried after a failure before its card was written", async () => {
+    const c = await conv({ welcomed: false });
+    const sent = await storeReporterMessage(c.id, { kind: "text", content: "ghatkopar me kutta ghayal hai" });
+    vi.spyOn(deliver, "deliverText").mockRejectedValueOnce(new Error("write-ahead failed"));
+    await expect(runTurn(c.id, { backend: untouched() })).rejects.toThrow("write-ahead failed");
+    // Nothing was written: the burst is still pending, and the welcome claim is taken.
+    expect(await outbound(c.id)).toEqual([]);
+    expect((await getDb().select().from(messages).where(eq(messages.id, sent.id!)))[0].answeredTurnId).toBeNull();
+    expect((await conversationRow(c.id)).welcomedAt).not.toBeNull();
+    // The job's retry: still the reporter's first contact, so the card still opens with the greeting.
+    const r = await runTurn(c.id, { backend: untouched() });
+    expect(r.kind).toBe("fast_path");
+    expect((await outbound(c.id)).map((m) => m.content)).toEqual([`${GREETING_EN}${GHATKOPAR_EN}`]);
   });
 
   it("marks the turn failed with delivery_failed when the card was not delivered, keeping the burst answered", async () => {

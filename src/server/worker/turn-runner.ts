@@ -6,7 +6,7 @@ import { audioNotSupported } from "../messages/system-replies";
 import { enqueueTurn } from "../queue/boss";
 import { log } from "../log";
 import { gatherPending } from "./gather";
-import { claimWelcome, classifyPending, sendMenu, sendWelcome } from "./first-contact";
+import { claimWelcome, classifyPending, isFirstContact, sendMenu, sendWelcome } from "./first-contact";
 import { pendingText } from "./fallback";
 import { deliverText } from "./deliver";
 import { createTurn, finishTurn, updateConversation } from "./persist";
@@ -102,8 +102,11 @@ async function runTurnLocked(conversationId: string, deps: TurnDeps): Promise<Tu
   const cls = classifyPending(pending);
   // Every reply below marks the burst answered with itself, before its send (deliver.ts's write-ahead).
   const pendingIds = pending.map((m) => m.id);
-  /** The conversation's first message, answered without the welcome list: its reply opens with a greeting instead. */
-  let firstContact = false;
+  /**
+   * No reply of any kind has gone out yet (isFirstContact): the answer opens with a greeting, since no welcome list did.
+   * Read from the messages, not from the welcome claim below, so a turn retried after a failure keeps it.
+   */
+  const firstContact = await isFirstContact(conversation.id);
 
   if (await claimWelcome(conversation.id)) {
     // A burst with no real content ("hi", a sticker, a voice note) detects as English only by default,
@@ -113,14 +116,13 @@ async function runTurnLocked(conversationId: string, deps: TurnDeps): Promise<Tu
       conversation = { ...conversation, language: lang };
     }
     conversation = { ...conversation, welcomedAt: new Date() };
-    // Only a burst of nothing but greetings, or the menu word, gets the welcome list. A first message with content
-    // gets its answer alone (the voice-note line, the fast path's card or the model's reply, a greeting inside): the
-    // reporter asked for something, and a list before the answer only delays it.
-    if (cls.allGreeting || cls.allMenu) {
+    // Only a burst of nothing but greetings gets the welcome list, the menu word included (isGreetingOnly counts it as
+    // one). A first message with content gets its answer alone (the voice-note line, the fast path's card or the
+    // model's reply, a greeting inside): the reporter asked for something, and a list before the answer only delays it.
+    if (cls.allGreeting) {
       const welcomeTurnId = await systemTurn(conversation.id, "system:welcome", (id) => sendWelcome(conversation, lang, id, pendingIds));
       return { kind: "welcome", turnId: welcomeTurnId, requeued: await requeueIfPending(conversation.id) };
     }
-    firstContact = true;
   }
 
   if (cls.allMenu) {

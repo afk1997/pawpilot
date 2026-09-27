@@ -11,6 +11,7 @@ import { setFetchForTests } from "@/server/interakt/client";
 import { log } from "@/server/log";
 import { menuText, welcomeText } from "@/server/messages/welcome";
 import { claimWelcome } from "@/server/worker/first-contact";
+import * as deliver from "@/server/worker/deliver";
 import { runTurn } from "@/server/worker/turn-runner";
 import { getBoss, stopBoss, TURN_QUEUE } from "@/server/queue/boss";
 import { FakeBackend, okReply } from "@/server/agent/fake-backend";
@@ -93,7 +94,8 @@ describe("runTurn v1", () => {
     expect(await assistant(c.id)).toHaveLength(2);
   });
 
-  it("sends the welcome list, once, for a first message that is only the menu word", async () => {
+  // A regression guard: isGreetingOnly counts the menu word as a greeting, so the welcome's greeting rule covers it.
+  it("a first message that is only the menu word gets the welcome list, as a greeting does", async () => {
     const c = await conv();
     await storeReporterMessage(c.id, { kind: "text", content: "menu" });
     expect((await runTurn(c.id)).kind).toBe("welcome");
@@ -113,14 +115,41 @@ describe("runTurn v1", () => {
 
   it("sends a bare greeting after the welcome to the model, which answers it, never the menu", async () => {
     const c = await conv();
-    await getDb().update(conversations).set({ welcomedAt: new Date() }).where(eq(conversations.id, c.id));
+    await storeReporterMessage(c.id, { kind: "text", content: "hi" });
+    expect((await runTurn(c.id)).kind).toBe("welcome");
     await storeReporterMessage(c.id, { kind: "text", content: "hi" });
     const backend = new FakeBackend([okReply({ reply: "Hello! How can we help you today?", intent: "smalltalk" })]);
     const r = await runTurn(c.id, { backend });
     expect(r.kind).toBe("ok");
     expect(backend.calls).toHaveLength(1);
     expect(backend.calls[0].prompt).not.toContain("FIRST CONTACT");
-    expect((await assistant(c.id)).map((m) => [m.kind, m.origin, m.content])).toEqual([["text", "agent", "Hello! How can we help you today?"]]);
+    expect((await assistant(c.id)).map((m) => [m.kind, m.origin, m.content])).toEqual([
+      ["interactive", "system", welcomeText("en")],
+      ["text", "agent", "Hello! How can we help you today?"],
+    ]);
+  });
+
+  it("keeps first contact for the retry of a first turn that failed before its reply was written", async () => {
+    const c = await conv();
+    await storeReporterMessage(c.id, { kind: "text", content: "aapka number konsa hai" });
+    const backend = new FakeBackend([okReply({ reply: "Namaste! Aap kis city aur area mein hain?", intent: "ambulance" })]);
+    // The model answered, then the reply's write-ahead failed: the job throws, and pg-boss retries it. (A backend call
+    // that throws never gets this far: the turn counts it as TRANSIENT and ends in the fallback's reply.)
+    const failing = vi.spyOn(deliver, "deliverText").mockRejectedValueOnce(new Error("write-ahead failed"));
+    try {
+      await expect(runTurn(c.id, { backend })).rejects.toThrow("write-ahead failed");
+    } finally {
+      failing.mockRestore();
+    }
+    expect(await assistant(c.id)).toEqual([]);
+    expect((await byContent("aapka number konsa hai")).answeredTurnId).toBeNull();
+    const [row] = await getDb().select().from(conversations).where(eq(conversations.id, c.id));
+    expect(row.welcomedAt).not.toBeNull();
+    const r = await runTurn(c.id, { backend });
+    expect(r.kind).toBe("ok");
+    expect(backend.calls).toHaveLength(2);
+    for (const call of backend.calls) expect(call.prompt).toContain("FIRST CONTACT: this is the reporter's first message and no welcome was sent.");
+    expect((await assistant(c.id)).map((m) => [m.kind, m.origin, m.content])).toEqual([["text", "agent", "Namaste! Aap kis city aur area mein hain?"]]);
   });
 
   it("re-sends the menu for the menu keyword", async () => {

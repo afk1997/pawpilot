@@ -1,6 +1,6 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { getDb } from "../db/client";
-import { conversations, type Conversation, type Message } from "../db/schema";
+import { conversations, messages, type Conversation, type Message } from "../db/schema";
 import { isGreetingOnly, isMenuWord } from "../lang";
 import { MENU_BUTTON_LABEL, MENU_SECTION_TITLE, menuRows, menuText, welcomeText } from "../messages/welcome";
 import { deliverList } from "./deliver";
@@ -14,6 +14,20 @@ export async function claimWelcome(conversationId: string): Promise<boolean> {
     .where(and(eq(conversations.id, conversationId), isNull(conversations.welcomedAt)))
     .returning({ id: conversations.id });
   return rows.length === 1;
+}
+
+/**
+ * Whether the conversation has had no reply of any kind yet (no assistant message): its first contact, whose answer
+ * opens with a greeting. A turn that failed before its reply was written left no message, so its retry still reads
+ * true, where the welcome claim, already taken, would not.
+ */
+export async function isFirstContact(conversationId: string): Promise<boolean> {
+  const [row] = await getDb()
+    .select({ id: messages.id })
+    .from(messages)
+    .where(and(eq(messages.conversationId, conversationId), eq(messages.role, "assistant")))
+    .limit(1);
+  return row === undefined;
 }
 
 /** `turnId`: the system turn that sends it, stored on the message; `answers`: the messages it answers (deliverList). */

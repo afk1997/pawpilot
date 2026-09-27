@@ -4,7 +4,7 @@ import { messages, turns, type Conversation, type Message } from "../db/schema";
 import { HandleRegistry } from "../agent/handles";
 import { maskDigitRuns } from "../agent/scrub";
 import { loadActiveAmbulances } from "../directory/repo";
-import { areaNamesIn, citiesNamed, matchAmbulances, normalize, type DirectoryAmbulance } from "../directory/matcher";
+import { areaNamesIn, citiesNamed, matchAmbulances, normalize, textNames, type DirectoryAmbulance } from "../directory/matcher";
 import { buildAmbulanceCard, buildAmbulanceCardTemplate } from "../messages/cards";
 import { fallbackFoundIntro, firstContactGreeting } from "../messages/system-replies";
 import { recordEvent } from "../inbound/store";
@@ -166,8 +166,10 @@ export async function fastPathDecision(
  * other turn; the conversation is never flagged for the fast path itself. The language is stored, as the fallback
  * does, when the conversation has none and the burst is more than greetings. On the conversation's first message
  * (`firstContact`), which got no welcome list, the card opens with a one-line greeting. The stored template carries
- * the token for the number and no other phone-shaped run (maskDigitRuns). `startedMs`: when the check began, on the
- * `nowMs` clock, for the turn's latency.
+ * the token for the number and no other phone-shaped run (maskDigitRuns). The turn records where the reporter is (the
+ * next turns' known location): the unit's city, and its area only when the reporter's words name it, so a Karve Nagar
+ * pin that PMC covers is known as Pune, never as "PMC, Pune". `startedMs`: when the check began, on the `nowMs` clock,
+ * for the turn's latency.
  */
 export async function runFastPathTurn(input: {
   conversation: Conversation;
@@ -189,13 +191,14 @@ export async function runFastPathTurn(input: {
   // or city cell (ingest only warns about one) goes in as the transcript's "[number sent]" marker, as the scrubber reads
   // runs. A handle holds no digit, so the token stays whole; the reporter's text is unchanged.
   const template = maskDigitRuns(`${intro}\n\n${buildAmbulanceCardTemplate(unit, lang, token)}`, "[number sent]");
+  const area = unit.area && textNames(pendingText(pending), unit.area) ? unit.area : null;
   const turn = await createTurn({
     conversationId: conversation.id,
     status: "ok",
     model: FAST_PATH_MODEL,
     handles: registry.toJSON(),
     structuredOutput: {
-      reply: template, language: lang, intent: "ambulance", location: { city: unit.city, area: unit.area }, needs_human: false,
+      reply: template, language: lang, intent: "ambulance", location: { city: unit.city, area }, needs_human: false,
       notes: "fast path: exact single-unit match", matched: 1, matchType, sent: "unit", fastPath: true,
     },
   });
