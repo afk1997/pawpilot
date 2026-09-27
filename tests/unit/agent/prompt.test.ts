@@ -90,6 +90,20 @@ describe("prompts", () => {
     expect(t).toContain("Handles already shared in this chat: none");
     expect(t).not.toContain("The welcome menu was just sent");
   });
+  it("turn prompt lists pre-matched units with their tokens, after the context and before the transcript", () => {
+    const ctx: TurnContext = { nowIst: "x", language: "en", knownLocation: null, handlesShared: [], welcomeJustSent: false, transcript: "[10:03] Reporter: ghatkopar", correction: null };
+    const arham = { handle: "amb_kcmfpbca", display_name: "Arham Animal Ambulance, Ghatkopar", city: "Mumbai", area: "Ghatkopar", operator_name: "Arham Yuva Seva Group", operator_is_arham: true };
+    const partner = { handle: "amb_pbcdefgh", display_name: "Animal Ambulance, Rajkot", city: "Rajkot", area: null, operator_name: "Blue Cross", operator_is_arham: false };
+    const header = "PRE-MATCHED UNITS (the system already looked up the reporter's words; use these handles directly — do not call find_ambulances again unless the reporter means a different place)";
+    expect(buildTurnPrompt({ ...ctx, prematched: { matchType: "area", units: [arham] } })).toContain(
+      `Handles already shared in this chat: none\n\n${header}\n- {{AMB:amb_kcmfpbca}} — Arham Animal Ambulance, Ghatkopar (Mumbai) [match: area]\n\nTRANSCRIPT\n`
+    );
+    expect(buildTurnPrompt({ ...ctx, prematched: { matchType: "city", units: [partner, { ...partner, handle: "amb_ponmlkji", operator_name: "Hope for Indies Trust" }] } })).toContain(
+      `${header}\n- {{AMB:amb_pbcdefgh}} — Animal Ambulance, Rajkot (Rajkot), operated by Blue Cross [match: city]\n- {{AMB:amb_ponmlkji}} — Animal Ambulance, Rajkot (Rajkot), operated by Hope for Indies Trust [match: city]\n\nTRANSCRIPT\n`
+    );
+    for (const prematched of [undefined, null]) expect(buildTurnPrompt({ ...ctx, prematched })).not.toContain("PRE-MATCHED UNITS");
+  });
+
   it("turn prompt puts the correction last, right before the closing instruction", () => {
     const t = buildTurnPrompt({
       nowIst: "x", language: "en", knownLocation: null, handlesShared: [], welcomeJustSent: true,

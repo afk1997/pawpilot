@@ -1,4 +1,5 @@
 import type { Language } from "../types";
+import type { Prematched } from "./tools";
 
 export function formatIst(d: Date): string {
   return new Intl.DateTimeFormat("en-IN", {
@@ -71,6 +72,18 @@ export interface TurnContext {
   welcomeJustSent: boolean;
   transcript: string;
   correction: string | null;
+  /** Units the code already matched to the reporter's words (prematchAmbulances); null or absent: none. */
+  prematched?: Prematched | null;
+}
+
+/** The pre-matched units, one line each: the token to write, the unit, its city, a partner's operator and the match. */
+function prematchedBlock(p: Prematched): string[] {
+  return [
+    "PRE-MATCHED UNITS (the system already looked up the reporter's words; use these handles directly — do not call find_ambulances again unless the reporter means a different place)",
+    ...p.units.map(
+      (u) => `- {{AMB:${u.handle}}} — ${u.display_name} (${u.city})${u.operator_is_arham ? "" : `, operated by ${u.operator_name}`} [match: ${p.matchType}]`
+    ),
+  ];
 }
 
 export function buildTurnPrompt(ctx: TurnContext): string {
@@ -85,6 +98,7 @@ export function buildTurnPrompt(ctx: TurnContext): string {
     `Handles already shared in this chat: ${ctx.handlesShared.length ? ctx.handlesShared.join(", ") : "none"}`,
   ];
   if (ctx.welcomeJustSent) lines.push("The welcome menu was just sent by the system. Do not greet again; answer the reporter's message directly.");
+  if (ctx.prematched && ctx.prematched.units.length > 0) lines.push("", ...prematchedBlock(ctx.prematched));
   lines.push("", "TRANSCRIPT", ctx.transcript, "");
   // Last, right before the instruction, so the correction is the freshest thing the model reads.
   if (ctx.correction) lines.push(ctx.correction);

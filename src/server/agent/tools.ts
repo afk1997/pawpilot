@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { Language } from "../types";
 import { HandleRegistry } from "./handles";
 import { loadActiveAmbulances, loadActiveClinics } from "../directory/repo";
-import { matchAmbulances, normalize, type DirectoryAmbulance, type MatchResult, type MatchType } from "../directory/matcher";
+import { matchAmbulances, normalize, type DirectoryAmbulance, type MatchInput, type MatchResult, type MatchType } from "../directory/matcher";
 import { ambulanceDisplayName } from "../messages/cards";
 import { getStaticInfo, type InfoContent, type InfoTopic } from "../content/static";
 import { asciiDigits, PHONE_RUN_RE } from "../digits";
@@ -44,13 +44,29 @@ class TimeoutError extends Error {
 }
 
 export interface FindAmbulancesOutput {
-  candidates: {
-    handle: string; display_name: string; city: string; area: string | null; areas_covered: string[];
-    category: string; operator_name: string; operator_is_arham: boolean;
-  }[];
+  candidates: AmbulanceCandidate[];
   match: MatchType | null;
   city_areas: string[] | null;
   out_of_coverage: boolean;
+}
+
+export interface AmbulanceCandidate {
+  handle: string; display_name: string; city: string; area: string | null; areas_covered: string[];
+  category: string; operator_name: string; operator_is_arham: boolean;
+}
+
+/** A unit as find_ambulances gives it to the model: its handle, issued through the turn's registry, and never its number. */
+function ambulanceCandidate(ctx: ToolContext, r: DirectoryAmbulance): AmbulanceCandidate {
+  return {
+    handle: ctx.registry.ambulance(r.id),
+    display_name: ambulanceDisplayName(r),
+    city: r.city,
+    area: r.area,
+    areas_covered: r.areasCovered,
+    category: r.category,
+    operator_name: r.operatorName,
+    operator_is_arham: r.operatorIsArham,
+  };
 }
 
 export interface FindClinicsOutput {
@@ -166,16 +182,7 @@ export async function findAmbulancesImpl(
     const result = matchAmbulances(rows, { city: input.city ?? null, area: input.area ?? null, query: input.query });
     found.result = result;
     return {
-      candidates: result.candidates.map((r) => ({
-        handle: ctx.registry.ambulance(r.id),
-        display_name: ambulanceDisplayName(r),
-        city: r.city,
-        area: r.area,
-        areas_covered: r.areasCovered,
-        category: r.category,
-        operator_name: r.operatorName,
-        operator_is_arham: r.operatorIsArham,
-      })),
+      candidates: result.candidates.map((r) => ambulanceCandidate(ctx, r)),
       match: result.match,
       city_areas: result.cityAreas,
       out_of_coverage: result.outOfCoverage,
@@ -184,6 +191,62 @@ export async function findAmbulancesImpl(
   ctx.lastAmbulanceCandidates = found.result?.candidates ?? null;
   ctx.lastAmbulanceMatch = found.result?.match ?? null;
   return output;
+}
+
+/** A unit the pre-match hands the model in the turn prompt (buildTurnPrompt's PRE-MATCHED UNITS). */
+export type PrematchedUnit = Pick<AmbulanceCandidate, "handle" | "display_name" | "city" | "area" | "operator_name" | "operator_is_arham">;
+
+export interface Prematched {
+  matchType: "area" | "city";
+  units: PrematchedUnit[];
+}
+
+/** The most units a pre-match hands the model: as many as the card fallback lists. */
+const PREMATCH_MAX_UNITS = 3;
+
+/**
+ * find_ambulances run by code before the model's first call, on the reporter's words (`query`), and when they match
+ * no place at all, again with the place known so far as its city and area. An exact match (area or city) of one to
+ * PREMATCH_MAX_UNITS units issues their handles and sets the tool's state, as find_ambulances would, so the model can
+ * give them without calling it and a reply without a token still gets their card; any looser match, or more units,
+ * leaves the lookup to the model. The units are scrubbed as tool output is. `record`: the audit entry (name
+ * "prematch"), whatever the outcome; a failed lookup is recorded with its error's class and code, and throws nothing.
+ */
+export async function prematchAmbulances(
+  ctx: ToolContext,
+  input: { query: string; knownLocation: { city: string | null; area: string | null } | null }
+): Promise<{ prematched: Prematched | null; record: ToolCallRecord }> {
+  const started = Date.now();
+  let lookup: MatchInput = { query: input.query };
+  try {
+    const rows = await loadActiveAmbulances();
+    let result = matchAmbulances(rows, lookup);
+    const known = input.knownLocation;
+    if (result.match === null && known && (known.city || known.area)) {
+      lookup = { city: known.city, area: known.area, query: input.query };
+      result = matchAmbulances(rows, lookup);
+    }
+    const count = result.candidates.length;
+    let prematched: Prematched | null = null;
+    let removed = false;
+    if ((result.match === "area" || result.match === "city") && count >= 1 && count <= PREMATCH_MAX_UNITS) {
+      const scrubbed = scrubDeep(
+        result.candidates.map((r): PrematchedUnit => {
+          const { handle, display_name, city, area, operator_name, operator_is_arham } = ambulanceCandidate(ctx, r);
+          return { handle, display_name, city, area, operator_name, operator_is_arham };
+        })
+      );
+      removed = scrubbed.removed;
+      if (removed) log.warn({ conversationId: ctx.conversationId, tool: "prematch" }, "digits removed from tool output");
+      prematched = { matchType: result.match, units: scrubbed.value };
+      ctx.lastAmbulanceCandidates = result.candidates;
+      ctx.lastAmbulanceMatch = result.match;
+    }
+    const output = { matchType: result.match, count, handles: prematched?.units.map((u) => u.handle) ?? [] };
+    return { prematched, record: { name: "prematch", input: lookup, output, durationMs: Date.now() - started, ...(removed && { scrubbed: true }) } };
+  } catch (e) {
+    return { prematched: null, record: { name: "prematch", input: lookup, output: null, durationMs: Date.now() - started, error: safeErrorFields(e) } };
+  }
 }
 
 export async function findClinicsImpl(ctx: ToolContext, input: { city?: string | null }): Promise<FindClinicsOutput> {
