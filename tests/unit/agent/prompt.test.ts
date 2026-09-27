@@ -50,7 +50,8 @@ describe("prompts", () => {
     const p = systemPrompt();
     expect(p).toContain('"location" is {"city": …, "area": …}, each null if unknown');
     expect(p).not.toContain("(null if unknown)");
-    expect(p).toContain('Latin-script Hinglish → "en"');
+    expect(p).toContain('Hinglish such as "Rajkot me do units hain") → "en"');
+    expect(p).toContain('Hinglish is never "hi"');
     expect(p).toContain('Devanagari Hindi → "hi"');
     expect(p).toContain('"ambulance" when the reporter needs a unit\'s number');
     expect(p).not.toMatch(/\d(?:[ -]?\d){6,}/);
