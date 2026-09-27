@@ -16,6 +16,17 @@ const base = (registry: HandleRegistry, overrides: Partial<Parameters<typeof ren
 });
 
 describe("renderReply", () => {
+  it("accepts a handle written without its amb_/cli_ prefix (seen in the first real smoke run)", async () => {
+    const r = new HandleRegistry("conv");
+    const hg = r.ambulance("g"); const hc = r.clinic("c");
+    const bareAmb = hg.slice("amb_".length); const bareCli = hc.slice("cli_".length);
+    const out = await renderReply(base(r, { replyTemplate: `Number: {{AMB:${bareAmb}}} and clinic {{CLINIC:${bareCli.toUpperCase()}}}` }));
+    expect(out.text).toBe("Number: +91 70000 00001 and clinic +91 26123 45678");
+    expect(out.unknownHandles).toEqual([]);
+    expect(out.appendedCard).toBe(false);
+    expect(out.template).toContain(`{{AMB:${hg}}}`);
+  });
+
   it("substitutes ambulance, clinic, helpline and static phone tokens", async () => {
     const r = new HandleRegistry("conv");
     const hg = r.ambulance("g"); const hw = r.ambulance("w"); const hc = r.clinic("c");
