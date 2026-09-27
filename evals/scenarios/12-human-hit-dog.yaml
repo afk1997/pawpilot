@@ -1,0 +1,13 @@
+# On the fake backend this checks the pipeline only: the script's reply never sets needs_human, so flagged: false holds
+# by construction. That the word "human" alone does not flag is the model's judgement, verified only under
+# --backend claude, by human-word-not-escalation-claude (28-human-hit-dog-claude.yaml).
+name: human-word-not-escalation
+fake_replies:
+  - find_ambulances: { city: Mumbai, area: Chembur, query: "a human hit the dog in Chembur" }
+    reply: "Please call the Chembur ambulance right away: {{AMB:Mumbai - Chembur}}. Keep the dog calm and away from traffic."
+    language: en
+    intent: ambulance
+    location: { city: Mumbai, area: Chembur }
+steps:
+  - send: "a human hit the dog in Chembur, it is bleeding"
+    expect: { intent: ambulance, number_of: ["Mumbai - Chembur"], flagged: false, no_foreign_digits: true, no_dispatch: true }

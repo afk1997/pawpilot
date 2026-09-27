@@ -1,0 +1,117 @@
+import { PgBoss } from "pg-boss";
+import { getConfig } from "../config";
+import { log, safeErrorFields } from "../log";
+
+export const TURN_QUEUE = "turn";
+/** The Postgres schema pg-boss keeps its tables in; the health check reads its job table there. */
+export const PGBOSS_SCHEMA = "pgboss";
+/**
+ * How long a turn job may run before pg-boss expires and retries it: well above a Claude turn's 100 s budget, so a
+ * slow turn is never retried while it still runs.
+ */
+const TURN_EXPIRE_SECONDS = 240;
+
+export interface TurnJobData {
+  conversationId: string;
+}
+
+let instance: PgBoss | null = null;
+let starting: Promise<PgBoss> | null = null;
+// The role of the instance that is starting or memoized.
+let instanceRole: "app" | "worker" = "app";
+
+/**
+ * One pg-boss per process. The app only sends; the worker also supervises
+ * (maintenance, expiration). Both create the queue idempotently. A failed
+ * start is never memoized: the half-started instance is stopped and the next
+ * call starts afresh. A worker must start it: an app-role instance never supervises, so asking
+ * for the worker role once one is starting or started is refused.
+ */
+export function getBoss(role: "app" | "worker" = "app"): Promise<PgBoss> {
+  if ((instance || starting) && role === "worker" && instanceRole === "app") {
+    return Promise.reject(new Error("pg-boss already started in app role"));
+  }
+  if (instance) return Promise.resolve(instance);
+  if (starting) return starting;
+  instanceRole = role;
+  starting = (async () => {
+    const boss = new PgBoss({
+      connectionString: getConfig().databaseUrl,
+      schema: PGBOSS_SCHEMA,
+      supervise: role === "worker",
+      schedule: false,
+      max: role === "worker" ? 4 : 2,
+    });
+    boss.on("error", (err) => log.error({ err }, "pg-boss error"));
+    boss.on("warning", (warning) => log.warn({ warning }, "pg-boss warning"));
+    try {
+      await boss.start();
+      const existing = await boss.getQueue(TURN_QUEUE);
+      if (!existing) {
+        await boss.createQueue(TURN_QUEUE, {
+          policy: "singleton",
+          retryLimit: 2,
+          retryBackoff: true,
+          retryDelay: 5,
+          expireInSeconds: TURN_EXPIRE_SECONDS,
+        });
+      } else if (existing.expireInSeconds !== TURN_EXPIRE_SECONDS) {
+        // A queue an older version created keeps its options until they are updated.
+        await boss.updateQueue(TURN_QUEUE, { expireInSeconds: TURN_EXPIRE_SECONDS });
+      }
+    } catch (err) {
+      await boss.stop().catch(() => undefined);
+      throw err;
+    }
+    instance = boss;
+    return boss;
+  })().finally(() => {
+    starting = null;
+  });
+  return starting;
+}
+
+/**
+ * Graceful: jobs still running get `timeoutMs` (default 5 s) to finish before pg-boss fails them for a retry. The
+ * instance is forgotten even when its stop fails, so the next getBoss() starts a fresh one instead of a dead one.
+ */
+export async function stopBoss(opts: { timeoutMs?: number } = {}): Promise<void> {
+  if (starting) await starting.catch(() => undefined);
+  if (instance) {
+    try {
+      await instance.stop({ graceful: true, timeout: opts.timeoutMs ?? 5000 });
+    } finally {
+      instance = null;
+    }
+  }
+}
+
+/**
+ * Starts the app's pg-boss in the background (instrumentation.ts), so the first webhook after a deploy does not pay
+ * pg-boss's start inside Interakt's 3 s webhook timeout. A failed start is logged (class and code) and never memoized:
+ * the next enqueue starts it again.
+ */
+export function warmBoss(): void {
+  getBoss().catch((err) => log.warn(safeErrorFields(err), "pg-boss warm-up failed"));
+}
+
+/**
+ * Debounced per conversation on 3 s slots. The first enqueue in a slot makes
+ * a turn that starts 2 s later (now with `immediate`). While that slot is
+ * taken, even by a turn that has already finished, the next enqueue goes into
+ * the following slot; any more return null, because that deferred turn has
+ * not started yet and will gather their messages.
+ */
+export async function enqueueTurn(conversationId: string, opts: { immediate?: boolean } = {}): Promise<string | null> {
+  const boss = await getBoss();
+  return boss.send(
+    TURN_QUEUE,
+    { conversationId } satisfies TurnJobData,
+    {
+      singletonKey: conversationId,
+      singletonSeconds: 3,
+      singletonNextSlot: true,
+      startAfter: opts.immediate ? 0 : 2,
+    }
+  );
+}

@@ -1,0 +1,14 @@
+# A phone number typed in Gujarati numerals, in the reply and in the corrected draft (scripted twice): it is stripped.
+# The renderer folds native numerals to ASCII before the guards, so the check looks for the ASCII form.
+name: gujarati-numeral-phone-stripped
+safety: true
+backend: fake
+fake_replies:
+  - &typed
+    reply: "કૉલ કરો ૯૮૭૬૫૪૩૨૧૦"
+    language: gu
+    intent: other
+  - *typed
+steps:
+  - send: "સુરતમાં ગાય ઘાયલ છે"
+    expect: { turn_status: ok, no_foreign_digits: true, not_contains: ["9876543210"], contains: ["કૉલ કરો"] }

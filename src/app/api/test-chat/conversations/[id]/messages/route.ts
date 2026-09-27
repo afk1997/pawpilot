@@ -1,192 +1,48 @@
-/**
- * Test-chat messages API.
- *
- * GET  → list all messages in a test conversation (chronological).
- * POST → user types a message; we run the same processing the webhook runs
- *        (welcome on first contact, otherwise processIncoming with the
- *        is_test gate so sendAndPersist persists but doesn't call Interakt).
- *
- * Gated by ENABLE_TEST_CHAT=1.
- */
-import { NextRequest, after } from "next/server";
-import { randomUUID } from "node:crypto";
-import { supabase } from "@/lib/supabase";
-import { audit } from "@/lib/audit";
-import { detectLanguage } from "@/lib/lang";
-import { welcomeMessage } from "@/lib/messages/welcome";
-import { processIncoming } from "@/lib/processor/process-incoming";
-import type { Language } from "@/lib/types";
+import { eq } from "drizzle-orm";
+import { isAdminRequest, unauthorized } from "@/server/admin/auth";
+import { UUID_RE } from "@/server/admin/ids";
+import { readAdminJsonPost } from "@/server/admin/json-post";
+import { MAX_CONTENT_CHARS } from "@/server/admin/test-chat";
+import { getDb } from "@/server/db/client";
+import { conversations } from "@/server/db/schema";
+import { storeReporterMessage } from "@/server/inbound/store";
+import { log, safeErrorFields } from "@/server/log";
+import { enqueueTurn } from "@/server/queue/boss";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-function gateOff(): boolean {
-  return process.env.ENABLE_TEST_CHAT !== "1";
-}
+/** Room for MAX_CONTENT_CHARS of Devanagari or Gujarati, 3 bytes each in UTF-8, where the default 4 KB fits about 1,360. */
+const MAX_BODY_BYTES = 16 * 1024;
 
-async function loadTestConversation(id: string) {
-  const { data } = await supabase
-    .from("conversations")
-    .select("id, phone, name, mode, status, language, is_test")
-    .eq("id", id)
-    .maybeSingle();
-  if (!data || !data.is_test) return null;
-  return data;
-}
-
-export async function GET(
-  _request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  if (gateOff()) return new Response("not found", { status: 404 });
+export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  if (!isAdminRequest(request)) return unauthorized();
   const { id } = await params;
-
-  const convo = await loadTestConversation(id);
-  if (!convo) return Response.json({ error: "not found" }, { status: 404 });
-
-  const { data: messages, error } = await supabase
-    .from("messages")
-    .select("*")
-    .eq("conversation_id", id)
-    .order("created_at", { ascending: true });
-
-  if (error) return Response.json({ error: error.message }, { status: 500 });
-  return Response.json(messages ?? []);
-}
-
-export async function POST(
-  request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  if (gateOff()) return new Response("not found", { status: 404 });
-  const { id } = await params;
-
-  const body = (await request.json().catch(() => ({}))) as { content?: string };
-  const content = (body.content ?? "").trim();
-  if (!content) {
-    return Response.json({ error: "content required" }, { status: 400 });
+  const body = await readAdminJsonPost(request, { maxBytes: MAX_BODY_BYTES });
+  if (body instanceof Response) return body;
+  const content = typeof body.content === "string" ? body.content.trim() : "";
+  if (!content) return Response.json({ error: "content required" }, { status: 400 });
+  if (content.length > MAX_CONTENT_CHARS) return Response.json({ error: `content over ${MAX_CONTENT_CHARS} characters` }, { status: 413 });
+  if (!UUID_RE.test(id)) return Response.json({ error: "not found" }, { status: 404 });
+  let stored: Awaited<ReturnType<typeof storeReporterMessage>>;
+  let c: typeof conversations.$inferSelect | undefined;
+  try {
+    [c] = await getDb().select().from(conversations).where(eq(conversations.id, id));
+    if (!c || !c.isTest) return Response.json({ error: "not found" }, { status: 404 });
+    stored = await storeReporterMessage(c.id, { kind: "text", content });
+  } catch (e) {
+    // Nothing was stored. A failed query's own text can quote its parameters (the message), so only class and code.
+    log.error({ ...safeErrorFields(e) }, "test chat message not stored");
+    return Response.json({ error: "unavailable" }, { status: 503 });
   }
-
-  const convo = await loadTestConversation(id);
-  if (!convo) return Response.json({ error: "not found" }, { status: 404 });
-
-  // Insert the inbound user message — match webhook's shape so the dashboard
-  // (if it ever loads this conv directly) and processIncoming see normal data.
-  const inboundMessageId = randomUUID();
-  const { error: insertError } = await supabase
-    .from("messages")
-    .insert({
-      id: inboundMessageId,
-      conversation_id: id,
-      role: "user",
-      content,
-      message_type: "text",
-      // No whatsapp_msg_id — it's unique and not relevant for test inputs.
-    });
-  if (insertError) {
-    return Response.json({ error: insertError.message }, { status: 500 });
+  try {
+    await getDb().update(conversations).set({ lastInboundAt: new Date(), updatedAt: new Date() }).where(eq(conversations.id, c.id));
+    await enqueueTurn(c.id, { immediate: true });
+  } catch (e) {
+    // The message is stored, so the worker's sweep answers it within a minute or so. A failed query's own text can
+    // quote its parameters, so only the error's class and code are logged.
+    log.error({ ...safeErrorFields(e) }, "test chat message stored but its turn was not queued");
+    return Response.json({ status: "stored", messageId: stored.id }, { status: 202 });
   }
-
-  // Detect language if not yet set on the conversation.
-  const language: Language = ((convo.language as Language | null) ??
-    detectLanguage(content)) as Language;
-
-  await supabase
-    .from("conversations")
-    .update({
-      last_inbound_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-      // Persist detected language on first message so subsequent replies use it.
-      ...(convo.language ? {} : { language }),
-    })
-    .eq("id", id);
-
-  await audit({
-    conversationId: id,
-    messageId: inboundMessageId,
-    actionType: "inbound",
-    messageText: content,
-    metadata: { source: "test_chat" },
-  });
-
-  // Dispatcher took over — agent is silent. (Test mode shouldn't normally
-  // see this state, but the LLM could escalate via the tool.)
-  if (convo.mode === "human") {
-    return Response.json({ status: "stored_for_human", messageId: inboundMessageId });
-  }
-
-  // First-contact welcome — replicates the webhook's welcome branch but
-  // skips the WhatsApp send. Persisted so Realtime delivers it to the test UI.
-  const isFirstContact = await checkFirstContact(id);
-  if (isFirstContact) {
-    after(async () => {
-      try {
-        await persistWelcome(id, language);
-      } catch (e) {
-        console.error("[test-chat] welcome persist failed:", e);
-      }
-    });
-    return Response.json({ status: "welcome_queued", messageId: inboundMessageId });
-  }
-
-  // Normal turn — full processIncoming pipeline with the is_test gate so
-  // sendAndPersist persists the assistant message but skips Interakt.
-  after(async () => {
-    try {
-      await processIncoming({
-        conversationId: id,
-        inboundMessageId,
-        inboundText: content,
-        reporterPhone: convo.phone as string,
-        reporterName: (convo.name as string | null) ?? null,
-        language,
-        isTest: true,
-      });
-    } catch (e) {
-      console.error("[test-chat] processIncoming failed:", e);
-    }
-  });
-
-  return Response.json({ status: "queued", messageId: inboundMessageId });
-}
-
-async function checkFirstContact(conversationId: string): Promise<boolean> {
-  const { data } = await supabase
-    .from("messages")
-    .select("id")
-    .eq("conversation_id", conversationId)
-    .eq("role", "assistant")
-    .limit(1);
-  return !data || data.length === 0;
-}
-
-async function persistWelcome(conversationId: string, language: Language) {
-  const welcome = welcomeMessage(language);
-  const inserted = await supabase
-    .from("messages")
-    .insert({
-      conversation_id: conversationId,
-      role: "assistant",
-      content: welcome,
-      message_type: "text",
-      delivery_status: "test_skipped",
-    })
-    .select("id")
-    .single();
-
-  await supabase
-    .from("conversations")
-    .update({
-      status: "awaiting_intent",
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", conversationId);
-
-  await audit({
-    conversationId,
-    messageId: inserted.data?.id ?? null,
-    actionType: "outbound",
-    messageText: welcome,
-    metadata: { kind: "welcome", source: "test_chat" },
-  });
+  return Response.json({ status: "queued", messageId: stored.id }, { status: 202 });
 }

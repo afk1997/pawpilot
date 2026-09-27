@@ -1,0 +1,6 @@
+# The model writes the donation reply from get_info; a script would only assert itself.
+name: donate
+backend: claude
+steps:
+  - send: "I want to donate"
+    expect: { intent: donate, contains: ["alwayscare.org/donate"], not_contains: ["TODO"], no_foreign_digits: true }

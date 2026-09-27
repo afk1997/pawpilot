@@ -1,355 +1,138 @@
-/**
- * Interakt webhook endpoint — public entry point for inbound WhatsApp
- * messages from reporters.
- *
- * Hard contract:
- *  - Return 200 within 3 seconds (Interakt's spec). LLM runs in `after()`.
- *  - On first contact (no prior assistant messages), send the deterministic
- *    welcome + menu synchronously. Skip the LLM that turn.
- *  - On all subsequent turns, do background LLM processing only — no
- *    pre-LLM ack message (those caused the duplicate-message UX bug).
- *  - Idempotent: dedup by Interakt's message id.
- *  - Audit every step.
- */
-import { NextRequest, after } from "next/server";
-import { supabase } from "@/lib/supabase";
-import { sendWhatsAppMessage } from "@/lib/whatsapp";
-import { parseInteraktPayload, verifyInteraktSignature } from "@/lib/interakt-webhook";
-import { audit } from "@/lib/audit";
-import { detectLanguage, isCannotReachMessage, isHumanHandoffRequest } from "@/lib/lang";
-import { welcomeMessage } from "@/lib/messages/welcome";
-import { processIncoming } from "@/lib/processor/process-incoming";
-import type { Language } from "@/lib/types";
+import { getConfig } from "@/server/config";
+import { log, maskPhone } from "@/server/log";
+import { parseInteraktPayload, verifyInteraktSignature } from "@/server/interakt/webhook";
+import { recordEvent, storeReporterMessage, upsertConversationByPhone } from "@/server/inbound/store";
+import { enqueueTurn } from "@/server/queue/boss";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** Health/probe endpoint. Interakt does not use a Meta-style GET handshake. */
+const MAX_BODY_BYTES = 256 * 1024;
+const KNOWN_CONTENT_TYPES = ["Text", "Image", "Video", "Audio", "Document", "Location", "Sticker", "InteractiveButtonReply", "InteractiveListReply"];
+/** Ignore reasons that drop a real reporter's message, which will never be answered; the rest are expected noise. */
+const UNUSABLE_MESSAGE_REASONS = ["missing_fields", "no_phone"];
+const seenUnknownTypes = new Set<string>();
+
 export async function GET() {
   return new Response("ok", { status: 200 });
 }
 
-export async function POST(request: NextRequest) {
-  const rawBody = await request.text();
-
-  if (process.env.INTERAKT_DEBUG_LOG !== "0") {
-    const sigHeader =
-      request.headers.get("interakt-signature") ??
-      request.headers.get("x-interakt-signature") ??
-      "(none)";
-    console.log("[webhook] inbound", {
-      sig: sigHeader.slice(0, 32) + "...",
-      bodyPreview: rawBody.slice(0, 4096),
-    });
+export async function POST(request: Request) {
+  const cfg = getConfig();
+  const lengthHeader = request.headers.get("content-length");
+  const declared = lengthHeader === null ? null : Number(lengthHeader);
+  // A declared oversized body is refused unread; a chunked one has no content-length and is measured after reading.
+  if (declared !== null && declared > MAX_BODY_BYTES) {
+    log.warn({ declared }, "webhook body too large");
+    return Response.json({ status: "too_large" }, { status: 413 });
   }
+  const rawBody = await request.text();
+  const bytes = Buffer.byteLength(rawBody, "utf8");
+  if (bytes > MAX_BODY_BYTES) {
+    log.warn({ declared, bytes }, "webhook body too large");
+    return Response.json({ status: "too_large" }, { status: 413 });
+  }
+  if (cfg.logRawWebhooks && !cfg.isProduction) log.debug({ body: rawBody.slice(0, 4096) }, "raw webhook");
 
-  const verified = await verifyInteraktSignature(rawBody, request.headers);
+  const sigHeader = request.headers.get("interakt-signature") ?? request.headers.get("x-interakt-signature");
+  const verified = await verifyInteraktSignature(rawBody, sigHeader, { secret: cfg.interakt.webhookSecret, mode: cfg.interakt.verifyMode });
   if (!verified) {
-    console.warn("[webhook] signature verification failed");
-    return new Response("forbidden", { status: 403 });
+    log.warn("webhook signature verification failed");
+    return Response.json({ status: "forbidden" }, { status: 403 });
   }
 
   let payload: unknown;
   try {
     payload = JSON.parse(rawBody);
   } catch {
+    log.warn({ bytes }, "webhook body is not JSON");
     return Response.json({ status: "bad_json" }, { status: 400 });
   }
 
-  const incoming = parseInteraktPayload(payload);
-  if (!incoming) {
-    const eventType =
-      typeof payload === "object" && payload !== null
-        ? (payload as { type?: string }).type ?? "(no type)"
-        : "(non-object)";
-    console.log("[webhook] ignored event:", eventType);
-    return Response.json({ status: "ignored_event", event_type: eventType });
+  const parsed = parseInteraktPayload(payload);
+  if (parsed.kind === "ignored") {
+    const fields = { eventType: parsed.eventType, reason: parsed.reason };
+    if (UNUSABLE_MESSAGE_REASONS.includes(parsed.reason)) {
+      log.warn(fields, "webhook ignored");
+      await recordUnusable(fields);
+    } else {
+      log.info(fields, "webhook ignored");
+    }
+    return Response.json({ status: "ignored", reason: parsed.reason, event_type: parsed.eventType });
   }
+  const m = parsed.message;
 
-  // Idempotency.
-  const dedup = await supabase
-    .from("messages")
-    .select("id")
-    .eq("whatsapp_msg_id", incoming.providerMessageId)
-    .maybeSingle();
-  if (dedup.data) {
-    return Response.json({ status: "duplicate" });
-  }
-
-  // Find or create conversation by phone (upsert closes the new-reporter race).
-  type ConvoLite = {
-    id: string;
-    phone: string;
-    name: string | null;
-    mode: "agent" | "human";
-    status: string;
-    language: Language | null;
-    is_test: boolean;
-  };
-
-  const conversation: ConvoLite | null = await (async (): Promise<ConvoLite | null> => {
-    const language = detectLanguage(incoming.text);
-    const upserted = await supabase
-      .from("conversations")
-      .upsert(
-        {
-          phone: incoming.fromPhone,
-          name: incoming.fromName,
-          status: "new",
-          language,
-        },
-        { onConflict: "phone", ignoreDuplicates: true }
-      )
-      .select("id, phone, name, mode, status, language, is_test")
-      .maybeSingle();
-
-    if (upserted.data) {
-      if (incoming.fromName && incoming.fromName !== upserted.data.name) {
-        await supabase
-          .from("conversations")
-          .update({ name: incoming.fromName })
-          .eq("id", upserted.data.id);
-      }
-      return upserted.data as ConvoLite;
+  // A DrizzleQueryError carries the query's values (phone, name, text) in its message and params; if it escaped,
+  // Next would print it to stderr unmasked. Failures are logged as a hand-picked summary, with the stage that failed,
+  // and answered 500 so Interakt retries.
+  let stage: "upsert" | "store" | "enqueue" = "upsert";
+  try {
+    const conversation = await upsertConversationByPhone({ phone: m.fromPhone, name: m.fromName });
+    if (conversation.isTest) {
+      log.error({ phone: maskPhone(m.fromPhone) }, "webhook phone collides with a test conversation");
+      return Response.json({ status: "ignored_test_conv" });
     }
 
-    const existing = await supabase
-      .from("conversations")
-      .select("id, phone, name, mode, status, language, is_test")
-      .eq("phone", incoming.fromPhone)
-      .maybeSingle();
-    if (existing.data) return existing.data as ConvoLite;
+    stage = "store";
+    const stored = await storeReporterMessage(conversation.id, {
+      providerMessageId: m.providerMessageId,
+      kind: m.kind,
+      content: m.content,
+      mediaUrl: m.mediaUrl,
+      lat: m.lat,
+      lng: m.lng,
+      placeLabel: m.placeHint,
+      interactiveId: m.interactiveId,
+    });
+    if (!stored.inserted) {
+      log.info({ conversationId: conversation.id, providerMessageId: m.providerMessageId }, "webhook duplicate");
+      return Response.json({ status: "duplicate" });
+    }
 
-    console.error("Failed to upsert conversation:", upserted.error);
-    return null;
-  })();
-
-  if (!conversation) {
+    // Stored: a failure from here on is answered by the worker's sweep, and Interakt's retry is a duplicate.
+    stage = "enqueue";
+    const jobId = await enqueueTurn(conversation.id);
+    if (jobId === null) log.info({ conversationId: conversation.id }, "turn deduplicated");
+    // Telemetry only once the turn is queued, so it never delays the reply.
+    await recordUnknownContentType(m.rawContentType, payload, conversation.id);
+    log.info({ conversationId: conversation.id, kind: m.kind, phone: maskPhone(m.fromPhone) }, "inbound queued");
+    return Response.json({ status: "queued", conversationId: conversation.id, messageId: stored.id });
+  } catch (err) {
+    log.error({ phone: maskPhone(m.fromPhone), providerMessageId: m.providerMessageId, stage, ...errorSummary(err) }, "webhook inbound failed");
     return Response.json({ status: "error" }, { status: 500 });
   }
-
-  // Defense in depth: real Interakt phones never use the +91TEST_* prefix
-  // that the test harness generates, but if a phone collision somehow
-  // happens we refuse to process — would otherwise corrupt test data.
-  if (conversation.is_test) {
-    console.error("[webhook] phone collision with test conversation:", incoming.fromPhone);
-    return Response.json({ status: "ignored_test_conv" });
-  }
-
-  // Persist inbound message.
-  const inboundInsert = await supabase
-    .from("messages")
-    .insert({
-      conversation_id: conversation.id,
-      role: "user",
-      content: incoming.text,
-      whatsapp_msg_id: incoming.providerMessageId,
-      message_type: incoming.type,
-      media_url: incoming.mediaUrl,
-      location_lat: incoming.locationLat,
-      location_lng: incoming.locationLng,
-    })
-    .select("id")
-    .single();
-
-  if (inboundInsert.error?.code === "23505") {
-    return Response.json({ status: "duplicate" });
-  }
-  if (inboundInsert.error || !inboundInsert.data) {
-    console.error("Failed to insert inbound message:", inboundInsert.error);
-    return Response.json({ status: "error" }, { status: 500 });
-  }
-  const inboundMessageId = inboundInsert.data.id;
-
-  await audit({
-    conversationId: conversation.id,
-    messageId: inboundMessageId,
-    actionType: "inbound",
-    messageText: incoming.text,
-    metadata: {
-      type: incoming.type,
-      hasMedia: !!incoming.mediaUrl,
-      hasLocation: incoming.locationLat !== null,
-    },
-  });
-
-  await supabase
-    .from("conversations")
-    .update({ last_inbound_at: new Date().toISOString(), updated_at: new Date().toISOString() })
-    .eq("id", conversation.id);
-
-  // Dispatcher took over — agent is silent.
-  if (conversation.mode === "human") {
-    return Response.json({ status: "stored_for_human" });
-  }
-
-  const language: Language = (conversation.language ?? detectLanguage(incoming.text)) as Language;
-
-  // ── First-contact branch ────────────────────────────────────────────────
-  // If this conversation has no prior assistant messages at all, send the
-  // deterministic welcome + menu and skip the LLM. This is the only synchronous
-  // outbound path; everything else runs in background.
-  const isFirstContact = await checkFirstContact(conversation.id);
-  if (isFirstContact) {
-    const welcome = welcomeMessage(language);
-    const send = await sendWhatsAppMessage(incoming.fromPhone, welcome);
-
-    after(async () => {
-      try {
-        const inserted = await supabase
-          .from("messages")
-          .insert({
-            conversation_id: conversation.id,
-            role: "assistant",
-            content: welcome,
-            message_type: "text",
-            delivery_status: send.ok ? "sent" : "failed",
-          })
-          .select("id")
-          .single();
-        await supabase
-          .from("conversations")
-          .update({ status: "awaiting_intent", updated_at: new Date().toISOString() })
-          .eq("id", conversation.id);
-        await audit({
-          conversationId: conversation.id,
-          messageId: inserted.data?.id ?? null,
-          actionType: "outbound",
-          messageText: welcome,
-          metadata: { kind: "welcome" },
-        });
-      } catch (e) {
-        console.error("background welcome-persist failed:", e);
-      }
-    });
-
-    return Response.json({ status: "welcome_sent" });
-  }
-
-  // ── Hardcoded escalation rails ──────────────────────────────────────────
-  let escalatedThisTurn = false;
-  let escalationReason: string | null = null;
-  if (
-    conversation.status === "number_delivered" ||
-    conversation.status === "awaiting_followup"
-  ) {
-    if (isCannotReachMessage(incoming.text)) {
-      escalationReason = "cannot_reach_driver";
-      escalatedThisTurn = true;
-    }
-  }
-  if (!escalatedThisTurn && isHumanHandoffRequest(incoming.text)) {
-    escalationReason = "manual_human_request";
-    escalatedThisTurn = true;
-  }
-
-  if (escalatedThisTurn && escalationReason) {
-    const reason = escalationReason;
-    const ackText =
-      reason === "cannot_reach_driver"
-        ? FEEDBACK_REGISTERED[language] ?? FEEDBACK_REGISTERED.en
-        : HANDOFF_ACK[language] ?? HANDOFF_ACK.en;
-    await sendWhatsAppMessage(incoming.fromPhone, ackText);
-    after(async () => {
-      try {
-        await escalate(conversation.id, reason, incoming.text, ackText);
-      } catch (e) {
-        console.error("background escalate failed:", e);
-      }
-    });
-    return Response.json({ status: "escalated" });
-  }
-
-  // ── Normal turn — LLM processes in background ──────────────────────────
-  // No pre-LLM filler ack. Webhook returns 200 immediately; the LLM call
-  // runs in `after()` and its response is the only outbound for this turn.
-  after(async () => {
-    try {
-      await processIncoming({
-        conversationId: conversation.id,
-        inboundMessageId,
-        inboundText: incoming.text,
-        reporterPhone: incoming.fromPhone,
-        reporterName: incoming.fromName,
-        language,
-      });
-    } catch (e) {
-      console.error("background processIncoming failed:", e);
-    }
-  });
-
-  return Response.json({ status: "queued" });
 }
 
 /**
- * True if the conversation has no assistant messages at all yet (i.e. this is
- * the very first inbound and we've never replied). Welcomes only fire on
- * first contact.
+ * A reporter's message the route cannot use (no sender phone, no message id) is never answered: an event without a
+ * conversation makes it visible, with the event type and the reason only. Never fails the webhook.
  */
-async function checkFirstContact(conversationId: string): Promise<boolean> {
-  const { data } = await supabase
-    .from("messages")
-    .select("id")
-    .eq("conversation_id", conversationId)
-    .eq("role", "assistant")
-    .limit(1);
-  return !data || data.length === 0;
+async function recordUnusable(fields: { eventType: string; reason: string }): Promise<void> {
+  try {
+    await recordEvent("inbound_unusable", fields);
+  } catch (err) {
+    log.warn({ reason: fields.reason, ...errorSummary(err) }, "inbound_unusable event not recorded");
+  }
 }
 
-const FEEDBACK_REGISTERED: Record<Language, string> = {
-  en: "Thanks, your feedback is registered. Our team will take action shortly.",
-  hi: "धन्यवाद, आपकी प्रतिक्रिया दर्ज हो गई है। हमारी टीम जल्द ही कार्रवाई करेगी।",
-  mr: "धन्यवाद, तुमचा अभिप्राय नोंदवला आहे. आमची टीम लवकरच कारवाई करेल.",
-  gu: "આભાર, તમારો પ્રતિસાદ નોંધવામાં આવ્યો છે. અમારી ટીમ ટૂંક સમયમાં કાર્યવાહી કરશે.",
-};
+/** Captures the shape of a content type we don't handle, once per type per process; never fails the inbound. */
+async function recordUnknownContentType(contentType: string, payload: unknown, conversationId: string): Promise<void> {
+  if (KNOWN_CONTENT_TYPES.includes(contentType) || seenUnknownTypes.has(contentType)) return;
+  try {
+    const keys = Object.keys((payload as { data?: { message?: object } }).data?.message ?? {});
+    await recordEvent("unknown_payload", { contentType, keys }, conversationId);
+    seenUnknownTypes.add(contentType);
+  } catch (err) {
+    log.warn({ contentType, ...errorSummary(err) }, "unknown_payload telemetry failed");
+  }
+}
 
-const HANDOFF_ACK: Record<Language, string> = {
-  en: "Got it — connecting you with a team member. They'll reply here shortly.",
-  hi: "ठीक है — आपको हमारी टीम के सदस्य से जोड़ रहे हैं। वे जल्द ही यहाँ जवाब देंगे।",
-  mr: "ठीक आहे — तुम्हाला आमच्या टीममधील एका सदस्याशी जोडत आहोत. ते लवकरच इथे उत्तर देतील.",
-  gu: "ઠીક છે — તમને અમારી ટીમના સભ્ય સાથે જોડી રહ્યા છીએ. તેઓ ટૂંક સમયમાં અહીં જવાબ આપશે.",
-};
-
-async function escalate(
-  conversationId: string,
-  reason: string,
-  inboundText: string,
-  ackTextSent: string
-) {
-  await supabase
-    .from("conversations")
-    .update({
-      mode: "human",
-      status: "escalated",
-      escalation_reason: reason,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", conversationId);
-
-  const inserted = await supabase
-    .from("messages")
-    .insert({
-      conversation_id: conversationId,
-      role: "assistant",
-      content: ackTextSent,
-      message_type: "text",
-      delivery_status: "sent",
-    })
-    .select("id")
-    .single();
-
-  await audit({
-    conversationId,
-    messageId: inserted.data?.id ?? null,
-    actionType: "outbound",
-    messageText: ackTextSent,
-    metadata: { triggered_by: reason },
-  });
-
-  await audit({
-    conversationId,
-    actionType: "escalation",
-    messageText: inboundText,
-    metadata: { reason, source: "rail" },
-  });
+/**
+ * Only the error code and the driver's own message (`cause.message`). Never the error itself, its message or
+ * params, or `cause.detail`: those can quote reporter data. Errors without a cause (pg-boss, sockets) give their own code.
+ */
+function errorSummary(err: unknown): { code?: string; pgMessage?: string } {
+  const e = (err ?? {}) as { code?: unknown; cause?: { code?: unknown; message?: unknown } | null };
+  const str = (v: unknown) => (typeof v === "string" ? v : undefined);
+  return { code: str(e.cause?.code) ?? str(e.code), pgMessage: str(e.cause?.message) };
 }

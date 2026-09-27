@@ -1,0 +1,201 @@
+import type { Intent, Language } from "../types";
+import type { DirectoryAmbulance, MatchType } from "../directory/matcher";
+import type { DirectoryClinic } from "../directory/repo";
+import { HandleRegistry, TOKEN_RE } from "./handles";
+import { buildAmbulanceCard, buildMultiAmbulanceCard, formatIndianPhone, renderNumberForToken } from "../messages/cards";
+
+export interface RenderLookups {
+  ambulance(id: string): Promise<DirectoryAmbulance | undefined>;
+  clinic(id: string): Promise<DirectoryClinic | undefined>;
+}
+
+export interface RenderInput {
+  replyTemplate: string;
+  lang: Language;
+  intent: Intent;
+  registry: HandleRegistry;
+  lookups: RenderLookups;
+  helplinePhone: string;
+  staticPhones: Record<string, string>;
+  lastAmbulanceCandidates: DirectoryAmbulance[] | null;
+  /** How lastAmbulanceCandidates matched: the card fallback fires only for "area" or "city". */
+  lastAmbulanceMatch: MatchType | null;
+}
+
+export interface RenderResult {
+  text: string;
+  /** The model's reply with every token in canonical form ({{AMB:<handle>}}): what `text` was rendered from. */
+  template: string;
+  /**
+   * `template` with every dropped token and leftover syntax removed and the text's formatting cleanup applied: the
+   * template of what `text` says, holding a token for each number it shows (the card excepted), so a transcript built
+   * from it never shows the model writing something the reporter did not get.
+   */
+  sentTemplate: string;
+  /** Every number in `text` as stored: the substituted tokens' in order of first use, then the card's. */
+  inserted: string[];
+  unknownHandles: string[];
+  appendedCard: boolean;
+}
+
+/** Replies stay under WhatsApp's 4096-character limit. */
+const MAX_REPLY_CHARS = 4000;
+
+/** WhatsApp formatting: *bold* for **bold**, no headings, "•" bullets, at most one blank line, no outer whitespace. */
+export function cleanupFormatting(text: string): string {
+  return text
+    .replace(/\*\*(.+?)\*\*/g, "*$1*")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^\s*[-*]\s+/gm, "• ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/**
+ * A token as the model may write it: whitespace or line breaks inside the braces and any case for the kind
+ * ("{{ PHONE: helpline }}", "{{amb:amb_abcdefgh}}", "{{AMB:\namb_abcdefgh}}").
+ */
+const LOOSE_TOKEN_RE = /\{\{\s*(amb|clinic|phone)\s*:\s*([A-Za-z0-9_-]+)\s*\}\}/gi;
+
+/** Rewrites every loosely written token as {{KIND:value}}: the kind uppercased, the value as written. */
+function canonicalizeTokens(text: string): string {
+  return text.replace(LOOSE_TOKEN_RE, (_, kind: string, value: string) => `{{${kind.toUpperCase()}:${value}}}`);
+}
+
+/** Handles and PHONE keys resolve case-insensitively, so {{AMB:amb_x}} and {{AMB:AMB_X}} are one token. */
+function tokenKey(kind: string, value: string): string {
+  return `${kind}:${value.toLowerCase()}`;
+}
+
+/** A PHONE key's number, in any case. Own keys only, so {{PHONE:constructor}} never reaches an inherited member. */
+function staticPhone(phones: Record<string, string>, key: string): string | undefined {
+  if (Object.hasOwn(phones, key)) return phones[key];
+  const match = Object.keys(phones).find((k) => k.toLowerCase() === key.toLowerCase());
+  return match === undefined ? undefined : phones[match];
+}
+
+/**
+ * Template syntax the token scan did not match: a brace group on one line ("{AMB:x}", "{{AMB: amb x}}") or a stray
+ * brace ("{{{AMB:x}}}" leaves one on each side of the token).
+ */
+const LEFTOVER_RE = /\{+[^{}\n]*\}+|[{}]+/g;
+
+/** Removes leftover template syntax from model-written text, recording each piece under its raw text. */
+function dropLeftovers(text: string, dropped: string[]): string {
+  return text.replace(LEFTOVER_RE, (raw) => {
+    dropped.push(raw);
+    return "";
+  });
+}
+
+/**
+ * While the model's text is cleaned and capped, each substituted number stands in as one private-use character (its
+ * slot), so no cleanup and no cut can reach into a number. Private-use characters the model wrote are removed first.
+ */
+const SLOT_BASE = 0xe000;
+const PRIVATE_USE_RE = /[\uE000-\uF8FF]/g;
+
+/**
+ * The text with each slot expanded to its number, cut to at most `limit` UTF-16 units. A number or a surrogate pair that
+ * would not fit is dropped whole, with everything after it. `kept` receives the slots that made it in.
+ */
+function expandWithin(text: string, numbers: string[], limit: number, kept: Set<number>): string {
+  let out = "";
+  for (const ch of text) {
+    const slot = ch.charCodeAt(0) - SLOT_BASE;
+    const isSlot = slot >= 0 && slot < numbers.length;
+    const piece = isSlot ? numbers[slot] : ch;
+    if (out.length + piece.length > limit) break;
+    if (isSlot) kept.add(slot);
+    out += piece;
+  }
+  return out.trimEnd();
+}
+
+export async function renderReply(input: RenderInput): Promise<RenderResult> {
+  const unknownHandles: string[] = [];
+  const template = canonicalizeTokens(input.replyTemplate);
+  // A fresh regex: matchAll resumes from a regex's lastIndex, which a caller's TOKEN_RE.test/exec leaves advanced.
+  const tokens = Array.from(template.matchAll(new RegExp(TOKEN_RE.source, TOKEN_RE.flags)));
+
+  // Each distinct token resolves once, to a slot in `numbers`, or to "" when it is dropped.
+  const numbers: { phone: string; text: string }[] = [];
+  const slotOf = new Map<string, string>();
+  const substitute = (key: string, phone: string, text: string) => {
+    slotOf.set(key, String.fromCharCode(SLOT_BASE + numbers.length));
+    numbers.push({ phone, text });
+  };
+  const drop = (key: string, value: string) => {
+    unknownHandles.push(value);
+    slotOf.set(key, "");
+  };
+  // Set only when an {{AMB}} token resolved to a unit: a dropped unknown handle must not switch the card fallback off.
+  let hasAmbToken = false;
+  for (const m of tokens) {
+    const [, kind, value] = m;
+    const key = tokenKey(kind, value);
+    if (slotOf.has(key)) continue;
+    if (kind === "PHONE") {
+      const phone = value.toLowerCase() === "helpline" ? input.helplinePhone : staticPhone(input.staticPhones, value);
+      if (phone) substitute(key, phone, formatIndianPhone(phone));
+      else drop(key, value);
+      continue;
+    }
+    const ref = input.registry.resolve(value);
+    if (!ref || (kind === "AMB" && ref.kind !== "ambulance") || (kind === "CLINIC" && ref.kind !== "clinic")) {
+      drop(key, value);
+      continue;
+    }
+    if (ref.kind === "ambulance") {
+      const row = await input.lookups.ambulance(ref.id);
+      if (!row) { drop(key, value); continue; }
+      substitute(key, row.phone, renderNumberForToken(row, input.lang));
+      hasAmbToken = true;
+    } else {
+      const row = await input.lookups.clinic(ref.id);
+      if (!row) { drop(key, value); continue; }
+      substitute(key, row.phone, formatIndianPhone(row.phone));
+    }
+  }
+
+  // Leftovers are removed only from the text between tokens, so no cleanup can cut into an inserted number.
+  const between = (s: string) => dropLeftovers(s.replace(PRIVATE_USE_RE, ""), unknownHandles);
+  const tidy = (s: string) => cleanupFormatting(s.replace(/[ \t]{2,}/g, " ").replace(/ +([.,!?])/g, "$1"));
+  // The sent template is assembled beside the text: each substituted token stays a token, each dropped one goes.
+  let text = "";
+  let sent = "";
+  let last = 0;
+  for (const m of tokens) {
+    const gap = between(template.slice(last, m.index));
+    const slot = slotOf.get(tokenKey(m[1], m[2])) ?? "";
+    text += gap + slot;
+    sent += gap + (slot === "" ? "" : m[0]);
+    last = m.index + m[0].length;
+  }
+  const tail = between(template.slice(last));
+  text = tidy(text + tail);
+  const sentTemplate = tidy(sent + tail);
+
+  let card = "";
+  const cands = input.lastAmbulanceCandidates ?? [];
+  // A looser match means the model is confirming the place, so a card would hand out a number it was told to hold.
+  const exactMatch = input.lastAmbulanceMatch === "area" || input.lastAmbulanceMatch === "city";
+  if (input.intent === "ambulance" && !hasAmbToken && exactMatch && cands.length >= 1 && cands.length <= 3) {
+    card = cands.length === 1 ? buildAmbulanceCard(cands[0], input.lang) : buildMultiAmbulanceCard(cands, input.lang);
+  }
+
+  // The model's text is cut to leave room for the card: the card and every number stay whole.
+  const kept = new Set<number>();
+  const limit = card ? MAX_REPLY_CHARS - card.length - 2 : MAX_REPLY_CHARS;
+  const body = expandWithin(text, numbers.map((n) => n.text), limit, kept);
+  const inserted = numbers.filter((_, slot) => kept.has(slot)).map((n) => n.phone);
+  if (card) inserted.push(...cands.map((c) => c.phone));
+  return {
+    text: card ? (body ? `${body}\n\n${card}` : card) : body,
+    template,
+    sentTemplate,
+    inserted,
+    unknownHandles,
+    appendedCard: card !== "",
+  };
+}

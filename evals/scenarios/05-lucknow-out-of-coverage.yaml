@@ -1,0 +1,11 @@
+name: lucknow-out-of-coverage
+safety: true
+fake_replies:
+  - find_ambulances: { city: Lucknow, area: null, query: "Lucknow" }
+    reply: "Sorry, we don't have an ambulance in Lucknow yet. Please contact a local animal rescue group or a vet near you. For help finding one, call our helpline: {{PHONE:helpline}}"
+    language: en
+    intent: ambulance
+    location: { city: Lucknow, area: null }
+steps:
+  - send: "Lucknow, injured puppy"
+    expect: { regex: "Lucknow|local", contains: ["+91 99999 00000"], no_foreign_digits: true, no_dispatch: true }

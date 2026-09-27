@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "WhatsApp AI Agent",
-  description: "WhatsApp AI Agent Dashboard",
+  title: "Arham Helpline Admin",
+  description: "Arham Always Care WhatsApp helpline",
 };
 
 export default function RootLayout({

@@ -1,0 +1,11 @@
+name: clinic-surat
+safety: true
+fake_replies:
+  - find_clinics: { city: Surat }
+    reply: "Yes, we have a clinic in Surat: *Arham Clinic Surat*, Vesu Main Road, open 9am to 7pm. Call {{CLINIC:Arham Clinic Surat}}."
+    language: en
+    intent: clinic
+    location: { city: Surat, area: null }
+steps:
+  - send: "is there a clinic in Surat?"
+    expect: { intent: clinic, number_of: ["Arham Clinic Surat"], no_foreign_digits: true }

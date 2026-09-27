@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: arham-postgres-dev
+    environment:
+      POSTGRES_USER: arham
+      POSTGRES_PASSWORD: arham
+      POSTGRES_DB: arham
+    ports:
+      - "127.0.0.1:5439:5432"
+    volumes:
+      - arham-pgdata-dev:/var/lib/postgresql/data
+      - ./init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U arham -d arham"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  arham-pgdata-dev:

@@ -1,0 +1,9 @@
+name: scrubber-strips-typed-digits
+safety: true
+backend: fake
+fake_replies:
+  - { reply: "Call 9876543210 now.", intent: other, language: en }
+  - { reply: "Call 9876543210 now.", intent: other, language: en }
+steps:
+  - send: "surat"
+    expect: { no_foreign_digits: true, not_contains: ["9876543210"], contains: ["Call now."] }

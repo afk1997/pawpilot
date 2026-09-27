@@ -1,48 +1,71 @@
-# Arham Always Care — WhatsApp Dispatch Agent
+# Arham Always Care — WhatsApp Helpline Bot (V2)
 
-This is the WhatsApp dispatcher copilot for Arham Always Care (the animal-rescue project of Arham Yuva Seva Group, a parent NGO). It augments a 24/7 human dispatcher who connects reporters of injured stray animals to the right ambulance team via WhatsApp. **Life-and-death software** — be conservative.
+Question-and-answer WhatsApp helpline for Arham Always Care, the animal-rescue project of Arham Yuva Seva Group. People ask for the animal-ambulance number for their area, clinic details, or how to donate or volunteer. The bot answers in English, Hindi, Marathi or Gujarati from the directory. It is not a dispatcher: there is no escalation queue, no follow-ups, no cron jobs. Arham runs most ambulances and partner NGOs run the rest; code labels a partner unit's number with its operator ("(operated by <partner>)", in the reply's language). **Life-and-death software: be conservative.**
 
-## Operating model
-
-- **Arham Yuva Seva Group** operates ~34 of the ~45 ambulances directly. ~11 are operated by partner NGOs (Blue Cross, ALAI Trust, Hope for Indies Trust, etc.). The agent must label which is which when sharing a number.
-- The agent **does not dispatch** ambulances. It gives the reporter the right driver's phone number; the reporter calls the driver. Avoid all dispatching language ("we're sending", "they're on the way", etc.) — it is misleading.
-- Coverage: 23+ cities across Gujarat, Maharashtra, Tamil Nadu, West Bengal, Karnataka, Delhi, Haryana, Telangana, Madhya Pradesh.
+Design spec: `docs/superpowers/specs/2026-09-25-v2-qa-helpline-design.md`. Implementation plan: `docs/superpowers/plans/2026-09-25-v2-core-bot.md`. Where the spec and the code differ, the code is right (see "Spec drift"). Setup and operations: `README.md`.
 
 ## Hard rules
 
-1. **LLM never types phone digits.** Phone numbers come from DB rows / API responses; code formats them into the message. Tools return structured data; LLM types prose around it.
-2. **Narrow auto-escalation.** Only on: reporter says "can't reach driver", manual "human" request, or model failure. Severe wording does NOT auto-escalate (would flood dispatcher at 200–1000/day).
-3. **Time-to-driver-number is THE metric.** Photo/video/situation gathering happens AFTER delivery. Never block.
-4. **Instant ack within ~1s.** Sent before any LLM call.
-5. **Audit trail mandatory.** Every inbound, every tool call (args + result), every outbound, every dispatcher action → `agent_actions` table.
-6. **Multilingual.** English, Hindi (Devanagari + Hinglish), Marathi, Gujarati. Hardcoded regex must work in all four.
-7. **Idempotent.** Dedup webhooks by Interakt message id.
-8. **Graceful degradation.** Subsystem failures must be visible, never silent.
+1. **The model never types phone digits.** Tools return opaque handles; the reply carries `{{AMB:handle}}`, `{{CLINIC:handle}}` or `{{PHONE:helpline}}` tokens (or a `{{PHONE:<key>}}` that `get_info` returned for a number in `src/content/static.json`); `src/server/agent/render.ts` substitutes real numbers; `src/server/agent/scrub.ts` strips any other 7+ digit run after one corrective retry. The stored template (what the next transcript shows) holds tokens, never digits: a number the model retyped goes in as its token. The public 102/108/112 emergency numbers are the only ones the prompt lets the model write.
+2. **No dispatching language.** We hand over a number; the reporter calls. The dispatch guard asks for one corrected draft, then replaces offending sentences with the localized "Please call them directly and they will guide you.", keeping any number they held.
+3. **Time to number is the metric.** When Claude is paused or fails, `src/server/worker/fallback.ts` still sends a directory card or the helpline number.
+4. **Multilingual.** en / hi / mr / gu everywhere: cards, welcome and menu, fallback and system lines. Claude replies in the reporter's language and script; Latin-script Hinglish counts as `en` for the system's own lines, both in `detectLanguage` (`src/server/lang.ts`) and in the language Claude reports.
+5. **Idempotent ingress.** Dedup by Interakt message id; one turn per conversation at a time (pg-boss singleton + advisory lock).
+6. **Visible degradation.** Every failure is a `turns` row, an `events` row, a conversation flag or a health-endpoint signal. Nothing fails silently. A failed send is resent from its stored text by the worker's minute sweep (at most three attempts, never a new model call), and `/api/health` answers 503 when replies stop getting out (`checks.delivery`).
+7. **Test conversations never reach Interakt** (`is_test`, phones `+91TEST_…`).
 
-## Stack
+## Architecture
 
-- Next.js 16 App Router, TypeScript, Tailwind
-- Supabase (Postgres + Realtime)
-- Interakt (WhatsApp Business; replaces the Meta Graph API the prototype used)
-- OpenRouter via Vercel AI SDK (default `anthropic/claude-sonnet-4-6`)
-- Vercel (Functions + Cron + Queue)
+Interakt → `POST /api/webhook` (verify, dedup, store, enqueue) → Postgres + pg-boss `turn` queue → worker (`src/server/worker`) → Claude Sonnet 5 via `@anthropic-ai/claude-agent-sdk` (pinned 0.3.282, which bundles Claude Code CLI 2.1.282) under the owner's Max plan (`CLAUDE_CODE_OAUTH_TOKEN`) with three in-process tools → render + scrub → Interakt send. Every reply is written ahead (`src/server/worker/deliver.ts`): stored as `sending`, with the messages it answers marked, in one transaction before the send, so a retried job never answers a burst twice. Admin at `/admin` (password cookie) with transcripts and turn details; test harness at `/test-chat`; health at `/api/health`. The bot runs at helpline.arhamalwayscare.org; `WEBSITE_URL` (default https://alwayscare.org) is the public website the welcome, the menu and the prompt link to.
 
-## Plan
+## Claude backend (`src/server/agent/claude-code-backend.ts`)
 
-The approved V1 implementation plan: `/Users/kaivan108icloud.com/.claude/plans/now-we-need-to-sprightly-hedgehog.md` — read it before implementation decisions.
+The CLI runs locked down. Do not loosen any of this without the owner:
 
-## Files of note
+- `tools: []`, with the built-in tool names and `mcp__claude_ai_*` also in `disallowedTools`: no shell, file or web tools. The model has only the three `mcp__arham__*` tools and the CLI's `StructuredOutput`, which carries the reply.
+- `permissionMode: "dontAsk"`: a tool call `allowedTools` does not pre-approve is denied without a prompt. Not `bypassPermissions`, which the CLI refuses to run as root.
+- `strictMcpConfig: true` (and `ENABLE_CLAUDEAI_MCP_SERVERS=false` in the child env): only the in-process `arham` server loads; no user, project or claude.ai connector servers.
+- `verbatimPrompts: true`: reporter text is part of the prompt, so an `@path` mention in it must never be expanded into a file read (`/proc/<pid>/environ`, say) and a `/command` never run. `src/server/agent/transcript.ts` also rewrites an `@` before a path, as a second layer.
+- An env allowlist (`buildChildEnv`; the SDK does not merge `env` with `process.env`): PATH, locale, TZ, TMPDIR, CA and proxy variables, HOME set to `LLM_HOME_DIR` with the config dir inside it, and the OAuth token. The database URL, Interakt key, admin secrets and a parent Claude Code session's variables never reach the child. Because HOME and the config dir are its own, a `claude login` made on the machine is not seen either: the worker needs `CLAUDE_CODE_OAUTH_TOKEN`.
+- `settingSources: []`, `persistSession: false`, `cwd` = `LLM_HOME_DIR`: no user or project settings or CLAUDE.md are loaded, and no session transcript is saved.
+- The init check is strict: the init message must list the three arham tools and nothing else but `StructuredOutput`, with `arham` connected, or the turn aborts as TRANSIENT (`mcp_not_connected: …` in the turn's error) and falls back. A CLI that changes that list sends every turn to the fallback.
 
-- `ambulances-clinics.csv` — source of truth for the directory. **Gitignored** (contains driver personal numbers). Imported via `scripts/ingest-ambulances.ts`.
-- `supabase-schema.sql` — DB migration.
-- `src/lib/tools/` — LLM tool implementations.
-- `src/content/static.json` — donations / volunteer / clinic / FAQ content (multilingual).
+The owner's smoke run is the go-live gate, and must be re-run after any `@anthropic-ai/claude-agent-sdk` upgrade: `RUN_CLAUDE_SMOKE=1 npx vitest run tests/smoke`, from a terminal outside Claude Code, with `CLAUDE_CODE_OAUTH_TOKEN` exported in that shell (README, "Go-live gate"). It is also the only check that `StructuredOutput` returns the reply under `dontAsk` against the real API.
 
-## graphify
+Failure classes: LIMITED and AUTH pause Claude for every conversation (`worker_state`); INVALID_OUTPUT, and a TRANSIENT failure that was not a timeout (the backend's `timedOut` flag), get one retry inside the turn's 100 s budget; whatever still fails goes to the fallback.
 
-This project has a graphify knowledge graph at graphify-out/.
+Extra usage is off: `LLM_ALLOW_EXTRA_USAGE` defaults to `false` (the owner's decision; the owner also keeps it off in the account). A rate-limit rejection that extra usage paid for anyway still counts as the limit: the reply that came back is delivered (a rejected limit never pre-empts a valid result in `classify`), the turn makes no further call, then Claude pauses until the reset and a `claude_limited` event with `extraUsage: true` is recorded. Every turn extra usage paid for records a `claude_extra_usage` event. With the flag on, such turns run without the pause.
 
-Rules:
-- Before answering architecture or codebase questions, read graphify-out/GRAPH_REPORT.md for god nodes and community structure.
-- For cross-module "how does X relate to Y" questions, prefer `graphify query "<question>"`, `graphify path "<A>" "<B>"`, or `graphify explain "<concept>"` over grep.
-- After modifying code files, run `graphify update .` to keep the graph current (AST-only, no API cost).
+## Guard residuals (known gaps, not bugs to rediscover)
+
+- The reply scrubber reads a run as digits joined by at most one space, line break or hyphen. It misses dotted or spaced-dash groups ("98765.43210", "98765 - 43210"), runs of several dash characters ("98765--43210"), slashes, commas, brackets, and a number split across sentences or lines. The tool-output scrub has the same separator gaps. Full list: the `DIGIT_RUN_RE` comment in `src/server/digits.ts`, the one module both patterns live in.
+- The dispatch guard has no Latin-script Hinglish vocabulary yet ("ambulance bhej rahe hain" and "gaadi aa rahi hai" pass); adding it waits for an eval pass on the real model. Its Indic "is coming" and "on the way" rules fire only with an ambulance or team word right before the phrase (precision first).
+- The tool-boundary scrub (`scrubToolText` in `src/server/agent/tools.ts`) removes every phone-shaped run from what a tool returns before the model sees it, so the model cannot relay a non-phone number from the directory. The coverage summary in the system prompt (`src/server/directory/coverage.ts`) is scrubbed the same way. The no-LLM fallback card, though, shows a unit's area, city and operator as the directory holds them: `npm run ingest:ambulances` warns about a phone-shaped number in any text cell (it does not refuse the file).
+- `src/content/static.json` is tokenized at load: in `donate` and `volunteer`, only a field whose name says it holds a phone (`phone`, `contact`, `mobile`, `helpline`, `whatsapp` or `number` in the name, and none of `account`, `ifsc`, `upi` or `bank`) turns its number into a `{{PHONE:<key>}}` token, which goes out formatted as a phone number. Any other field passes through and the tool-boundary scrub removes its runs, so a bank account, IFSC or digit UPI id can never be relayed: keep them on the website (the bot gives the donate URL), or add a non-phone `{{ACCOUNT:<key>}}` token first. The free text of `about`, `human_emergency` and the FAQ still reads every 7+ digit run as a phone number (the FAQ's Animal Helpline India number relies on it): only phone numbers belong there.
+- Handles resolve from the handle maps of a conversation's last 20 turns (`loadConversationHandles` in `src/server/worker/persist.ts`): a handle from an older turn gets the unknown-handle correction.
+- A worker that dies between an Interakt send and recording its outcome leaves the reply `sending`; the resend sweep sends that stored text again after 2 minutes, so the reporter may get the same reply twice (never a different one).
+
+## Spec drift (the code is right)
+
+- Env names: `LLM_BACKEND`, `LLM_MODEL`, `LLM_EFFORT`, `LLM_MAX_TURNS`, `LLM_TURN_TIMEOUT_MS`, `LLM_HOME_DIR`, `LLM_TOKEN_ISSUED_AT`, `LLM_ALLOW_EXTRA_USAGE`, plus `CLAUDE_CODE_OAUTH_TOKEN` (`src/server/config.ts`). The spec's other `CLAUDE_*` names do not exist, and its deployment, geocoding and backup variables (`POSTGRES_PASSWORD`, `PUBLIC_HOSTNAME`, `ACME_EMAIL`, `NOMINATIM_*`, `GOOGLE_GEOCODING_API_KEY`, `AZURE_BACKUP_SAS_URL`) are not read yet.
+- §5.4: `permissionMode` is `dontAsk`, not `bypassPermissions`; HOME, config dir and cwd all come from `LLM_HOME_DIR`.
+- §5.12: `src/server/interakt/client.ts` sends two payloads only. Each is a `POST` to `INTERAKT_API_BASE` with `Authorization: Basic <INTERAKT_API_KEY>` and a 15 s timeout, carrying `{ countryCode, phoneNumber, callbackData: "agent" }` plus:
+  - `Text`: `type: "Text", data: { message: <text> }`;
+  - `InteractiveList`: `type: "InteractiveList", data: { message: { type: "list", body: { text }, action: { button, sections: [{ title, rows: [{ id, title, description? }] }] } } }`.
+
+  There is no Template payload (none is kept for later) and no admin reply box. A number starting with "+" is split by the ITU country-code table; bare numbers follow the India rules in `splitPhone`. `+91TEST_` phones are refused.
+- §5.7: handles are `amb_`/`cli_` plus eight letters a–p, so a handle never holds a digit.
+- §5.2: turn jobs expire after 240 s, above the Claude turn's 100 s budget. A failed Interakt send is not retried through pg-boss (that would run the model again): the worker's minute sweep resends the stored reply when the send failed with no response, 429 or a 5xx, or was left `sending` for over 2 minutes, at most three attempts in all and only within 10 minutes; the last failure records `outbound_failed` and flags `send_failed`. On stop the worker takes no new turn at once, and a resend pass finishes only the send it had started.
+- §5.14: Latin-script Hinglish is `en`, not `hi`, for the system's own lines.
+- §5.10: the fallback gives a unit's number only for an exact area or city match with one to three units; anything looser gets the helpline card.
+- §5.15: there is no middleware; each admin and test-chat page and API route checks the cookie itself. Their JSON posts, the login's included, go through `readAdminJsonPost` (`src/server/admin/json-post.ts`: 403 cross-site, 415 not JSON, 413 oversized, all before anything else; the login reads an unusable body as a wrong password), and every such API route answers 503 with a data-free log line when the database fails. The admin page is read-only and polls.
+
+## Working here
+
+- Local: `docker compose -f docker/docker-compose.dev.yml up -d`, `npm run migrate`, `npm run ingest:ambulances`, `npm run dev` and `npm run worker:dev`. `LLM_BACKEND=fake` gives canned replies without Claude (refused when `NODE_ENV=production`).
+- Tests: `npm run test:unit` (`tests/unit`) and `npm test` (everything) both need the dev Postgres, because the global setup migrates `arham_test` first; `resetDb` refuses any database whose name does not end in `_test`. The smoke test is skipped unless `RUN_CLAUDE_SMOKE=1`, and `tests/setup.ts` drops `CLAUDE_CODE_OAUTH_TOKEN` from every other run.
+- Evals: `npm run eval` uses the scripted fake backend by default and skips the four scenarios that need the real model (among them `28-human-hit-dog-claude`: that the word "human" alone does not flag a conversation is checked only there, since scenario 12's script decides it on the fake backend); `npm run eval -- --backend claude` spends Max usage. The runner uses `TEST_DATABASE_URL` and, since it truncates every table, refuses (exit 2) unless the database it connects to, read with `current_database()`, is named `*_test` (`-- --allow-db` overrides).
+- Anything that spends Max usage (the smoke test, `--backend claude` evals, a worker with `LLM_BACKEND=claude-code`) is started by the owner from a terminal outside Claude Code, never from an agent session.
+- Change the prompt (`src/server/agent/prompt.ts`) only with the eval suite green on the real model (`-- --backend claude`); the fake backend never reads the prompt.
+- Before committing: `npm run typecheck && npm run lint && npm test`. History is never squashed; PRs merge with a merge commit.
+- `ambulances-clinics.csv` is gitignored (driver personal numbers). `.codex/`, `.mcp.json` and the `.env` files (all but `.env.example`) are gitignored.

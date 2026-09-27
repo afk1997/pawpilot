@@ -1,11 +1,7 @@
-/**
- * /test-chat — internal harness for chatting with the agent without going
- * through Interakt. Gated by ENABLE_TEST_CHAT=1; returns 404 otherwise.
- */
-import { notFound } from "next/navigation";
+import { requireAdmin } from "@/server/admin/auth";
 import { TestChatClient } from "./test-chat-client";
 
-export default function TestChatPage() {
-  if (process.env.ENABLE_TEST_CHAT !== "1") notFound();
+export default async function TestChatPage() {
+  await requireAdmin();
   return <TestChatClient />;
 }
