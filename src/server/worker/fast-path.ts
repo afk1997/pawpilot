@@ -41,7 +41,7 @@ export const OTHER_INTENT_WORDS = [
   "उठा", "उठाया", "उठाता", "बंद", "ઉપાડ", "બંધ",
   "not picking", "picking up", "switch off", "switched off", "not responding", "no answer", "no response", "unable to reach",
   "nahi lag", "nahi lagta", "lag nahi", "phone band", "number band", "phone busy", "number busy", "busy aa", "busy hai",
-  "didn't pick", "did not pick", "didn't answer", "did not answer", "switchoff", "switch-off",
+  "didn't pick", "did not pick", "didn't answer", "did not answer", "didnt pick", "didnt answer", "switchoff", "switch-off",
   "उचल", "नहीं लग", "लग नहीं", "नही लग", "लागत नाही", "स्विच", "લાગતો નથી", "લાગતું નથી", "ઉપાડત",
   // A hurt person: the model relays the emergency numbers. A child only with an accident cue: "bachcha" and "बच्चा" are
   // also an animal's young ("kutte ka bachcha ghayal hai" is a puppy).

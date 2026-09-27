@@ -19,7 +19,7 @@ describe("fast path other-intent words", () => {
       "उठा", "उठाया", "उठाता", "बंद", "ઉપાડ", "બંધ",
       "not picking", "picking up", "switch off", "switched off", "not responding", "no answer", "no response", "unable to reach",
       "nahi lag", "nahi lagta", "lag nahi", "phone band", "number band", "phone busy", "number busy", "busy aa", "busy hai",
-      "didn't pick", "did not pick", "didn't answer", "did not answer", "switchoff", "switch-off",
+      "didn't pick", "did not pick", "didn't answer", "did not answer", "didnt pick", "didnt answer", "switchoff", "switch-off",
       "उचल", "नहीं लग", "लग नहीं", "नही लग", "लागत नाही", "स्विच", "લાગતો નથી", "લાગતું નથી", "ઉપાડત",
       "aadmi", "admi", "vyakti", "आदमी", "व्यक्ति", "माणूस", "વ્યક્તિ", "માણસ",
       "ladka", "ladke", "ladki", "aurat", "woman", "boy", "girl", "man is", "man has", "man got", "man was",
@@ -78,6 +78,8 @@ describe("fast path other-intent words", () => {
       ["switchoff", "Ghatkopar ambulance ka phone switchoff hai"],
       ["switch-off", "Ghatkopar ambulance ka phone switch-off hai"],
       ["didn't pick, a phone's curly apostrophe", "Ghatkopar ambulance driver didn\u2019t pick up"],
+      ["didnt pick, no apostrophe", "Ghatkopar driver didnt pick up the phone"],
+      ["didnt answer, no apostrophe", "Ghatkopar ambulance didnt answer"],
     ])("goes to the model for %s: %s", async (_entry, text) => {
       expect(await decide(text)).toEqual({ fire: false, reason: "other_intent" });
     });
