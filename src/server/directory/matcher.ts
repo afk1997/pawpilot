@@ -170,7 +170,9 @@ export function hasGenericAreaWord(areaName: string): boolean {
  * pase" (a lane's gate), "Hazra ji ka kutta" and "Lokhandwala ji" (surnames), "andheri raat" (a dark night), "khar" (a
  * squirrel in Marathi), "sela" (a rice). Read like GENERIC_AREA_WORDS, as whole words of the area name, so an exact
  * match through one alone needs the unit's city named or known too. Curated from the seed fixture's and
- * ambulances-clinics.csv's area names; a new area name that is an everyday word belongs here.
+ * ambulances-clinics.csv's area names; a new area name that is an everyday word belongs here. "andheri" is the one
+ * deliberate latency trade-off: Andheri is a busy Mumbai suburb, so its first messages without "Mumbai" now wait for
+ * the model (which still gives the number); drop it here to trade that back.
  */
 export const EVERYDAY_AREA_NAMES = ["satellite", "ghuma", "ambli", "khadki", "lokhandwala", "hazra", "andheri", "khar", "sela"] as const;
 

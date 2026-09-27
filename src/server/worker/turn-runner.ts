@@ -103,8 +103,8 @@ async function runTurnLocked(conversationId: string, deps: TurnDeps): Promise<Tu
   // Every reply below marks the burst answered with itself, before its send (deliver.ts's write-ahead).
   const pendingIds = pending.map((m) => m.id);
   /**
-   * No reply of any kind has gone out yet (isFirstContact): the answer opens with a greeting, since no welcome list did.
-   * Read from the messages, not from the welcome claim below, so a turn retried after a failure keeps it.
+   * No reply has been written yet, sent or not (isFirstContact): the answer opens with a greeting, since no welcome
+   * list did. Read from the messages, not from the welcome claim below, so a turn retried after a failure keeps it.
    */
   const firstContact = await isFirstContact(conversation.id);
 

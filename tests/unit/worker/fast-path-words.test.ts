@@ -19,7 +19,8 @@ describe("fast path other-intent words", () => {
       "उठा", "उठाया", "उठाता", "बंद", "ઉપાડ", "બંધ",
       "not picking", "picking up", "switch off", "switched off", "not responding", "no answer", "no response", "unable to reach",
       "nahi lag", "nahi lagta", "lag nahi", "phone band", "number band", "phone busy", "number busy", "busy aa", "busy hai",
-      "उचल", "नहीं लग", "लग नहीं", "लागत नाही", "स्विच", "લાગતો નથી", "લાગતું નથી", "ઉપાડત",
+      "didn't pick", "did not pick", "didn't answer", "did not answer", "switchoff", "switch-off",
+      "उचल", "नहीं लग", "लग नहीं", "नही लग", "लागत नाही", "स्विच", "લાગતો નથી", "લાગતું નથી", "ઉપાડત",
       "aadmi", "admi", "vyakti", "आदमी", "व्यक्ति", "माणूस", "વ્યક્તિ", "માણસ",
       "ladka", "ladke", "ladki", "aurat", "woman", "boy", "girl", "man is", "man has", "man got", "man was",
       "लड़का", "लड़के", "लड़की", "औरत", "मुलगा", "मुलगी", "बाळ", "બાળક", "છોકરો", "છોકરી",
@@ -65,6 +66,19 @@ describe("fast path other-intent words", () => {
       ["gu", "મારું એક સૂચન છે"],
       ["en", "Ghatkopar ke baare me yeh mera suggestion hai"],
     ])("goes to the model (%s): %s", async (_lang, text) => {
+      expect(await decide(text)).toEqual({ fire: false, reason: "other_intent" });
+    });
+
+    it.each([
+      ["didn't pick", "Ghatkopar ambulance driver didn't pick up"],
+      ["did not pick", "the Ghatkopar driver did not pick the call"],
+      ["didn't answer", "Ghatkopar ambulance didn't answer"],
+      ["did not answer", "Ghatkopar ambulance did not answer my call"],
+      ["नही लग", "घाटकोपर एम्बुलेंस का फोन नही लग रहा"],
+      ["switchoff", "Ghatkopar ambulance ka phone switchoff hai"],
+      ["switch-off", "Ghatkopar ambulance ka phone switch-off hai"],
+      ["didn't pick, a phone's curly apostrophe", "Ghatkopar ambulance driver didn\u2019t pick up"],
+    ])("goes to the model for %s: %s", async (_entry, text) => {
       expect(await decide(text)).toEqual({ fire: false, reason: "other_intent" });
     });
 

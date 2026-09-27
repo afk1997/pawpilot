@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { buildSystemPrompt, buildTurnPrompt, formatIst, type TurnContext } from "@/server/agent/prompt";
+import { findDigitRuns } from "@/server/agent/scrub";
 
 const systemPrompt = () => buildSystemPrompt({ coverage: "- Mumbai: Ghatkopar", websiteUrl: "https://alwayscare.org" });
 
@@ -142,6 +143,30 @@ describe("prompts", () => {
         "- {{AMB:amb_kcmfpbca}} — Arham Animal Ambulance, Ghatkopar (Mumbai) [match: area]\n"
     );
     expect(t).not.toContain("looked up the reporter's words");
+  });
+
+  it("turn prompt drops a phone-shaped run from the known location, on its line and in the known-location header, tokens untouched", () => {
+    const unit = {
+      handle: "amb_kcmfpbca", display_name: "Arham Animal Ambulance, Sitabuldi", city: "Nagpur", area: "Sitabuldi",
+      operator_name: "Arham Yuva Seva Group", operator_is_arham: true,
+    };
+    const t = buildTurnPrompt({
+      nowIst: "x", language: "en", handlesShared: ["amb_kcmfpbca"], firstContact: false, correction: null,
+      // A City cell holding a number, and an area with one in Devanagari digits.
+      knownLocation: { city: "Nagpur 98765 00123", area: "Sitabuldi ९८७६५-००१२४" },
+      transcript: "[10:03] System: Arham Animal Ambulance, Sitabuldi\n  {{AMB:amb_kcmfpbca}}\n  Please call them right away.",
+      prematched: { matchType: "area", source: "known_location", units: [unit] },
+    });
+    expect(t).toContain("Location known so far: Sitabuldi, Nagpur\n");
+    expect(t).toContain("PRE-MATCHED UNITS (the system looked up the location known so far (Sitabuldi, Nagpur), not the reporter's new words");
+    expect(findDigitRuns(t)).toEqual([]);
+    // The token grammar is untouched: the handle list, the pre-matched line and the transcript's token as written.
+    expect(t).toContain("Handles already shared in this chat: amb_kcmfpbca\n");
+    expect(t).toContain("- {{AMB:amb_kcmfpbca}} — Arham Animal Ambulance, Sitabuldi (Nagpur) [match: area]\n");
+    expect(t).toContain("  {{AMB:amb_kcmfpbca}}\n");
+    // A location that is only a number is no location.
+    expect(buildTurnPrompt({ nowIst: "x", language: null, knownLocation: { city: "98765 00123", area: null }, handlesShared: [], firstContact: false, transcript: "t", correction: null }))
+      .toContain("Location known so far: unknown\n");
   });
 
   it("turn prompt puts the correction last, right before the closing instruction", () => {

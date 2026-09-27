@@ -17,9 +17,9 @@ export async function claimWelcome(conversationId: string): Promise<boolean> {
 }
 
 /**
- * Whether the conversation has had no reply of any kind yet (no assistant message): its first contact, whose answer
- * opens with a greeting. A turn that failed before its reply was written left no message, so its retry still reads
- * true, where the welcome claim, already taken, would not.
+ * Whether no reply has been written in the conversation yet, sent or not (no assistant message, whatever its delivery
+ * status): its first contact, whose answer opens with a greeting. A turn that failed before its reply was written left
+ * no message, so its retry still reads true, where the welcome claim, already taken, would not.
  */
 export async function isFirstContact(conversationId: string): Promise<boolean> {
   const [row] = await getDb()

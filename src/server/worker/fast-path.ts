@@ -41,7 +41,8 @@ export const OTHER_INTENT_WORDS = [
   "उठा", "उठाया", "उठाता", "बंद", "ઉપાડ", "બંધ",
   "not picking", "picking up", "switch off", "switched off", "not responding", "no answer", "no response", "unable to reach",
   "nahi lag", "nahi lagta", "lag nahi", "phone band", "number band", "phone busy", "number busy", "busy aa", "busy hai",
-  "उचल", "नहीं लग", "लग नहीं", "लागत नाही", "स्विच", "લાગતો નથી", "લાગતું નથી", "ઉપાડત",
+  "didn't pick", "did not pick", "didn't answer", "did not answer", "switchoff", "switch-off",
+  "उचल", "नहीं लग", "लग नहीं", "नही लग", "लागत नाही", "स्विच", "લાગતો નથી", "લાગતું નથી", "ઉપાડત",
   // A hurt person: the model relays the emergency numbers. A child only with an accident cue: "bachcha" and "बच्चा" are
   // also an animal's young ("kutte ka bachcha ghayal hai" is a puppy).
   "aadmi", "admi", "vyakti", "आदमी", "व्यक्ति", "माणूस", "વ્યક્તિ", "માણસ",
@@ -57,17 +58,24 @@ export const OTHER_INTENT_WORDS = [
 /** Devanagari and Gujarati nukta: "ग़लत" is read as "गलत". */
 const NUKTA_RE = /[़઼]/g;
 
+/** Apostrophes a keyboard may send for "'": a phone's smart punctuation writes "didn’t". */
+const APOSTROPHE_RE = /[\u2018\u2019\u02BC\u0060\u00B4]/g;
+
 /**
- * The form both the entries and the reporter's text are read in: NFC, no nukta ("लड़का" and "लडका" are one word), and
- * every whitespace run as one space, so a phrase's space matches a line break or a double space too.
+ * The form both the entries and the reporter's text are read in: NFC, no nukta ("लड़का" and "लडका" are one word), every
+ * apostrophe as "'" ("didn’t" is "didn't"), and every whitespace run as one space, so a phrase's space matches a line
+ * break or a double space too.
  */
-const intentForm = (s: string) => s.normalize("NFC").replace(NUKTA_RE, "").replace(/\s+/g, " ");
+const intentForm = (s: string) => s.normalize("NFC").replace(NUKTA_RE, "").replace(APOSTROPHE_RE, "'").replace(/\s+/g, " ");
+
+/** An entry as a literal in the pattern: a regex character in it ("switch-off" has none today) never acts as one. */
+const literal = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
  * A listed entry at the start of a word, in any case, whatever ending follows: "Clinics", "दवाखाना", "દવાખાનું" and
  * "ખોટો" count; "vardaan" and "वरदान" do not.
  */
-const OTHER_INTENT_RE = new RegExp(`(?<![\\p{L}\\p{M}\\p{N}])(?:${OTHER_INTENT_WORDS.map(intentForm).join("|")})`, "iu");
+const OTHER_INTENT_RE = new RegExp(`(?<![\\p{L}\\p{M}\\p{N}])(?:${OTHER_INTENT_WORDS.map((w) => literal(intentForm(w))).join("|")})`, "iu");
 
 export function hasOtherIntentWord(text: string): boolean {
   return OTHER_INTENT_RE.test(intentForm(text));

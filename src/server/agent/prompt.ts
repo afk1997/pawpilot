@@ -1,4 +1,5 @@
 import type { Language } from "../types";
+import { maskDigitRuns } from "./scrub";
 import type { Prematched } from "./tools";
 
 export function formatIst(d: Date): string {
@@ -106,10 +107,20 @@ function prematchedBlock(p: Prematched, place: string): string[] {
   ];
 }
 
+/**
+ * The location known so far as the turn prompt shows it, on its own line and in the known-location pre-match header:
+ * area, then city, each with every phone-shaped run dropped (maskDigitRuns, as the reply scrubber reads runs), since a
+ * directory cell the fast path recorded, or a place the model reported, can hold one, and the model must never see
+ * digits it could copy. "unknown" when nothing is left.
+ */
+function knownPlace(known: TurnContext["knownLocation"]): string {
+  const parts = [known?.area, known?.city].map((p) => (p ? maskDigitRuns(p, "").replace(/\s+/g, " ").trim() : ""));
+  const place = parts.filter((p) => p.length > 0).join(", ");
+  return place.length > 0 ? place : "unknown";
+}
+
 export function buildTurnPrompt(ctx: TurnContext): string {
-  const loc = ctx.knownLocation && (ctx.knownLocation.city || ctx.knownLocation.area)
-    ? [ctx.knownLocation.area, ctx.knownLocation.city].filter(Boolean).join(", ")
-    : "unknown";
+  const loc = knownPlace(ctx.knownLocation);
   const lines = [
     "CONTEXT",
     `Current time: ${ctx.nowIst}`,
