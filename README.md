@@ -6,7 +6,7 @@ Project instructions for coding agents, the Claude backend's safety settings and
 
 ## Stack
 
-Next.js 16 (webhook, admin, test chat), a separate Node worker, Postgres 17, pg-boss queue, Claude Sonnet 5 through the Claude Agent SDK (pinned 0.3.282) on the owner's Max plan. Docker Compose runs the dev Postgres; the production image, Caddy and the Azure VM come with the follow-up plan.
+Next.js 16 (webhook, admin, test chat), a separate Node worker, Postgres 17, pg-boss queue, Claude Sonnet 5 through the Claude Agent SDK (pinned 0.3.282) on the owner's Max plan. Docker Compose runs the dev Postgres here, and the whole production stack (Caddy, app, worker, Postgres, nightly backups) on one Azure VM: see "Deploy (Azure VM)".
 
 ## Local development
 
@@ -31,7 +31,7 @@ For real WhatsApp traffic locally, expose port 3000 (e.g. ngrok) and point the I
 |---|---|
 | `npm run dev` | Next.js dev server on port 3000 (webhook, admin, test chat) |
 | `npm run build` | production build of the Next.js app |
-| `npm run start` | serve that build |
+| `npm run start` | serve that build (`next start` warns about the standalone output; the production image runs `node server.js` from it) |
 | `npm run worker` | run the worker (production; TypeScript through tsx, no build step) |
 | `npm run worker:dev` | the worker under `tsx watch`, restarted on file changes |
 | `npm run db:generate` | generate a migration after editing `src/server/db/schema.ts` |
@@ -90,16 +90,17 @@ It must pass: a Hinglish Ghatkopar request comes back as an ambulance reply with
 
 In `donate` and `volunteer`, only a field whose name says it holds a phone (`phone`, `contact`, `mobile`, `helpline`, `whatsapp` or `number` in the name, such as `contact_phone`, and never `account`, `ifsc`, `upi` or `bank`, so `bank_account_number` is not one) has its number turned into a `{{PHONE:…}}` token when the file loads; when Claude copies that token into a reply it goes out formatted as a phone number. A number in any other field (`bank`, `upi`, `summary`) is left as written, and the tool-boundary scrub removes it before the model sees it, so an account number, IFSC code or digit UPI id can never be relayed: keep bank and UPI details on the website, and the bot gives the donate URL (a non-phone `{{ACCOUNT:…}}` token is a possible follow-up). In the free text of `about`, `human_emergency` and the FAQ, every run of 7+ digits is still read as a phone number (the FAQ's Animal Helpline India number relies on it), so only phone numbers belong there. Every other tool output (a directory address, say) has its phone-shaped runs removed before the model sees it, so those cannot be relayed either.
 
-## Deploy notes for the follow-up plan
+## Deploy (Azure VM)
 
-The production image, Caddy, Azure VM, backups, deploy script and uptime monitor come with the follow-up plan (not written yet). What the code already requires of them:
+Production is one Azure VM (Ubuntu 24.04, x86-64) running `docker/docker-compose.yml`: Caddy (TLS for helpline.arhamalwayscare.org), the app, the worker, Postgres 17 and a nightly backup. Runbooks: `docs/runbooks/deploy.md` (first deploy, routine operations, backups, troubleshooting) and `docs/runbooks/restore.md`.
 
-- Run the worker container as a non-root user (the backend logs a warning when it runs as root), with a writable `LLM_HOME_DIR` it owns; the backend keeps that directory at mode 0700.
-- Set the worker's `stop_grace_period` above 145 s (say `160s`) and start it with an exec-form CMD that runs node itself (e.g. `["node", "--import", "tsx", "src/server/worker/index.ts"]`), so SIGTERM reaches node. On SIGTERM the worker stops taking jobs at once, lets a resend in progress finish only the send it had started (waiting for it at most 20 s), and gives in-flight turns up to 145 s (`GRACEFUL_STOP_MS` in `src/server/worker/start.ts`: a turn's 100 s budget, its 15 s Interakt send and a 30 s margin); Docker's default 10 s would kill a turn in progress, and a turn cut off after its send can be retried and reach the reporter twice.
-- `npm run worker` and `migrate` run TypeScript through tsx and load `.env` files with dotenv, both devDependencies (`ingest:ambulances` also needs csv-parse): install dev dependencies in the image, or move those packages to dependencies.
-- Caddy must overwrite `X-Forwarded-For` with the client's bare address (no port, no client-supplied chain), since the login limiter keys on its first entry.
-- Run `npm run migrate` before starting new code; neither the app nor the worker migrates at start. The app starts pg-boss in the background when its server starts (`src/instrumentation.ts`), so the first webhook after a deploy does not wait for it.
-- Set `NODE_ENV=production` for the worker too (`next start` defaults it for the app). In production the config refuses `LLM_BACKEND=fake`, `INTERAKT_WEBHOOK_VERIFY_MODE=off` and an empty `INTERAKT_WEBHOOK_SECRET` (the process will not start), the admin cookie is Secure and `LOG_RAW_WEBHOOKS` is ignored.
+- `scripts/setup-vm.sh` prepares the VM once (Docker, unattended upgrades, ufw, fail2ban, swap, the checkout in `/opt/arham/app`). Every setting lives in `/opt/arham/.env` (the "Production" notes in `.env.example`).
+- `scripts/deploy.sh <ssh-host> [ref]`, from the laptop, deploys a branch, tag or commit, and rolls back the same way. It builds the images on the VM, runs `npm run migrate` with the new image before any new code starts (neither the app nor the worker migrates at start), recreates the containers and checks `/api/health`. The app starts pg-boss in the background when its server starts (`src/instrumentation.ts`), so the first webhook after a deploy does not wait for it.
+- One image (`docker/Dockerfile`) runs the app (`node server.js` from the Next.js standalone output) and the worker, as the non-root `node` user. `tsx`, `dotenv` and `csv-parse` are dependencies, so `npm run migrate` and `npm run ingest:ambulances` run in it too. The worker's Claude home (`LLM_HOME_DIR=/home/node/claude-home`) is a volume it owns; the backend keeps it at mode 0700. Only the worker gets the Claude token.
+- The worker container runs `node --import tsx src/server/worker/index.ts` itself rather than `npm run worker`: npm passes SIGTERM only to the `sh -c` it runs the script in, which dies without passing it on. On SIGTERM the worker stops taking jobs at once, lets a resend in progress finish only the send it had started (waiting for it at most 20 s), and gives in-flight turns up to 145 s (`GRACEFUL_STOP_MS` in `src/server/worker/start.ts`: a turn's 100 s budget, its 15 s Interakt send and a 30 s margin). Its `stop_grace_period` is 170 s; Docker's default 10 s would kill a turn in progress, and a turn cut off after its send can be retried and reach the reporter twice.
+- Only Caddy publishes ports. It sets `X-Forwarded-For` to the client's bare address (a client-sent one is dropped), and the login limiter keys on its first entry: never publish the app's port 3000.
+- The compose file sets `NODE_ENV=production` for the app and the worker. In production the config refuses `LLM_BACKEND=fake`, `INTERAKT_WEBHOOK_VERIFY_MODE=off` and an empty `INTERAKT_WEBHOOK_SECRET` (the process will not start), the admin cookie is Secure and `LOG_RAW_WEBHOOKS` is ignored.
+- `scripts/backup.sh` (the backup container) dumps the database every night at 03:00 IST into `/opt/arham/backups`, keeps 30 days, and uploads each dump to Azure Blob when `AZURE_BACKUP_SAS_URL` is set; `backup.sh restore` is the restore runbook's last step.
 - Keep Postgres on the same host. If it ever moves off-host, lower its `tcp_keepalives_idle`: each turn holds a session advisory lock on its own connection, and a worker host that vanishes without closing it blocks that conversation until Postgres notices the dead peer (about two hours with the Linux default).
 
 ## Known limitations
@@ -108,7 +109,7 @@ The production image, Caddy, Azure VM, backups, deploy script and uptime monitor
 - Photos, videos, documents and stickers are stored (Interakt's media URL) and acknowledged, never analysed.
 - Location pins carry only the name and address WhatsApp attaches. Reverse geocoding is in the follow-up plan, so for a bare pin Claude asks for the area and city.
 - The admin page is read-only: no take-over toggle, reply box, clear-flag button or SSE live updates (it polls every few seconds). Take-over and SSE are in the follow-up plan; `mode = human` can be set only in the database today.
-- No production Docker image, Caddy, Azure rollout, backups or uptime monitor yet: all in the follow-up plan.
+- Nothing in the production stack alerts by itself: the uptime monitor on `/api/health` is set up by hand (deploy runbook), and a failed nightly backup shows only in the backup service's log.
 - The test chat caps a message at 2000 characters counted in UTF-16 units: each Indic vowel sign or virama counts on its own, and most emoji count as two.
 - The digit scrubber and the dispatch guard have known gaps (dotted or spaced-dash digit groups, runs of several dashes, Latin-script Hinglish dispatch wording): see "Guard residuals" in `CLAUDE.md`.
 - The fast path reads the reporter's words alone. Area names that double as everyday words or surnames (Satellite, Ambli, Hazra, …) need the unit's city named, but that list (`EVERYDAY_AREA_NAMES`) is curated: an everyday-word area name missing from it, or a distinctive area name that an uncovered city also has ("Shalimar Bagh, Srinagar"), still gets that unit's card when no covered city is named. "Andheri" is on the list on purpose (it is also Hindi for "dark"), so an Andheri first message without "Mumbai" waits for Claude; that is the one deliberate latency trade-off. The card names the unit's area or city, so the reporter can see it; see "Guard residuals" in `CLAUDE.md`.
