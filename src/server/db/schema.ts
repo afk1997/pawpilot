@@ -27,6 +27,8 @@ export const ambulances = pgTable(
     phoneRaw: text("phone_raw"),
     areasCovered: text("areas_covered").array().notNull().default(sql`'{}'::text[]`),
     category: text("category").notNull().default("Animal Ambulance"),
+    /** When the team answers, as the directory's Hours cell writes it ("10am–7pm IST"); null when none is published. */
+    hours: text("hours"),
     active: boolean("active").notNull().default(true),
     updatedAt: ts("updated_at").notNull().defaultNow(),
     createdAt: ts("created_at").notNull().defaultNow(),

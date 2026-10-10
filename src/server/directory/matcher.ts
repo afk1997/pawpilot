@@ -11,6 +11,8 @@ export interface DirectoryAmbulance {
   areasCovered: string[];
   category: string;
   phone: string;
+  /** When the team answers, as the directory writes it ("10am–7pm IST"); null or absent when none is published. */
+  hours?: string | null;
   operatorName: string;
   operatorIsArham: boolean;
 }

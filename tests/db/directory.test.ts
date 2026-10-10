@@ -78,6 +78,8 @@ Clinic,Arham Clinic Surat,"Surat, Gujarat",Vesu,Gujarat,02612345678,,Clinic,Arha
 });
 
 const HEADER = "Type,Name,City,Area,State,Phone,Area of Operation,Category,Operated By";
+/** The header with the optional columns, which the lines of a file using it carry too. */
+const HEADER_WITH_HOURS = `${HEADER},Hours,Address`;
 const GHATKOPAR = 'Ambulance,Mumbai - Ghatkopar,Mumbai,Ghatkopar,Maharashtra,7000000001,"Ghatkopar, Vikhroli",Animal Ambulance,Arham Yuva Seva Group';
 const MALAD = "Ambulance,Mumbai - Malad,Mumbai,Malad,Maharashtra,7000000002,Malad,Animal Ambulance,Arham Yuva Seva Group";
 const SURAT_CLINIC = 'Clinic,Arham Clinic Surat,"Surat, Gujarat",Vesu,Gujarat,02612345678,,Clinic,Arham Yuva Seva Group';
@@ -165,6 +167,26 @@ describe("directory ingest safeguards", () => {
       deactivatedLabels: { ambulances: ["Mumbai - Malad"], clinics: ["Arham Clinic Surat"] },
     });
     expect(await ingestDirectory(rowsOf(GHATKOPAR))).toMatchObject({ deactivatedLabels: { ambulances: [], clinics: [] } });
+  });
+
+  it("writes the Hours and Address cells, and clears them when a cell is emptied or the file drops the columns", async () => {
+    const withHours = parseDirectoryCsv([
+      HEADER_WITH_HOURS,
+      `${GHATKOPAR},10am–7pm IST,`,
+      `${MALAD},,`,
+      `${SURAT_CLINIC},10am–11pm IST,"Vesu Main Road, near the temple"`,
+    ].join("\n"));
+    expect(await ingestDirectory(withHours)).toMatchObject({ ambulancesInserted: 2, clinicsInserted: 1, warnings: [] });
+    expect((await loadActiveAmbulances()).map((r) => [r.label, r.hours]).sort()).toEqual([
+      ["Mumbai - Ghatkopar", "10am–7pm IST"],
+      ["Mumbai - Malad", null],
+    ]);
+    expect(await loadActiveClinics()).toMatchObject([{ label: "Arham Clinic Surat", hours: "10am–11pm IST", address: "Vesu Main Road, near the temple" }]);
+
+    // The file is the directory: an older file without the columns clears what the last one wrote.
+    expect(await ingestDirectory(rowsOf(GHATKOPAR, MALAD, SURAT_CLINIC))).toMatchObject({ ambulancesUpdated: 2, clinicsUpdated: 1 });
+    expect((await loadActiveAmbulances()).map((r) => r.hours)).toEqual([null, null]);
+    expect(await loadActiveClinics()).toMatchObject([{ hours: null, address: null }]);
   });
 
   it("refuses a CSV with no ambulance rows instead of deactivating the whole directory", async () => {

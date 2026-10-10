@@ -37,6 +37,26 @@ Note,ignore me,,,,,,,`;
     expect(r.ambulances).toHaveLength(1);
     expect(r.clinics).toHaveLength(1);
   });
+  it("reads the optional Hours and Address columns, and a file without them", () => {
+    const csv = `Type,Name,City,Area,State,Phone,Area of Operation,Category,Operated By,Hours,Address
+=== AMBULANCES ===,,,,,,,,,,
+Ambulance,Mumbai - Ghatkopar,Mumbai,Ghatkopar,Maharashtra,7000000001,"Ghatkopar, Vikhroli",Animal Ambulance,Arham Yuva Seva Group,10am–7pm IST,
+Ambulance,Rajkot - ALAI,Rajkot,ALAI Trust,Gujarat,9876500001,Entire City,Animal Ambulance,ALAI Trust,,
+,,,,,,,,,,
+Clinic,Kolkata - Ludlow Hospital,Kolkata,Ludlow,West Bengal,02612345678,,Hospital,Arham Yuva Seva Group,9am–6pm IST,"Near Chengail Railway Station, Howrah"`;
+    const r = parseDirectoryCsv(csv);
+    expect(r.ambulances.map((a) => [a.Name, a.Hours, a.Address])).toEqual([
+      ["Mumbai - Ghatkopar", "10am–7pm IST", ""],
+      ["Rajkot - ALAI", "", ""],
+    ]);
+    expect(r.clinics.map((c) => [c.Name, c.Hours, c.Address])).toEqual([["Kolkata - Ludlow Hospital", "9am–6pm IST", "Near Chengail Railway Station, Howrah"]]);
+    expect(validateDirectoryRows(r)).toEqual([]);
+    expect(directoryWarnings(r)).toEqual([]);
+    // An older file has no such columns: the cells read as absent.
+    const old = parseDirectoryCsv(`Type,Name,City,Area,State,Phone,Area of Operation,Category,Operated By
+Ambulance,Mumbai - Ghatkopar,Mumbai,Ghatkopar,Maharashtra,7000000001,Ghatkopar,Animal Ambulance,Arham Yuva Seva Group`);
+    expect([old.ambulances[0].Hours, old.ambulances[0].Address]).toEqual([undefined, undefined]);
+  });
   it("strips the UTF-8 byte order mark an Excel CSV export starts with", () => {
     const csv = `Type,Name,City,Area,State,Phone,Area of Operation,Category,Operated By
 Ambulance,Mumbai - Ghatkopar,Mumbai,Ghatkopar,Maharashtra,7000000001,Ghatkopar,Animal Ambulance,Arham Yuva Seva Group`;
@@ -164,5 +184,19 @@ describe("directoryWarnings", () => {
       'Clinic "Arham Clinic Surat": City, State hold a phone-shaped number',
     ].map((w) => `${w}: put phone numbers only in the Phone column`));
     expect(findDigitRuns(warnings.join("\n"))).toEqual([]);
+  });
+
+  it("names the Hours and Address cells too, and never the hours as published", () => {
+    const warnings = directoryWarnings({
+      ambulances: [row({ Hours: "10am–7pm IST, call 98765 43210 first" }), row({ Name: "Clean", Hours: "10am–7pm IST" })],
+      clinics: [
+        clinic({ Hours: "10am–11pm IST", Address: "Vesu Main Road, 98765-43212" }),
+        clinic({ Name: "Ludlow", Hours: "9am–6pm IST", Address: "Near Chengail Railway Station, Howrah" }),
+      ],
+    });
+    expect(warnings).toEqual([
+      'Ambulance "Mumbai - Ghatkopar": Hours holds a phone-shaped number: put phone numbers only in the Phone column',
+      'Clinic "Arham Clinic Surat": Address holds a phone-shaped number: put phone numbers only in the Phone column',
+    ]);
   });
 });

@@ -6,7 +6,10 @@ import { resolve } from "node:path";
 import postgres from "postgres";
 import { drizzle } from "drizzle-orm/postgres-js";
 import * as schema from "../src/server/db/schema";
-import { ingestDirectory, parseDirectoryCsv } from "../src/server/directory/ingest";
+import { ingestDirectory, parseDirectoryCsv, type CsvRow } from "../src/server/directory/ingest";
+
+/** Rows whose optional cell is filled, for the parse line: a file without the column shows 0. */
+const filled = (rows: CsvRow[], cell: "Hours" | "Address") => rows.filter((r) => (r[cell] ?? "").trim() !== "").length;
 
 // Needs only DATABASE_URL (like scripts/migrate.ts), not the rest of the app config.
 async function main() {
@@ -15,7 +18,10 @@ async function main() {
   const csvPath = resolve(process.argv[2] ?? "ambulances-clinics.csv");
   console.log(`Reading ${csvPath}`);
   const rows = parseDirectoryCsv(readFileSync(csvPath, "utf8"));
-  console.log(`Parsed: ${rows.ambulances.length} ambulances, ${rows.clinics.length} clinics`);
+  console.log(
+    `Parsed: ${rows.ambulances.length} ambulances (${filled(rows.ambulances, "Hours")} with hours), ` +
+      `${rows.clinics.length} clinics (${filled(rows.clinics, "Hours")} with hours, ${filled(rows.clinics, "Address")} with an address)`
+  );
   console.log(`Ingesting into ${url.replace(/:\/\/.*@/, "://***@")}`);
   const sql = postgres(url, { max: 1 });
   try {
