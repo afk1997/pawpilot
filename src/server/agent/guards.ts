@@ -26,7 +26,7 @@ const HANDLE_RE = /^(?:amb|cli)_[a-p]{8}$/i;
  * A dropped piece of syntax that named an AMB, CLINIC or MAPS token: the model meant to give a unit's or a clinic's number
  * or a clinic's map link.
  */
-const ENTITY_SYNTAX_RE = /\b(?:AMB|CLINIC|MAPS)\b/i;
+const ENTITY_SYNTAX_RE = /\b(?:AMB|CLINIC|MAPS?)\b/i;
 
 /** Which guard asks for a corrective call. */
 export type CorrectionPurpose = "token" | "dispatch";

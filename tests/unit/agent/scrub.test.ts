@@ -425,6 +425,8 @@ describe("inserted map links", () => {
     const wordy = "https://example.org/we-are-sending/ambulance-dispatched?on+the+way";
     expect(hasDispatchLanguage(`See ${wordy}`)).toBe(false);
     expect(hasDispatchLanguage(`See ${wordy}. The ambulance is dispatched.`)).toBe(true);
+    // A danda glued to the link ends it: what follows is read.
+    expect(hasDispatchLanguage(`Google Maps: ${FIVE}।एम्बुलेंस आ रही है।`)).toBe(true);
     expect(replaceDispatchSentences(`See ${wordy}. Stay calm.`, "R.")).toBe(`See ${wordy}. Stay calm.`);
   });
 

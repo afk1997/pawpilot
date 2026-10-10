@@ -313,6 +313,12 @@ describe("guardReply", () => {
     expect(withNumber).toMatchObject({ text: "Call +91 70000 00023. Google Maps:", template: `Call {{CLINIC:${n}}}. Google Maps:` });
   });
 
+  it("counts malformed map syntax ({MAP:…}) as a dropped map token: the helpline card when no number is left", async () => {
+    const { deps } = setup();
+    const g = await guardReply(reply({ reply: "Google Maps: {MAP:cli_abcdefgh}", intent: "clinic" }), deps);
+    expect(g).toMatchObject({ text: `Google Maps:\n\n${HELPLINE_CARD}`, droppedSyntax: ["{MAP:cli_abcdefgh}"] });
+  });
+
   it("asks for a fresh find_clinics when a MAPS token names a retired facility", async () => {
     const { registry, deps, corrections } = setup();
     const c = registry.clinic("c1");

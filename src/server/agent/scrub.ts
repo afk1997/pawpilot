@@ -300,8 +300,11 @@ const DISPATCH_PATTERNS = [
  */
 export const DISPATCH_RE = new RegExp(DISPATCH_PATTERNS.join("|"), "iu");
 
-/** A link in a reply, up to the next whitespace: the dispatch guard never reads it. */
-const LINK_IN_TEXT_RE = /https?:\/\/\S+/gi;
+/**
+ * A link in a reply, printable ASCII up to the next space or other character, so a danda or a word glued to it ("…।एम्बुलेंस
+ * आ रही है") stays outside it: the dispatch guard never reads the link, and always reads what follows it.
+ */
+const LINK_IN_TEXT_RE = /https?:\/\/[!-~]+/gi;
 
 /**
  * The text with each link written as one "#": a link's words ("…/ambulance-dispatched", "…?q=we+are+sending") are never

@@ -63,21 +63,21 @@ export function cleanupFormatting(text: string): string {
 
 /**
  * A token as the model may write it: whitespace or line breaks inside the braces and any case for the kind
- * ("{{ PHONE: helpline }}", "{{amb:amb_abcdefgh}}", "{{AMB:\namb_abcdefgh}}", "{{ Maps : cli_abcdefgh }}").
+ * ("{{ PHONE: helpline }}", "{{amb:amb_abcdefgh}}", "{{AMB:\namb_abcdefgh}}", "{{ Maps : cli_abcdefgh }}", "{{MAP:cli_abcdefgh}}").
  */
-const LOOSE_TOKEN_RE = /\{\{\s*(amb|clinic|maps|phone)\s*:\s*([A-Za-z0-9_-]+)\s*\}\}/gi;
+const LOOSE_TOKEN_RE = /\{\{\s*(amb|clinic|maps?|phone)\s*:\s*([A-Za-z0-9_-]+)\s*\}\}/gi;
 
 /** A handle's 8-letter body without its kind prefix: the model sometimes writes {{AMB:kcmfpbca}} for amb_kcmfpbca. */
 const BARE_HANDLE_RE = /^[a-p]{8}$/i;
 
 /**
- * Rewrites every loosely written token as {{KIND:value}}: the kind uppercased, the value as written,
+ * Rewrites every loosely written token as {{KIND:value}}: the kind uppercased (MAP read as MAPS), the value as written,
  * except that an AMB, CLINIC or MAPS value that is a bare 8-letter handle body gets its amb_/cli_ prefix back
  * (seen in the first real smoke run: the model dropped the prefix and the number would have been lost).
  */
 function canonicalizeTokens(text: string): string {
   return text.replace(LOOSE_TOKEN_RE, (_, kind: string, value: string) => {
-    const upper = kind.toUpperCase();
+    const upper = kind.toUpperCase() === "MAP" ? "MAPS" : kind.toUpperCase();
     let v = value;
     if (upper === "AMB" && BARE_HANDLE_RE.test(v)) v = `amb_${v.toLowerCase()}`;
     else if ((upper === "CLINIC" || upper === "MAPS") && BARE_HANDLE_RE.test(v)) v = `cli_${v.toLowerCase()}`;

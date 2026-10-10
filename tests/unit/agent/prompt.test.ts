@@ -71,6 +71,7 @@ describe("prompts", () => {
     );
     expect(p).toContain("Add its hours when the result has them, or a line asking to call before visiting when it has none.");
     expect(p).toContain("Keep it to about three short lines, and never say you do not have the location when the result carries maps.");
+    expect(p).toContain("When the reporter asks about more than two hospitals or clinics, ask which city first, or give one short line each.");
     expect(p).not.toContain("and nothing more");
     expect(p).not.toContain("Give the hours and address the result carries.");
   });
