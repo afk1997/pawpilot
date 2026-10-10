@@ -340,3 +340,40 @@ describe("digit scrubber: allow-list and layout details", () => {
     expect(stripRuns(text, foreignDigitRuns(text, allowed), allowed)).toBe(`Call now.\n\n${card}`);
   });
 });
+
+describe("inserted map links", () => {
+  /** Seven-decimal coordinates: each holds a 7-digit run, unless the link is masked as one code inserted. */
+  const LINK = "https://maps.google.com/?q=19.0794812,72.9011934";
+  const FIVE = "https://maps.google.com/?q=19.07948,72.90119";
+
+  it("reads an allowed link as code's, never its coordinates as typed digits, while a run outside it is still found", () => {
+    expect(foreignDigitRuns(`Map: ${LINK}`, [])).toEqual(["0794812", "9011934"]);
+    expect(foreignDigitRuns(`Map: ${LINK}`, [LINK])).toEqual([]);
+    expect(foreignDigitRuns(`Map: ${LINK} or 98765 43210`, [LINK])).toEqual(["98765 43210"]);
+    // A 5-decimal link holds no run at all.
+    expect(findDigitRuns(`Map: ${FIVE}`)).toEqual([]);
+  });
+
+  it("masks an allowed link beside an allowed number, and never strips inside the link", () => {
+    const allowed = ["+917000000020", LINK];
+    const text = `Call +91 70000 00020 or 0794812. Map: ${LINK}`;
+    expect(foreignDigitRuns(text, allowed)).toEqual(["0794812"]);
+    expect(stripRuns(text, ["0794812"], allowed)).toBe(`Call +91 70000 00020 or. Map: ${LINK}`);
+  });
+
+  it("never reads a link's words as dispatch language, but still reads the words around it", () => {
+    const wordy = "https://example.org/we-are-sending/ambulance-dispatched?on+the+way";
+    expect(hasDispatchLanguage(`See ${wordy}`)).toBe(false);
+    expect(hasDispatchLanguage(`See ${wordy}. The ambulance is dispatched.`)).toBe(true);
+    expect(replaceDispatchSentences(`See ${wordy}. Stay calm.`, "R.")).toBe(`See ${wordy}. Stay calm.`);
+  });
+
+  it("appends an allowed link a replaced sentence held, once, after the replacement, with no partner label", () => {
+    const allowed = ["+917000000020", FIVE];
+    expect(replaceDispatchSentences(`We are sending the team to ${FIVE} now. Stay calm.`, "R.", allowed)).toBe(`R. ${FIVE} Stay calm.`);
+    expect(replaceDispatchSentences(`Call +91 70000 00020, we are sending help to ${FIVE} (operated by Blue Cross).`, "R.", allowed))
+      .toBe(`R. +91 70000 00020 ${FIVE}`);
+    // A link the kept text already shows is not appended again.
+    expect(replaceDispatchSentences(`Map: ${FIVE}. They're on the way to ${FIVE}!`, "R.", allowed)).toBe(`Map: ${FIVE}. R.`);
+  });
+});

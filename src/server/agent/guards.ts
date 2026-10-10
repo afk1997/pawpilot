@@ -19,8 +19,11 @@ const DIGIT_RE = /\p{Nd}/u;
 const SYNTAX_RE = /[{}]/;
 /** A handle as makeHandle writes it (letters only): the only dropped value an event may carry. */
 const HANDLE_RE = /^(?:amb|cli)_[a-p]{8}$/i;
-/** A dropped piece of syntax that named an AMB or CLINIC token: the model meant to give a unit's or a clinic's number. */
-const ENTITY_SYNTAX_RE = /\b(?:AMB|CLINIC)\b/i;
+/**
+ * A dropped piece of syntax that named an AMB, CLINIC or MAPS token: the model meant to give a unit's or a clinic's number
+ * or a clinic's map link.
+ */
+const ENTITY_SYNTAX_RE = /\b(?:AMB|CLINIC|MAPS)\b/i;
 
 /** Which guard asks for a corrective call. */
 export type CorrectionPurpose = "token" | "dispatch";
@@ -65,7 +68,10 @@ export interface GuardedReply {
 interface Draft {
   structured: StructuredReply;
   rendered: RenderResult;
-  /** The digit guard's allow-list: the numbers code inserted, and every run in this turn's tool outputs. */
+  /**
+   * The digit guard's allow-list: the numbers and the map links code inserted (a link is masked as written, so its
+   * coordinates are never read as typed digits), and every run in this turn's tool outputs.
+   */
   allowed: string[];
   /** Phone-shaped runs the model typed. */
   foreign: string[];
@@ -78,8 +84,8 @@ interface Draft {
 const typedDigits = (d: Draft) => d.foreign.length > 0 || d.digitDrops.length > 0;
 
 /**
- * replaceDispatchSentences on a template. Its numbers are tokens, which that function does not see, so a token inside
- * a replaced sentence goes back right after the replacement line, as its number does in the text.
+ * replaceDispatchSentences on a template. Its numbers and links are tokens, which that function does not see, so a token
+ * inside a replaced sentence goes back right after the replacement line, as its number or link does in the text.
  */
 function replaceDispatchInTemplate(template: string, line: string, allowed: string[]): string {
   const out = replaceDispatchSentences(template, line, allowed);
@@ -98,9 +104,11 @@ const appendLine = (text: string, line: string) => (text.trim() === "" ? line : 
  * guard (typed runs, or dropped pieces holding a digit) and a stale handle get one corrective call, then typed runs are
  * stripped; the dispatch guard gets one, whose draft meets the digit guard again, then its sentences are replaced.
  * Every number any draft inserted must reach the reporter (the numbers are code-inserted, so safe): one the final
- * reply lacks goes out again after the call-directly line. A reply of any intent left with no number at all after an
- * AMB or CLINIC token was dropped (retired, invented or malformed) gets the helpline card. needs_human holds if any
- * draft set it, and then no draft after it gets a guessed card.
+ * reply lacks goes out again after the call-directly line. A map link code inserted for a {{MAPS}} token is masked from
+ * the digit guard like an inserted number and kept by the dispatch replacement; it is not sent again when the final
+ * reply lacks it. A reply of any intent left with no number at all after an AMB, CLINIC or MAPS token was dropped
+ * (retired, invented, malformed, or a MAPS token for a facility without a map link) gets the helpline card. needs_human
+ * holds if any draft set it, and then no draft after it gets a guessed card.
  */
 export async function guardReply(first: StructuredReply, deps: GuardDeps): Promise<GuardedReply> {
   const { registry } = deps;
@@ -124,7 +132,7 @@ export async function guardReply(first: StructuredReply, deps: GuardDeps): Promi
   };
   const inserted = new Set<string>();
   let needsHuman = false;
-  /** Some draft dropped an AMB or CLINIC token: retired, invented or malformed. */
+  /** Some draft dropped an AMB, CLINIC or MAPS token: retired, invented, malformed, or a facility without a map link. */
   let entityDropped = false;
 
   const draft = async (structured: StructuredReply): Promise<Draft> => {
@@ -146,7 +154,7 @@ export async function guardReply(first: StructuredReply, deps: GuardDeps): Promi
     if (rendered.appendedCard) for (const c of candidates ?? []) rows.set(c.phone, { kind: "ambulance", row: c });
     for (const phone of rendered.inserted) inserted.add(phone);
     // Never the numbers of earlier replies: the transcript masks them, so the model retyping one is a leak.
-    const allowed = [...rendered.inserted, ...deps.toolRuns()];
+    const allowed = [...rendered.inserted, ...rendered.links, ...deps.toolRuns()];
     const stale = rendered.unknownHandles.filter((dropped) => {
       const ref = registry.resolve(dropped);
       return ref !== undefined && gone.has(ref.id);
@@ -206,8 +214,8 @@ export async function guardReply(first: StructuredReply, deps: GuardDeps): Promi
   }
 
   const lang = d.structured.language;
-  // An AMB or CLINIC token was dropped (in any draft, the dispatch-corrected one included) and no draft gave any number:
-  // the reply never goes out as "call this number:" with none, so the helpline card follows, its number inserted.
+  // An AMB, CLINIC or MAPS token was dropped (in any draft, the dispatch-corrected one included) and no draft gave any
+  // number: the reply never goes out as "call this number:" with none, so the helpline card follows, its number inserted.
   if (entityDropped && inserted.size === 0) {
     const card = buildHelplineCard(deps.helplinePhone, lang);
     text = appendLine(text, card);

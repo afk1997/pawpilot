@@ -30,6 +30,16 @@ describe("renderMessageForModel", () => {
   it("prefers the template for assistant messages so tokens, not digits, appear", () => {
     expect(renderMessageForModel({ ...base, role: "assistant", kind: "text", content: "Call +91 70000 00001", contentTemplate: "Call {{AMB:amb_1}}" })).toBe("[10:03] Assistant: Call {{AMB:amb_1}}");
   });
+  it("shows a map link's token, never the link code inserted for it", () => {
+    const reply = {
+      ...base, role: "assistant", kind: "text",
+      content: "Ghatkopar hospital: +91 70000 00020. Google Maps: https://maps.google.com/?q=19.07948,72.90119",
+      contentTemplate: "Ghatkopar hospital: {{CLINIC:cli_abcdefgh}}. Google Maps: {{MAPS:cli_abcdefgh}}",
+    } as const;
+    const row = renderMessageForModel(reply);
+    expect(row).toBe("[10:03] Assistant: Ghatkopar hospital: {{CLINIC:cli_abcdefgh}}. Google Maps: {{MAPS:cli_abcdefgh}}");
+    expect(row).not.toContain("maps.google.com");
+  });
   it("marks an assistant reply whose send failed as not delivered", () => {
     const reply = { ...base, role: "assistant", kind: "text", content: "Call +91 70000 00001", contentTemplate: "Call {{AMB:amb_1}}" } as const;
     expect(renderMessageForModel({ ...reply, deliveryStatus: "failed" })).toBe("[10:03] Assistant: [not delivered] Call {{AMB:amb_1}}");

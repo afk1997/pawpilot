@@ -20,6 +20,19 @@ export interface CardClinic {
   hours?: string | null;
 }
 
+/** One https link with no whitespace: the form the ingest requires of a clinic's Maps cell (validateDirectoryRows). */
+const ONE_LINK_RE = /^https:\/\/\S+$/;
+
+/**
+ * A hospital's or clinic's Google Maps link as code puts it into a reply (for a {{MAPS:<handle>}} token, or on a card):
+ * the directory's Maps value, trimmed, when it is one https link; null when there is none, or when the value is anything
+ * else, so nothing but a link is ever inserted.
+ */
+export function mapsLink(url: string | null | undefined): string | null {
+  const link = (url ?? "").trim();
+  return ONE_LINK_RE.test(link) ? link : null;
+}
+
 /**
  * "+917000000001" → "+91 70000 00001"; toll-free "18004195860" → "1800-419-5860" (no country code).
  * Non-Indian numbers are returned as-is with a "+".

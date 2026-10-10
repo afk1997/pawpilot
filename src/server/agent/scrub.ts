@@ -68,21 +68,36 @@ function numberPattern(digits: string): string {
 }
 
 /**
- * Splits normalized text into [free, allowed, free, allowed, …, free]: odd indices hold allowed numbers, which are
- * never read as runs or edited, so digits next to an inserted number cannot merge with it into one run. A form glued
- * to another digit or a "+" is not allowed: it reads as part of a foreign run, so a corrupted number is never sent.
- * Allowed numbers shorter than a run are skipped; they can never be a run, and masking them could split a foreign one.
+ * An allow-list entry that is a link code inserted (a {{MAPS}} token's map link, "https://maps.google.com/?q=…"), not a
+ * number: it is matched as written, and its digits are never read as a run.
  */
-function splitAllowed(normalized: string, allowedNumbers: string[]): string[] {
-  const digits = allowedNumbers.map(digitsOf).filter((d) => d.length >= MIN_RUN_DIGITS);
-  const patterns = [...new Set(digits.sort((a, b) => b.length - a.length).map(numberPattern))];
+const LINK_ENTRY_RE = /^https?:\/\//i;
+const isLinkEntry = (entry: string): boolean => LINK_ENTRY_RE.test(entry);
+
+/**
+ * Splits normalized text into [free, allowed, free, allowed, …, free]: odd indices hold the allowed numbers and links,
+ * which are never read as runs or edited, so digits next to an inserted number cannot merge with it into one run, and
+ * an inserted map link's coordinates are never read as a typed number. A number's form glued to another digit or a "+"
+ * is not allowed: it reads as part of a foreign run, so a corrupted number is never sent. A link is matched as written,
+ * wherever it stands. Allowed numbers shorter than a run are skipped; they can never be a run, and masking them could
+ * split a foreign one.
+ */
+function splitAllowed(normalized: string, allowed: string[]): string[] {
+  const links = [...new Set(allowed.filter(isLinkEntry).map(normalizeDigits))].sort((a, b) => b.length - a.length).map(escapeRegExp);
+  const digits = allowed.filter((a) => !isLinkEntry(a)).map(digitsOf).filter((d) => d.length >= MIN_RUN_DIGITS);
+  const numbers = [...new Set(digits.sort((a, b) => b.length - a.length).map(numberPattern))];
+  const patterns = numbers.length > 0 ? [...links, `(?<![\\d+])(?:${numbers.join("|")})(?!\\d)`] : links;
   if (patterns.length === 0) return [normalized];
-  return normalized.split(new RegExp(`(?<![\\d+])(${patterns.join("|")})(?!\\d)`));
+  return normalized.split(new RegExp(`(${patterns.join("|")})`));
 }
 
-/** Runs that are not one of the allowed numbers (formatted, with or without the country code, in any script). */
-export function foreignDigitRuns(text: string, allowedNumbers: string[]): string[] {
-  return splitAllowed(normalizeDigits(text), allowedNumbers)
+/**
+ * Runs that are not one of the allowed numbers (formatted, with or without the country code, in any script), read
+ * outside the allowed links. `allowed`: the numbers code inserted (and other runs the guard allows) and the links code
+ * inserted.
+ */
+export function foreignDigitRuns(text: string, allowed: string[]): string[] {
+  return splitAllowed(normalizeDigits(text), allowed)
     .filter((_, i) => i % 2 === 0)
     .flatMap((part) => runsIn(part));
 }
@@ -94,12 +109,13 @@ function collapseSpaces(s: string): string {
 
 /**
  * Removes every occurrence of the runs, then the doubled space or the space before punctuation a removal leaves.
- * Pass the allowed list given to foreignDigitRuns: allowed numbers are then left whole even where a run's text occurs
- * inside one. Longer runs go first, so a run nested in a longer one cannot leave the longer one's remainder behind.
+ * Pass the allowed list given to foreignDigitRuns: allowed numbers and links are then left whole even where a run's
+ * text occurs inside one. Longer runs go first, so a run nested in a longer one cannot leave the longer one's
+ * remainder behind.
  */
-export function stripRuns(text: string, runs: string[], allowedNumbers: string[]): string {
+export function stripRuns(text: string, runs: string[], allowed: string[]): string {
   const targets = [...new Set(runs.map(normalizeDigits))].filter((r) => r !== "").sort((a, b) => b.length - a.length);
-  const stripped = splitAllowed(normalizeDigits(text), allowedNumbers)
+  const stripped = splitAllowed(normalizeDigits(text), allowed)
     .map((part, i) => (i % 2 === 1 ? part : targets.reduce((out, run) => out.split(run).join(""), part)))
     .join("");
   return collapseSpaces(stripped).replace(/ +([.,!?।])/g, "$1").trim();
@@ -194,8 +210,20 @@ const DISPATCH_PATTERNS = [
  */
 export const DISPATCH_RE = new RegExp(DISPATCH_PATTERNS.join("|"), "iu");
 
+/** A link in a reply, up to the next whitespace: the dispatch guard never reads it. */
+const LINK_IN_TEXT_RE = /https?:\/\/\S+/gi;
+
+/**
+ * The text with each link written as one "#": a link's words ("…/ambulance-dispatched", "…?q=we+are+sending") are never
+ * dispatch language, and no words join across the gap it leaves.
+ */
+function withoutLinks(s: string): string {
+  return s.replace(LINK_IN_TEXT_RE, "#");
+}
+
+/** DISPATCH_RE on the text, its links skipped (withoutLinks). */
 export function hasDispatchLanguage(text: string): boolean {
-  return DISPATCH_RE.test(normalizeDigits(text));
+  return DISPATCH_RE.test(withoutLinks(normalizeDigits(text)));
 }
 
 /**
@@ -247,35 +275,40 @@ function partnerLabelAt(text: string): string | null {
 }
 
 /**
- * Replaces each sentence that matches DISPATCH_RE, keeping the whitespace after it, so paragraph breaks survive.
- * Adjacent matching sentences share one replacement. The allowed numbers a replaced sentence held are appended after
- * the replacement, as they were written and each with the partner label that followed it, so the reporter never loses
- * a number code inserted or the label that says a partner NGO runs the unit. A number the kept sentences show, or an
- * earlier replacement appended, is not appended again.
+ * Replaces each sentence that matches DISPATCH_RE (its links skipped, as hasDispatchLanguage reads it), keeping the
+ * whitespace after it, so paragraph breaks survive. Adjacent matching sentences share one replacement. The allowed
+ * numbers a replaced sentence held are appended after the replacement, as they were written and each with the partner
+ * label that followed it, so the reporter never loses a number code inserted or the label that says a partner NGO runs
+ * the unit; so are the allowed links it held (a map link). A number or link the kept sentences show, or an earlier
+ * replacement appended, is not appended again.
  */
-export function replaceDispatchSentences(text: string, replacement: string, allowedNumbers: string[] = []): string {
+export function replaceDispatchSentences(text: string, replacement: string, allowed: string[] = []): string {
   const normalized = normalizeDigits(text);
   const parts = normalized.match(SENTENCE_RE) ?? [normalized];
-  const replaced = parts.map((part) => DISPATCH_RE.test(part));
-  const numbersIn = (part: string) => splitAllowed(part, allowedNumbers).filter((_, k) => k % 2 === 1);
-  // Every number the text already shows once, by key: those of the kept sentences, then each one a replacement appends.
-  const shown = new Map(parts.flatMap((part, i) => (replaced[i] ? [] : numbersIn(part))).map((n) => [numberKey(n), n]));
+  const replaced = parts.map((part) => DISPATCH_RE.test(withoutLinks(part)));
+  const numbersIn = (part: string) => splitAllowed(part, allowed).filter((_, k) => k % 2 === 1);
+  /** One key per number (numberKey) or link (itself). */
+  const keyOf = (piece: string) => (isLinkEntry(piece) ? piece : numberKey(piece));
+  // Every number or link the text already shows once, by key: those of the kept sentences, then each one a replacement appends.
+  const shown = new Map(parts.flatMap((part, i) => (replaced[i] ? [] : numbersIn(part))).map((n) => [keyOf(n), n]));
   let out = "";
   for (let i = 0; i < parts.length; ) {
     if (!replaced[i]) {
       out += parts[i++];
       continue;
     }
-    // A run of adjacent matching sentences: one replacement, then each allowed number they held, once, with its label.
+    // A run of adjacent matching sentences: one replacement, then each allowed number (with its label) or link they
+    // held, once.
     const numbers = new Map<string, { number: string; label: string | null }>();
     let trailing = "";
     for (; i < parts.length && replaced[i]; i++) {
-      const pieces = splitAllowed(parts[i], allowedNumbers);
+      const pieces = splitAllowed(parts[i], allowed);
       pieces.forEach((piece, k) => {
-        if (k % 2 === 0 || shown.has(numberKey(piece))) return;
-        const label = partnerLabelAt(pieces[k + 1] ?? "");
-        const kept = numbers.get(numberKey(piece));
-        if (kept === undefined) numbers.set(numberKey(piece), { number: piece, label });
+        if (k % 2 === 0 || shown.has(keyOf(piece))) return;
+        // Only a number carries a partner label.
+        const label = isLinkEntry(piece) ? null : partnerLabelAt(pieces[k + 1] ?? "");
+        const kept = numbers.get(keyOf(piece));
+        if (kept === undefined) numbers.set(keyOf(piece), { number: piece, label });
         else kept.label ??= label;
       });
       trailing = parts[i].slice(parts[i].trimEnd().length);

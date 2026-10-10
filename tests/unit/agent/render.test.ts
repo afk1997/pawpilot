@@ -2,13 +2,23 @@ import { describe, it, expect } from "vitest";
 import { renderReply, cleanupFormatting, type RenderLookups } from "@/server/agent/render";
 import { HandleRegistry, TOKEN_RE } from "@/server/agent/handles";
 import type { DirectoryAmbulance } from "@/server/directory/matcher";
+import type { DirectoryClinic } from "@/server/directory/repo";
 import { buildAmbulanceCard } from "@/server/messages/cards";
 
 const ghatkopar: DirectoryAmbulance = { id: "g", label: "Mumbai - Ghatkopar", city: "Mumbai", area: "Ghatkopar", state: "MH", areasCovered: [], category: "Animal Ambulance", phone: "+917000000001", operatorName: "Arham Yuva Seva Group", operatorIsArham: true };
 const wadala: DirectoryAmbulance = { ...ghatkopar, id: "w", label: "Mumbai - Wadala", area: "Wadala", phone: "+917000000007", operatorName: "Hope for Indies Trust", operatorIsArham: false };
+/** A clinic without a map link. */
+const surat: DirectoryClinic = { id: "c", label: "Clinic", city: "Surat", area: null, state: "GJ", phone: "+912612345678", address: null, hours: null };
+const GHATKOPAR_MAP = "https://maps.google.com/?q=19.07948,72.90119";
+const hospital: DirectoryClinic = { ...surat, id: "h", label: "Mumbai - Ghatkopar Hospital", city: "Mumbai", area: "Ghatkopar", phone: "+917000000020", mapsUrl: GHATKOPAR_MAP };
+/** A Maps value that is not one https link: never inserted. */
+const notALink: DirectoryClinic = { ...surat, id: "x", mapsUrl: "near the station" };
+/** A link the formatting cleanup would rewrite if it were the model's own text. */
+const BOLD_MAP = "https://maps.example.org/?q=**19.07948,72.90119**";
+const boldLink: DirectoryClinic = { ...surat, id: "b", mapsUrl: BOLD_MAP };
 const lookups: RenderLookups = {
   ambulance: async (id) => ({ g: ghatkopar, w: wadala } as Record<string, DirectoryAmbulance>)[id],
-  clinic: async (id) => (id === "c" ? { id: "c", label: "Clinic", city: "Surat", area: null, state: "GJ", phone: "+912612345678", address: null, hours: null } : undefined),
+  clinic: async (id) => ({ c: surat, h: hospital, x: notALink, b: boldLink } as Record<string, DirectoryClinic>)[id],
 };
 const base = (registry: HandleRegistry, overrides: Partial<Parameters<typeof renderReply>[0]> = {}) => ({
   replyTemplate: "", lang: "en" as const, intent: "ambulance" as const, registry, lookups,
@@ -212,6 +222,64 @@ describe("renderReply: loosely written tokens", () => {
     const out = await renderReply(base(r, { replyTemplate: `नंबर: {{AMB:${hw}}}`, lang: "hi" }));
     expect(out.text).toBe("नंबर: +91 70000 00007 (Hope for Indies Trust द्वारा संचालित)");
     expect(out.inserted).toEqual(["+917000000007"]);
+  });
+});
+
+describe("renderReply: map links", () => {
+  it("substitutes a MAPS token with the facility's map link, keeps the token in the sent template and lists the link apart from the numbers", async () => {
+    const r = new HandleRegistry("conv");
+    const hh = r.clinic("h");
+    const out = await renderReply(base(r, { replyTemplate: `Ghatkopar hospital: {{CLINIC:${hh}}}. Google Maps: {{MAPS:${hh}}}`, intent: "clinic" }));
+    expect(out.text).toBe(`Ghatkopar hospital: +91 70000 00020. Google Maps: ${GHATKOPAR_MAP}`);
+    expect(out.sentTemplate).toBe(`Ghatkopar hospital: {{CLINIC:${hh}}}. Google Maps: {{MAPS:${hh}}}`);
+    expect(out.sentTemplate).not.toContain("maps.google.com");
+    expect(out.inserted).toEqual(["+917000000020"]);
+    expect(out.links).toEqual([GHATKOPAR_MAP]);
+    expect(out.unknownHandles).toEqual([]);
+    expect(out.appendedCard).toBe(false);
+  });
+
+  it.each([
+    (h: string) => `{{maps:${h}}}`,
+    (h: string) => `{{ Maps : ${h} }}`,
+    (h: string) => `{{MAPS:\n${h.toUpperCase()}}}`,
+    (h: string) => `{{MAPS:${h.slice("cli_".length)}}}`,
+  ])("canonicalises map token form %#, a handle written without its cli_ prefix included", async (form) => {
+    const r = new HandleRegistry("conv");
+    const hh = r.clinic("h");
+    const out = await renderReply(base(r, { replyTemplate: `Google Maps: ${form(hh)}`, intent: "clinic" }));
+    expect(out.text).toBe(`Google Maps: ${GHATKOPAR_MAP}`);
+    expect(out.template).toMatch(/^Google Maps: \{\{MAPS:cli_[a-p]{8}\}\}$/i);
+    expect(out.links).toEqual([GHATKOPAR_MAP]);
+    expect(out.unknownHandles).toEqual([]);
+  });
+
+  it("drops a MAPS token as an unknown handle's: a facility without a map link, a Maps value that is no link, a retired or unknown facility, an ambulance's handle", async () => {
+    const r = new HandleRegistry("conv");
+    const [hc, hx, gone, hg] = [r.clinic("c"), r.clinic("x"), r.clinic("gone"), r.ambulance("g")];
+    const out = await renderReply(base(r, {
+      replyTemplate: `A {{MAPS:${hc}}} B {{MAPS:${hx}}} C {{MAPS:${gone}}} D {{MAPS:cli_pppppppp}} E {{MAPS:${hg}}} F`, intent: "clinic",
+    }));
+    expect(out.text).toBe("A B C D E F");
+    expect(out.sentTemplate).toBe("A B C D E F");
+    expect(out.unknownHandles).toEqual([hc, hx, gone, "cli_pppppppp", hg]);
+    expect(out.links).toEqual([]);
+    expect(out.inserted).toEqual([]);
+  });
+
+  it("never cleans a map link, and keeps it whole or drops it whole at the cap", async () => {
+    const r = new HandleRegistry("conv");
+    const hb = r.clinic("b");
+    const hh = r.clinic("h");
+    const bold = await renderReply(base(r, { replyTemplate: `**Map**: {{MAPS:${hb}}}`, intent: "clinic" }));
+    expect(bold.text).toBe(`*Map*: ${BOLD_MAP}`);
+    const prefix = "a".repeat(4000 - GHATKOPAR_MAP.length - 1);
+    const fits = await renderReply(base(r, { replyTemplate: `${prefix} {{MAPS:${hh}}}`, intent: "clinic" }));
+    expect(fits.text).toBe(`${prefix} ${GHATKOPAR_MAP}`);
+    expect(fits.links).toEqual([GHATKOPAR_MAP]);
+    const over = await renderReply(base(r, { replyTemplate: `${prefix}a {{MAPS:${hh}}}`, intent: "clinic" }));
+    expect(over.text).toBe(`${prefix}a`);
+    expect(over.links).toEqual([]);
   });
 });
 
