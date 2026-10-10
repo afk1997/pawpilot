@@ -6,7 +6,7 @@ import type { DirectoryAmbulance, MatchType } from "@/server/directory/matcher";
 import type { DirectoryClinic } from "@/server/directory/repo";
 import { findDigitRuns, hasDispatchLanguage } from "@/server/agent/scrub";
 import { buildHelplineCard } from "@/server/messages/cards";
-import { DISPATCH_CORRECTION_NOTE, TOKEN_CORRECTION_NOTE, staleHandleNote } from "@/server/messages/system-replies";
+import { DISPATCH_CORRECTION_NOTE, LINK_CORRECTION_NOTE, TOKEN_CORRECTION_NOTE, staleHandleNote } from "@/server/messages/system-replies";
 
 const ghatkopar: DirectoryAmbulance = {
   id: "g", label: "Mumbai - Ghatkopar", city: "Mumbai", area: "Ghatkopar", state: "MH", areasCovered: [], category: "Animal Ambulance",
@@ -56,6 +56,7 @@ function setup(opts: {
     lookups: { ambulance: async (id) => (active.has(id) ? units[id] : undefined), clinic: async (id) => facilities[id] },
     helplinePhone: "+919999900000",
     staticPhones: { volunteer: "+919888800000" },
+    websiteUrl: "https://alwayscare.org",
     toolState: () => ({ candidates: opts.candidates ?? null, match: opts.match ?? null }),
     toolRuns: () => opts.toolRuns ?? [],
     retry: async (correction, purpose) => {
@@ -318,6 +319,55 @@ describe("guardReply", () => {
     const g = await guardReply(reply({ reply: `Google Maps: {{MAPS:${c}}}`, intent: "clinic" }), deps);
     expect(corrections).toEqual([{ correction: staleHandleNote([c]), purpose: "token" }]);
     expect(g).toMatchObject({ text: `Google Maps:\n\n${HELPLINE_CARD}`, staleHandles: [c] });
+  });
+
+  it("corrects a map link the model typed once, then strips it from the text and the template", async () => {
+    const { registry, deps, corrections } = setup();
+    const h = registry.clinic("h");
+    const g = await guardReply(reply({ reply: `Call {{CLINIC:${h}}}. Google Maps: https://maps.google.com/?q=19.1,72.9`, intent: "clinic" }), deps);
+    expect(corrections).toEqual([{ correction: LINK_CORRECTION_NOTE, purpose: "token" }]);
+    expect(g).toMatchObject({ text: "Call +91 70000 00020. Google Maps:", template: `Call {{CLINIC:${h}}}. Google Maps:`, linksStripped: 1, scrubbed: false });
+  });
+
+  it("strips a goo.gl link and a map host typed without its scheme the same way", async () => {
+    for (const typed of ["https://goo.gl/maps/AbCdEfGh", "maps.google.com/?q=19.1,72.9", "https://www.google.com/maps/search/Arham"]) {
+      const { deps, corrections } = setup();
+      const g = await guardReply(reply({ reply: `Location: ${typed} (tap to open).`, intent: "clinic" }), deps);
+      expect(corrections, typed).toEqual([{ correction: LINK_CORRECTION_NOTE, purpose: "token" }]);
+      expect(g, typed).toMatchObject({ text: "Location: (tap to open).", template: "Location: (tap to open).", linksStripped: 1 });
+    }
+  });
+
+  it("lets a link on the website through, as a tool result gives it", async () => {
+    const { deps, corrections } = setup();
+    for (const page of ["https://alwayscare.org/hospitals/ghatkopar", "https://www.alwayscare.org/donate"]) {
+      const g = await guardReply(reply({ reply: `Its page: ${page}.`, intent: "clinic" }), deps);
+      expect(g, page).toMatchObject({ text: `Its page: ${page}.`, linksStripped: 0 });
+    }
+    expect(corrections).toEqual([]);
+  });
+
+  it("strips a typed map link beside the inserted one, never touching the inserted link, even when the typed one is its prefix", async () => {
+    const { registry, deps } = setup();
+    const h = registry.clinic("h");
+    const typed = "https://maps.google.com/?q=19.0";
+    const g = await guardReply(reply({ reply: `Google Maps: {{MAPS:${h}}} or ${typed}`, intent: "clinic" }), deps);
+    expect(g).toMatchObject({ text: `Google Maps: ${GHATKOPAR_MAP} or`, template: `Google Maps: {{MAPS:${h}}} or`, linksStripped: 1 });
+  });
+
+  it("strips a typed link holding a phone number whole, with one correction naming both", async () => {
+    const { deps, corrections } = setup();
+    const g = await guardReply(reply({ reply: "Message them on https://wa.me/919876543210 now.", intent: "clinic" }), deps);
+    expect(corrections).toEqual([{ correction: `${TOKEN_CORRECTION_NOTE} ${LINK_CORRECTION_NOTE}`, purpose: "token" }]);
+    expect(g).toMatchObject({ text: "Message them on now.", template: "Message them on now.", linksStripped: 1, scrubbed: true });
+  });
+
+  it("sends the corrected draft when it no longer types the link", async () => {
+    const { registry, deps } = setup();
+    const h = registry.clinic("h");
+    deps.retry = async () => reply({ reply: `Google Maps: {{MAPS:${h}}}`, intent: "clinic" });
+    const g = await guardReply(reply({ reply: "Google Maps: https://maps.google.com/?q=19.1,72.9", intent: "clinic" }), deps);
+    expect(g).toMatchObject({ text: `Google Maps: ${GHATKOPAR_MAP}`, template: `Google Maps: {{MAPS:${h}}}`, linksStripped: 0 });
   });
 
   it("returns an empty text when nothing survives and no number was inserted, for the caller to fall back", async () => {

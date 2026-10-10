@@ -296,6 +296,20 @@ describe("the Claude turn's guards, audit and context", () => {
     expect(backend.calls[1].prompt).not.toContain("maps.google.com");
   });
 
+  it("strips a map link the model typed after one correction, stores no link, and records it", async () => {
+    const c = await conv();
+    await storeReporterMessage(c.id, { kind: "text", content: "ghatkopar hospital kahan hai" });
+    const typed = okReply({ reply: "Ghatkopar hospital: https://maps.google.com/?q=19.1,72.9", intent: "clinic" });
+    const backend = new FakeBackend([typed, typed]);
+    expect((await runTurn(c.id, { backend })).kind).toBe("ok");
+    expect(backend.calls).toHaveLength(2);
+    expect(backend.calls[1].prompt).toContain("SYSTEM CORRECTION: your previous draft typed a link.");
+    const [m] = await outbound(c.id);
+    expect([m.content, m.contentTemplate]).toEqual(["Ghatkopar hospital:", "Ghatkopar hospital:"]);
+    const [ev] = await eventsOf("link_strip");
+    expect(ev.payload).toEqual({ turnId: m.turnId, links: 1 });
+  });
+
   it("allows a number this turn's tool output carries, but not one retyped from an earlier reply", async () => {
     const c = await conv();
     // An earlier fallback card: a template-less row, which the transcript shows masked.

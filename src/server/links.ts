@@ -36,3 +36,16 @@ export function websitePage(url: string | null | undefined, websiteUrl: string):
   const link = (url ?? "").trim();
   return websitePageRe(websiteUrl).test(link) ? link : null;
 }
+
+/**
+ * A link on the website (an http(s) link whose host is WEBSITE_URL's, with or without "www."): the only kind of link the
+ * model may type, since tool results give it (a facility's page, the donate page). Anything else it types is invented.
+ */
+export function isWebsiteLink(link: string, websiteUrl: string): boolean {
+  if (!/^https?:\/\//i.test(link)) return false;
+  try {
+    return new URL(link).host.toLowerCase().replace(/^www\./, "") === websiteHost(websiteUrl);
+  } catch {
+    return false;
+  }
+}

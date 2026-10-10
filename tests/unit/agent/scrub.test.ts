@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { digitsOf, findDigitRuns, foreignDigitRuns, maskDigitRuns, stripRuns, hasDispatchLanguage, replaceDispatchSentences } from "@/server/agent/scrub";
+import {
+  digitsOf, findDigitRuns, foreignDigitRuns, maskDigitRuns, stripRuns, hasDispatchLanguage, replaceDispatchSentences, stripLinks, typedLinks,
+} from "@/server/agent/scrub";
 import { DIGIT_RUN_RE } from "@/server/digits";
 import { buildAmbulanceCard, buildHelplineCard, buildMultiAmbulanceCard, partnerSuffix } from "@/server/messages/cards";
 import { callDirectlyLine } from "@/server/messages/system-replies";
@@ -433,5 +435,24 @@ describe("inserted map links", () => {
       .toBe(`R. +91 70000 00020 ${FIVE}`);
     // A link the kept text already shows is not appended again.
     expect(replaceDispatchSentences(`Map: ${FIVE}. They're on the way to ${FIVE}!`, "R.", allowed)).toBe(`Map: ${FIVE}. R.`);
+  });
+});
+
+describe("links the model typed", () => {
+  const INSERTED = "https://maps.google.com/?q=19.07948,72.90119";
+
+  it("finds each link without its trailing punctuation, and never a link code inserted", () => {
+    expect(typedLinks("See https://example.org/a. Or *https://goo.gl/maps/x*, then maps.google.com/?q=1.5,2.5!", [])).toEqual([
+      "https://example.org/a", "https://goo.gl/maps/x", "maps.google.com/?q=1.5,2.5",
+    ]);
+    // A danda or a word glued to a link is never part of it.
+    expect(typedLinks("https://example.org/a।आगे", [])).toEqual(["https://example.org/a"]);
+    expect(typedLinks(`Google Maps: ${INSERTED}.`, [INSERTED])).toEqual([]);
+    expect(typedLinks(`Google Maps: ${INSERTED} or https://maps.google.com/?q=19.0`, [INSERTED])).toEqual(["https://maps.google.com/?q=19.0"]);
+  });
+
+  it("strips typed links and tidies the gap, leaving inserted links whole", () => {
+    expect(stripLinks("Open https://example.org/a now.", ["https://example.org/a"], [])).toBe("Open now.");
+    expect(stripLinks(`Map: ${INSERTED} or https://maps.google.com/?q=19.0`, ["https://maps.google.com/?q=19.0"], [INSERTED])).toBe(`Map: ${INSERTED} or`);
   });
 });

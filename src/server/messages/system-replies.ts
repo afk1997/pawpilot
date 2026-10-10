@@ -58,6 +58,10 @@ export function callDirectlyLine(lang: Language): string {
 export const TOKEN_CORRECTION_NOTE =
   "SYSTEM CORRECTION: your previous draft typed a phone number as digits. Phone numbers may only appear as tokens: {{AMB:<handle>}}, {{CLINIC:<handle>}}, or any {{PHONE:<key>}} token exactly as a tool returned it (including {{PHONE:helpline}}). Rewrite the reply using tokens only.";
 
+/** The correction for a draft that typed a link to anywhere but the website: map links come only from {{MAPS:…}} tokens. */
+export const LINK_CORRECTION_NOTE =
+  "SYSTEM CORRECTION: your previous draft typed a link. A link to a map may only appear as the {{MAPS:<handle>}} token find_clinics returned, copied exactly; any other link only as a tool result gave it. Rewrite the reply without typing a link.";
+
 /** A handle as makeHandle writes it (letters a to p only): the only form a correction may name, so it never holds a digit. */
 const HANDLE_RE = /^(?:amb|cli)_[a-p]{8}$/;
 

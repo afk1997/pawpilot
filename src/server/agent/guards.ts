@@ -2,10 +2,13 @@ import type { DirectoryAmbulance, MatchType } from "../directory/matcher";
 import type { DirectoryClinic } from "../directory/repo";
 import { foldDigits } from "../content/static";
 import { buildHelplineCard, formatIndianPhone, renderNumberForToken } from "../messages/cards";
-import { callDirectlyLine, DISPATCH_CORRECTION_NOTE, staleHandleNote, TOKEN_CORRECTION_NOTE } from "../messages/system-replies";
+import { callDirectlyLine, DISPATCH_CORRECTION_NOTE, LINK_CORRECTION_NOTE, staleHandleNote, TOKEN_CORRECTION_NOTE } from "../messages/system-replies";
+import { isWebsiteLink } from "../links";
 import { extractTokens, type HandleRegistry } from "./handles";
 import { renderReply, type RenderLookups, type RenderResult } from "./render";
-import { findDigitRuns, foreignDigitRuns, hasDispatchLanguage, replaceDigitRuns, replaceDispatchSentences, sameNumber, stripRuns } from "./scrub";
+import {
+  findDigitRuns, foreignDigitRuns, hasDispatchLanguage, replaceDigitRuns, replaceDispatchSentences, sameNumber, stripLinks, stripRuns, typedLinks,
+} from "./scrub";
 import type { StructuredReply } from "./types";
 
 /**
@@ -33,6 +36,8 @@ export interface GuardDeps {
   lookups: RenderLookups;
   helplinePhone: string;
   staticPhones: Record<string, string>;
+  /** The website (WEBSITE_URL): the only host the model may type a link to. */
+  websiteUrl: string;
   /** The last find_ambulances result as it stands when a draft is rendered: a corrective call can change it. */
   toolState: () => { candidates: DirectoryAmbulance[] | null; match: MatchType | null };
   /** Every phone-shaped run in this turn's tool outputs so far: numbers the model may repeat. */
@@ -50,6 +55,8 @@ export interface GuardedReply {
   structured: StructuredReply;
   /** The sent draft had digits the model typed removed: phone-shaped runs, or dropped pieces holding a digit. */
   scrubbed: boolean;
+  /** Links the model typed (to anywhere but the website) that were removed from the sent draft. */
+  linksStripped: number;
   foreignRuns: number;
   digitDrops: number;
   /** A sentence with dispatch language was replaced. */
@@ -75,6 +82,11 @@ interface Draft {
   allowed: string[];
   /** Phone-shaped runs the model typed. */
   foreign: string[];
+  /**
+   * Links the model typed to anywhere but the website: it never sees a real map link (tools return the {{MAPS}} token),
+   * so a map link it types is invented, and a wrong pin sends a reporter to the wrong place.
+   */
+  foreignLinks: string[];
   /** Dropped tokens or template syntax holding a digit: a number the model tried to write inside a token. */
   digitDrops: string[];
   /** Handles whose unit or clinic is no longer active. */
@@ -82,6 +94,7 @@ interface Draft {
 }
 
 const typedDigits = (d: Draft) => d.foreign.length > 0 || d.digitDrops.length > 0;
+const typedForeignLinks = (d: Draft) => d.foreignLinks.length > 0;
 
 /**
  * replaceDispatchSentences on a template. Its numbers and links are tokens, which that function does not see, so a token
@@ -171,27 +184,42 @@ export async function guardReply(first: StructuredReply, deps: GuardDeps): Promi
       rendered,
       allowed,
       foreign: foreignDigitRuns(rendered.text, allowed),
+      // Code-inserted links are kept apart (splitAllowed), so only what the model typed is read.
+      foreignLinks: typedLinks(rendered.text, rendered.links).filter((link) => !isWebsiteLink(link, deps.websiteUrl)),
       digitDrops: rendered.unknownHandles.filter((dropped) => DIGIT_RE.test(dropped)),
       stale,
     };
   };
 
-  /** The draft's text and sent template with the runs the model typed stripped from both. */
+  /**
+   * The draft's text and sent template with the links and the runs the model typed stripped from both: the links first, so
+   * a run inside a typed link ("https://wa.me/…") never leaves the rest of the link behind.
+   */
   const guarded = (d: Draft): { text: string; template: string } => {
-    const template = d.rendered.sentTemplate;
-    if (!typedDigits(d)) return { text: d.rendered.text, template };
+    let text = d.rendered.text;
+    let template = d.rendered.sentTemplate;
+    if (typedForeignLinks(d)) {
+      text = stripLinks(text, d.foreignLinks, d.rendered.links);
+      template = stripLinks(template, d.foreignLinks, []);
+    }
+    if (!typedDigits(d)) return { text, template };
     return {
-      text: d.foreign.length > 0 ? stripRuns(d.rendered.text, d.foreign, d.allowed) : d.rendered.text,
+      text: d.foreign.length > 0 ? stripRuns(text, d.foreign, d.allowed) : text,
       template: stripRuns(template, foreignDigitRuns(template, d.allowed), d.allowed),
     };
   };
 
   let d = await draft(first);
 
-  // Digit guard, and a stale handle: one corrective call, then whatever is still typed is stripped. Each problem found
-  // gets its own note: typed digits the token note, retired handles the stale note naming them.
-  if (typedDigits(d) || d.stale.length > 0) {
-    const notes = [...(typedDigits(d) ? [TOKEN_CORRECTION_NOTE] : []), ...(d.stale.length > 0 ? [staleHandleNote(d.stale)] : [])];
+  // Digit guard, typed links and a stale handle: one corrective call, then whatever is still typed is stripped. Each
+  // problem found gets its own note: typed digits the token note, typed links the link note, retired handles the stale
+  // note naming them.
+  if (typedDigits(d) || typedForeignLinks(d) || d.stale.length > 0) {
+    const notes = [
+      ...(typedDigits(d) ? [TOKEN_CORRECTION_NOTE] : []),
+      ...(typedForeignLinks(d) ? [LINK_CORRECTION_NOTE] : []),
+      ...(d.stale.length > 0 ? [staleHandleNote(d.stale)] : []),
+    ];
     const corrected = await deps.retry(notes.join(" "), "token");
     if (corrected) d = await draft(corrected);
   }
@@ -260,6 +288,7 @@ export async function guardReply(first: StructuredReply, deps: GuardDeps): Promi
     template,
     structured: { ...d.structured, needs_human: needsHuman },
     scrubbed: typedDigits(d),
+    linksStripped: d.foreignLinks.length,
     foreignRuns: d.foreign.length,
     digitDrops: d.digitDrops.length,
     replaced,

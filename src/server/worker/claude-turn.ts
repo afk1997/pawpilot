@@ -264,6 +264,7 @@ export async function runClaudeTurn(input: {
       },
       helplinePhone: cfg.helplinePhone,
       staticPhones: getStaticPhones(),
+      websiteUrl: cfg.websiteUrl,
       toolState: () => ({ candidates: ctx.lastAmbulanceCandidates, match: ctx.lastAmbulanceMatch }),
       toolRuns: () => ctx.calls.flatMap((c) => findDigitRuns(JSON.stringify(c.output ?? ""))),
       retry: async (correction, purpose) => {
@@ -321,6 +322,10 @@ export async function runClaudeTurn(input: {
   if (g.scrubbed) {
     await note(conversationId, "scrub_strip", { turnId: turn.id, runs: g.foreignRuns, drops: g.digitDrops });
     log.warn({ conversationId, runs: g.foreignRuns, drops: g.digitDrops }, "stripped model-typed digits");
+  }
+  if (g.linksStripped > 0) {
+    await note(conversationId, "link_strip", { turnId: turn.id, links: g.linksStripped });
+    log.warn({ conversationId, links: g.linksStripped }, "stripped links the model typed");
   }
   if (g.replaced) {
     await note(conversationId, "dispatch_language_strip", { turnId: turn.id });

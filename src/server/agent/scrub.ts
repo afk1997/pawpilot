@@ -102,6 +102,38 @@ export function foreignDigitRuns(text: string, allowed: string[]): string[] {
     .flatMap((part) => runsIn(part));
 }
 
+/**
+ * A link written in a reply: http(s):// and printable ASCII up to the next space or other character (so a danda or a word
+ * glued to it is never part of it), or a map host written without its scheme ("maps.google.com/?q=…", "goo.gl/maps/…",
+ * "maps.app.goo.gl/…", "google.com/maps/…"), which WhatsApp makes a link too.
+ */
+const LINK_TEXT_RE = /https?:\/\/[!-~]+|(?<![\w./-])(?:www\.)?(?:maps\.google\.[a-z.]+|google\.[a-z.]+\/maps|goo\.gl\/maps|maps\.app\.goo\.gl)[!-~]*/gi;
+/** Punctuation that ends a sentence or closes WhatsApp formatting right after a link, never part of it. */
+const LINK_TRAIL_RE = /[.,;:!?)\]}'"*_]+$/;
+
+/**
+ * The links the model typed: every link in the text (LINK_TEXT_RE, its trailing punctuation left out) outside the links
+ * code inserted (`inserted`, which splitAllowed keeps whole). Read on the normalized text, as stripLinks edits it.
+ */
+export function typedLinks(text: string, inserted: string[]): string[] {
+  return splitAllowed(normalizeDigits(text), inserted.filter(isLinkEntry))
+    .filter((_, i) => i % 2 === 0)
+    .flatMap((part) => Array.from(part.matchAll(new RegExp(LINK_TEXT_RE)), (m) => m[0].replace(LINK_TRAIL_RE, "")))
+    .filter((link) => link !== "");
+}
+
+/**
+ * Removes every occurrence of the links outside the links code inserted (`inserted`, kept whole), then the doubled space
+ * or the space before punctuation a removal leaves, as stripRuns does. Longer links go first.
+ */
+export function stripLinks(text: string, links: string[], inserted: string[]): string {
+  const targets = [...new Set(links)].filter((l) => l !== "").sort((a, b) => b.length - a.length);
+  const stripped = splitAllowed(normalizeDigits(text), inserted.filter(isLinkEntry))
+    .map((part, i) => (i % 2 === 1 ? part : targets.reduce((out, link) => out.split(link).join(""), part)))
+    .join("");
+  return collapseSpaces(stripped).replace(/ +([.,!?।])/g, "$1").trim();
+}
+
 /** Collapses a run of spaces or tabs that follows a non-space character, so a line's indent (a card's) survives. */
 function collapseSpaces(s: string): string {
   return s.replace(/(?<=\S)[ \t]{2,}/g, " ");
