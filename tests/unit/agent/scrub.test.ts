@@ -186,6 +186,23 @@ describe("dispatch guard: vocabulary", () => {
     expect(hasDispatchLanguage(text)).toBe(true);
   });
 
+  it("keeps firing when an ambulance, team, vehicle, driver, van, doctor or someone is sent, also beside an information word", () => {
+    for (const t of [
+      "We are sending the ambulance now", "हम एम्बुलेंस भेज रहे हैं",
+      // Precision first: a sentence that names both still fires.
+      "We are sending the ambulance with the location.", "We are sending the location and an ambulance.", "I'm sending the location to the driver.",
+      "We're sending a doctor to the address.", "I'm sending someone to your location.", "We are sending a van.",
+      "हम एम्बुलेंस और लोकेशन भेज रहे हैं।", "हम लोकेशन पर टीम भेज रहे हैं।", "हम किसी को लोकेशन पर भेज रहे हैं।", "मैं लोकेशन भेज रहा हूँ, एम्बुलेंस भी।",
+      "आम्ही पत्ता आणि रुग्णवाहिका पाठवली आहे.", "અમે એમ્બ્યુલન્સ અને લોકેશન મોકલી રહ્યા છીએ.",
+      // "With", "for" or "to" the vehicle is no possessive: the vehicle goes too.
+      "हमने एम्बुलेंस के साथ लोकेशन भेज दी है।", "एम्बुलेंस के लिए लोकेशन भेज दी है।", "અમે એમ્બ્યુલન્સ ની સાથે લોકેશન મોકલી દીધું છે.",
+    ]) {
+      expect(hasDispatchLanguage(t), t).toBe(true);
+    }
+    // The Latin-script Hinglish gap stays as documented (CLAUDE.md, Guard residuals): no Hinglish sending is read yet.
+    expect(hasDispatchLanguage("gaadi bhej rahe hain")).toBe(false);
+  });
+
   it("reads an Indic coming or road phrase only right after its vehicle or team subject (precision first)", () => {
     // Claims these rules now miss on purpose: a driver or a pronoun as the subject, or the vehicle after the verb.
     for (const t of ["ड्राइवर आ रहा है।", "वे आ रहे हैं, एम्बुलेंस के साथ।", "आप घबराइए मत वे रास्ते में हैं।", "ड्रायव्हर वाटेत आहे.", "ડ્રાઇવર રસ્તામાં છે."]) {
@@ -231,6 +248,23 @@ describe("dispatch guard: exclusions", () => {
     "मैंने नंबर +91 70000 00001 भेज दिया है।", "हम आपको ड्राइवर का नंबर भेज रहे हैं: +91 70000 00001", "टीम भी आपकी मदद करेगी।",
   ])("ignores %j", (text) => {
     expect(hasDispatchLanguage(text)).toBe(false);
+  });
+
+  it.each([
+    "I'm sending you the location and the address.", "Yeh raha number, location bhej raha hoon.", "हम लोकेशन भेज रहे हैं", "સરનામું મોકલું છું",
+    "We are sending you the Google Maps link.", "I am sending the hospital's address and directions.", "We're sending you a photo of the map.",
+    "I'm sending you the location pin now.", "I'm sending you the hospital location and the ambulance number.",
+    "हमने अस्पताल का पता भेज दिया है।", "मैंने नक्शा भेज दिया है।", "हम लिंक भेज रहे हैं।", "हमने एम्बुलेंस का नंबर और लोकेशन भेज दी है।",
+    "आम्ही पत्ता पाठवला आहे.", "आम्ही लोकेशन पाठवत आहोत.",
+    "અમે લોકેશન મોકલી રહ્યા છીએ.", "અમે સરનામું મોકલી દીધું છે.", "હું લિંક મોકલી રહ્યો છું.", "એમ્બ્યુલન્સનો નંબર મોકલી દીધો છે.",
+  ])("never reads sending a location, an address, a map, a link, a number or details as dispatching: %j", (text) => {
+    expect(hasDispatchLanguage(text)).toBe(false);
+  });
+
+  it("keeps a sentence that sends information, address and link included, whole", () => {
+    const link = "https://maps.google.com/?q=19.07948,72.90119";
+    const text = `I'm sending you the location and the address: Rajawadi Rd Number 1, Ghatkopar East, Mumbai 400077. Google Maps: ${link}`;
+    expect(replaceDispatchSentences(text, "R.", [link])).toBe(text);
   });
 
   it("leaves text without dispatch language as it was, whatever its punctuation", () => {

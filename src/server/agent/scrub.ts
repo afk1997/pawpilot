@@ -156,21 +156,56 @@ const HI_POSTPOSITION = String.raw`(?:को|के|की|का|तक|से|
 const SECOND_PERSON = String.raw`(?:you(?:['\u2019]re|['\u2019]ll${GAP}be|${GAP}(?:are|were|will${GAP}be))|(?:are|were)${GAP}you|(?:आप|तुम)(?:ने)?${WORD_END}(?!${GAP}${HI_POSTPOSITION}${WORD_END})|तुम्ही|તમે)${WORD_END}`;
 /** Not within two words after a second-person subject: then the reporter is the one sending or travelling. */
 const NOT_SECOND_PERSON = String.raw`(?<!${WORD_START}${SECOND_PERSON}(?:${GAP}${INNER_WORD}){0,2}${GAP})`;
-/** A number, contact or details word in any of the four languages, with whatever is glued to it ("नंबरवर"). */
-const NUMBER_WORD = String.raw`(?:नंबर|नम्बर|क्रमांक|संपर्क|जानकारी|डिटेल्स|विवरण|माहिती|तपशील|નંબર|સંપર્ક|માહિતી|વિગતો|number|contact|details)[^\s।.!?,]*`;
 /**
- * One word between that word and the verb: never an ambulance or team word (then the vehicle is what was sent), never
- * across a comma or a sentence end; a phone number with single spaces or hyphens counts as one word.
+ * Information we send: a number, contact or details word, or a location, address, map, link, pin or photo word, in any of
+ * the four languages (Latin words too, inside an Indic sentence), with whatever is glued to it ("नंबरवर", "लोकेशनची").
+ */
+const INFO_WORD = String.raw`(?:नंबर|नम्बर|क्रमांक|संपर्क|जानकारी|डिटेल्स|विवरण|माहिती|तपशील|लोकेशन|पता|पते|पत्ता|पत्त्या|नक्शा|नक्शे|नकाशा|मैप|मॅप|लिंक|पिन|फोटो|નંબર|સંપર્ક|માહિતી|વિગતો|લોકેશન|સરનામ|નકશ|મેપ|લિંક|પિન|ફોટો|number|contact|details|location|address|map|link|pin|photo)[^\s।.!?,]*`;
+/**
+ * One word between an information word and the verb: never an ambulance or team word (then the vehicle is what was sent),
+ * never across a comma or a sentence end; a phone number with single spaces or hyphens counts as one word.
  */
 const WINDOW_WORD = String.raw`(?!${INDIC_VEHICLE})(?:\+?\d(?:[ -]?\d)*|[^\s।.!?,]+)`;
+/** An English information noun: what "we are sending" may name without dispatching anything. */
+const INFO_NOUN = String.raw`(?:numbers?|contacts?|details|locations?|address(?:es)?|maps?|links?|pins?|photos?|pictures?|directions|info(?:rmation)?)`;
+/** A word before it naming whose or which information it is: "the driver's number", "the hospital's Google Maps link". */
+const INFO_MODIFIER = String.raw`(?:driver|ambulance|unit|helpline|clinic|hospital|team|doctor|google|maps?|location|phone|contact)(?:['\u2019]s)?`;
+/** The object of "sending" when it is information: "(you) (the|a|…) (driver's|Google Maps …) number/location/…". */
+const INFO_OBJECT = String.raw`${GAP}(?:you${GAP})?(?:(?:the|a|an|his|her|their|its|this|that|our|your)${GAP})?(?:${INFO_MODIFIER}${GAP}){0,3}${INFO_NOUN}\b`;
 /**
- * Not with a number, contact or details word within the two words before the verb: "नंबर पहले ही भेज दिया",
- * "नंबर आधीच पाठवला", "નંબર પહેલેથી મોકલી" send a number, not an ambulance. "यह रहा नंबर, एम्बुलेंस भेज दी है" does not
- * escape: the comma, and the ambulance word, end the window.
+ * A vehicle or a person we would send if we dispatched, in every script: an ambulance, team or vehicle (VEHICLE, which
+ * holds the driver words), a van, a doctor or a vet.
  */
-const NOT_AFTER_NUMBER = String.raw`(?<!${NUMBER_WORD}(?:${GAP}${WINDOW_WORD}){0,2}${GAP})`;
-/** "sending (you) (the) (driver's) number/contact/details": we send numbers, never ambulances. */
-const NOT_SENDING_A_NUMBER = String.raw`(?!${GAP}(?:you${GAP})?(?:(?:the|his|her|their|its|this|that|our)${GAP})?(?:(?:driver|ambulance|unit|helpline|clinic)(?:['\u2019]s)?${GAP}){0,2}(?:phone${GAP})?(?:numbers?|contacts?|details)\b)`;
+const AGENT = String.raw`(?:${VEHICLE}|ambulances|teams|vehicles?|drivers|vans?|gaadi|gadi|doctors?|vets?|वैन|वॅन|વાન|डॉक्टर|ડૉક્ટર|ડોક્ટર)`;
+/** "Someone", as sent ("किसी को", "कोणाला तरी", "કોઈને"): never whose information it is. */
+const SOMEONE = String.raw`(?:someone|somebody|किसी${GAP}को|कोणाला(?:${GAP}तरी)?|કોઈને)`;
+/**
+ * A possessive after a word: it says whose information it is ("एम्बुलेंस का नंबर", "ड्राइवर ची माहिती", "ડ્રાઇવર નો નંબર"),
+ * not what is sent. Never the first word of "with", "for" or "to" ("एम्बुलेंस के साथ", "के लिए", "के पास", "ની સાથે",
+ * "च्या सोबत"): then the vehicle goes too.
+ */
+const POSSESSIVE = String.raw`(?:का|की|के|चा|ची|चे|च्या|નો|ની|નું|ના|નાં)${WORD_END}(?!${GAP}(?:साथ|लिए|पास|द्वारा|सोबत|बरोबर|साठी|कडे|સાથે|માટે|પાસે)${WORD_END})`;
+/**
+ * An AGENT or SOMEONE named as what is sent. An AGENT word before a possessive ("the ambulance's number", "एम्बुलेंस का
+ * नंबर"; glued ones, "ડ્રાઇવરનો", never read as the word at all) or right before an information word ("the ambulance
+ * number") says whose information it is, and is no mention.
+ */
+const AGENT_MENTION = String.raw`${WORD_START}(?:${SOMEONE}${WORD_END}|${AGENT}${WORD_END}(?!['\u2019]s\b)(?!${GAP}(?:${POSSESSIVE}|(?:${INFO_MODIFIER}${GAP}){0,2}${INFO_NOUN}\b|${INFO_WORD})))`;
+/**
+ * Not with an information word within the two words before the verb: "नंबर पहले ही भेज दिया", "लोकेशन भेज रहे हैं", "पत्ता
+ * पाठवला", "સરનામું મોકલી દીધું" send information, not an ambulance. Precision first, it still fires when the clause before
+ * the verb names an AGENT as sent ("एम्बुलेंस और लोकेशन भेज रहे हैं", "किसी को लोकेशन पर भेज रहे हैं"), or the sentence
+ * after it does ("लोकेशन भेज रहा हूँ, एम्बुलेंस भी"); and "यह रहा नंबर, एम्बुलेंस भेज दी है" never escapes: the comma, and
+ * the ambulance word, end the window.
+ */
+const NOT_SENDING_INFO = String.raw`(?:(?<!${INFO_WORD}(?:${GAP}${WINDOW_WORD}){0,2}${GAP})|(?<=${AGENT_MENTION}[^.!?।\n,]*)|(?=[^.!?।\n]*${AGENT_MENTION}))`;
+/**
+ * Not "sending (you) (the) (driver's) number", contact, details, location, address, map, link, pin, photo or directions
+ * (INFO_OBJECT): we send information, never ambulances. Precision first, it still fires when the rest of the sentence
+ * names an AGENT or SOMEONE as sent ("we are sending the location and an ambulance", "… the location to the driver");
+ * "sending the ambulance with the location" never escapes: its object is the ambulance.
+ */
+const NOT_SENDING_INFO_EN = String.raw`(?!${INFO_OBJECT}(?![^.!?\n]*${AGENT_MENTION}))`;
 /** An adverb that may stand between the subject and the phrase: "एम्बुलेंस अभी रास्ते में है", "गाड़ी जल्द ही आ रही है". */
 const SUBJECT_ADVERB = String.raw`(?:अभी|भी|जल्द(?:${GAP}ही)?|तुरंत|आता|હમણાં)${WORD_END}${GAP}`;
 /**
@@ -185,7 +220,7 @@ const ROAD = String.raw`(?:रास्ते${GAP}में|रस्त्य�
 
 const DISPATCH_PATTERNS = [
   // English: we're/I'm sending, on the/its/their… way (not "on the way to the clinic"), is/are coming to you, dispatch(ed).
-  String.raw`\b(?:we(?:['\u2019]re|${GAP}are)|I(?:['\u2019]m|${GAP}am))${GAP}sending\b${NOT_SENDING_A_NUMBER}`,
+  String.raw`\b(?:we(?:['\u2019]re|${GAP}are)|I(?:['\u2019]m|${GAP}am))${GAP}sending\b${NOT_SENDING_INFO_EN}`,
   String.raw`${NOT_SECOND_PERSON}\bon${GAP}(?:the${GAP}way\b(?!${GAP}to${GAP}(?:the${GAP})?(?:clinic|vet|hospital))|(?:their|its|his|her|our)${GAP}way\b)`,
   String.raw`(?:\b(?:is|are)|['\u2019](?:s|re))${GAP}coming${GAP}to${GAP}your?\b`,
   String.raw`\bdispatch(?:ed|ing)?\b(?![^\S\n]*-?[^\S\n]*team\b)`,
@@ -194,19 +229,22 @@ const DISPATCH_PATTERNS = [
   String.raw`${VEHICLE_SUBJECT}${HI_COMING}`,
   String.raw`${VEHICLE_SUBJECT}${ROAD}`,
   // Hindi sending: भेज रहे/रहा/रही, भेज दी/दिया, भेजी (गई) है, भेजा (गया) है.
-  String.raw`${NOT_SECOND_PERSON}${NOT_AFTER_NUMBER}${WORD_START}(?:भेज${GAP}(?:रह[ेाी]|(?:दी|दिया)${WORD_END})|भेजी${GAP}(?:गई${GAP})?है|भेजा${GAP}(?:गया${GAP})?है)`,
+  String.raw`(?=भेज)${NOT_SECOND_PERSON}${NOT_SENDING_INFO}${WORD_START}(?:भेज${GAP}(?:रह[ेाी]|(?:दी|दिया)${WORD_END})|भेजी${GAP}(?:गई${GAP})?है|भेजा${GAP}(?:गया${GAP})?है)`,
   // Marathi sending: पाठवत आहोत/आहे, पाठवली/पाठवले/पाठवला.
-  String.raw`${NOT_SECOND_PERSON}${NOT_AFTER_NUMBER}${WORD_START}पाठव(?:त${GAP}आह(?:ोत|े)|ल[ीेा]${WORD_END})`,
+  String.raw`(?=पाठव)${NOT_SECOND_PERSON}${NOT_SENDING_INFO}${WORD_START}पाठव(?:त${GAP}आह(?:ोत|े)|ल[ीेा]${WORD_END})`,
   // Gujarati sending: મોકલી રહ્યા/રહ્યો/રહી, મોકલી દીધી/દીધો/દીધું.
-  String.raw`${NOT_SECOND_PERSON}${NOT_AFTER_NUMBER}${WORD_START}મોકલી${GAP}(?:રહ(?:્યા|્યો|ી)|દીધ[ીોુ])`,
+  String.raw`(?=મોકલી)${NOT_SECOND_PERSON}${NOT_SENDING_INFO}${WORD_START}મોકલી${GAP}(?:રહ(?:્યા|્યો|ી)|દીધ[ીોુ])`,
 ];
 
 /**
  * Language that says Arham sends the ambulance or that it is on its way, in English, Hindi, Marathi and Gujarati
  * (DISPATCH_PATTERNS). Words may be separated by any horizontal whitespace but never a line break. It does not fire
- * on sending the reporter a number or details, the dispatch team or dispatcher, "on the way to the clinic", a verb
+ * on sending the reporter information (a number, contact or details, a location, address, map, link, pin, photo or
+ * directions: NOT_SENDING_INFO_EN, NOT_SENDING_INFO) unless the sentence also names an ambulance, team, vehicle,
+ * driver, van, doctor or someone as sent, nor on the dispatch team or dispatcher, "on the way to the clinic", a verb
  * whose subject is the reporter (a second-person subject within two words before it), or an Indic "is coming" or "on
- * the way" without an ambulance or team word right before it (one adverb such as अभी may stand between).
+ * the way" without an ambulance or team word right before it (one adverb such as अभी may stand between). Each Indic
+ * sending pattern checks for its verb first, so the lookarounds before it run only where the verb stands.
  */
 export const DISPATCH_RE = new RegExp(DISPATCH_PATTERNS.join("|"), "iu");
 

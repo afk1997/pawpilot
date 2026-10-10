@@ -3,14 +3,20 @@
 # or types it), and the address as the tool returned it. The link's 5-decimal coordinates are no phone-shaped run, and
 # the guards leave the link whole. "hospital" sends the burst to the model, not the fast path, and keeps the Ghatkopar
 # ambulance out of the pre-match (skipped: other_intent).
+# Sending a location is not dispatching: "Location bhej raha hoon" (step 1) and "I'm sending you the location and the
+# address" (step 2) keep the link and the address, with no corrective call (the script has none left to give).
 name: hospital-location-ghatkopar
 safety: true
-# The reply is scripted word for word, so this runs on the fake backend on every run; hospital-location-claude is the
+# The replies are scripted word for word, so this runs on the fake backend on every run; hospital-location-claude is the
 # real-model twin.
 backend: fake
 fake_replies:
   - find_clinics: { city: Mumbai }
-    reply: "Mumbai - Ghatkopar Hospital ka address: Rajawadi Rd Number 1, Rajawadi Colony, Ghatkopar East, Mumbai 400077. Google Maps: {{MAPS:Mumbai - Ghatkopar Hospital}}"
+    reply: "Mumbai - Ghatkopar Hospital ka address: Rajawadi Rd Number 1, Rajawadi Colony, Ghatkopar East, Mumbai 400077. Location bhej raha hoon: Google Maps: {{MAPS:Mumbai - Ghatkopar Hospital}}"
+    language: en
+    intent: clinic
+    location: { city: Mumbai, area: Ghatkopar }
+  - reply: "I'm sending you the location and the address: Rajawadi Rd Number 1, Rajawadi Colony, Ghatkopar East, Mumbai 400077. Google Maps: {{MAPS:Mumbai - Ghatkopar Hospital}}"
     language: en
     intent: clinic
     location: { city: Mumbai, area: Ghatkopar }
@@ -19,7 +25,15 @@ steps:
     expect:
       kind: ok
       intent: clinic
-      contains: ["https://maps.google.com/?q=19.07948,72.90119", "Rajawadi Rd Number 1, Rajawadi Colony, Ghatkopar East, Mumbai 400077"]
+      contains: ["https://maps.google.com/?q=19.07948,72.90119", "Rajawadi Rd Number 1, Rajawadi Colony, Ghatkopar East, Mumbai 400077", "Location bhej raha hoon"]
       not_contains: ["{{MAPS", "+91 70000 00001"]
+      no_foreign_digits: true
+      no_dispatch: true
+  - send: "english me bhejo please"
+    expect:
+      kind: ok
+      intent: clinic
+      contains: ["I'm sending you the location and the address: Rajawadi Rd Number 1, Rajawadi Colony, Ghatkopar East, Mumbai 400077.", "Google Maps: https://maps.google.com/?q=19.07948,72.90119"]
+      not_contains: ["{{MAPS", "Please call them directly"]
       no_foreign_digits: true
       no_dispatch: true
