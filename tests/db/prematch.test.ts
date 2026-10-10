@@ -221,6 +221,20 @@ describe("pre-matched units", () => {
     expect((await outbound(c.id)).at(-1)!.content).toBe("Please call +91 98765 00005 right away.");
   });
 
+  it("arms no card for a city name that is also an everyday word with no locative cue (the dog's face, not Surat)", async () => {
+    const c = await answered();
+    const query = "kutte ki surat pe chot hai";
+    await storeReporterMessage(c.id, { kind: "text", content: query });
+    const backend = new FakeBackend([okReply({ reply: "Aap kis city aur area mein hain?", intent: "ambulance" })]);
+    const r = await runTurn(c.id, { backend });
+    expect(backend.calls[0].prompt).not.toContain("PRE-MATCHED UNITS");
+    // An ambulance reply asking for the place gets no Surat card.
+    expect((await outbound(c.id)).at(-1)!.content).toBe("Aap kis city aur area mein hain?");
+    expect((await turnOf(r.turnId!)).toolCalls).toEqual([
+      { name: "prematch", input: { query }, output: { matchType: "area", count: 1, handles: [], skipped: "everyday_city" }, durationMs: expect.any(Number) },
+    ]);
+  });
+
   it("names the covered area an area match went through (Vikhroli, covered by the Ghatkopar unit)", async () => {
     const c = await answered();
     await storeReporterMessage(c.id, { kind: "text", content: "vikhroli station ke paas" });

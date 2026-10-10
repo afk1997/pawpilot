@@ -100,7 +100,9 @@ export type FastPathDecision =
  * city named but that unit's ("Ghatkopar, Pune" is other_city), and an area match through an area name of the unit that
  * is not vague (no GENERIC_AREA_WORDS or EVERYDAY_AREA_NAMES word), or with the unit's city named ("Karve Nagar, Pune"
  * and "Satellite, Ahmedabad" fire; "Model Town, Ludhiana" and "ambli na jhad pase" are generic_area). A text naming both
- * a plain and a vague name of the unit ("South Bopal") fires on the plain one.
+ * a plain and a vague name of the unit ("South Bopal") fires on the plain one. A city that is also an everyday word
+ * (EVERYDAY_CITY_NAMES) counts only next to a locative cue ("surat me" fires; "kutte ki surat pe chot hai" is
+ * everyday_city).
  */
 export function placeDecision(rows: DirectoryAmbulance[], text: string): PlaceDecision {
   const match = matchAmbulances(rows, { query: text });

@@ -165,6 +165,7 @@ describe("the fast path", () => {
     ["a place matched only loosely", [{ kind: "text", content: "Ghatkoparr" }], "no_single_match"],
     ["a unit's area with another city named", [{ kind: "text", content: "Ghatkopar, Pune me kutta ghayal hai" }], "other_city"],
     ["an area name with a generic locality word and no city", [{ kind: "text", content: "Karve Nagar me kutta ghayal hai" }], "generic_area"],
+    ["a city name that is also an everyday word, with no locative cue", [{ kind: "text", content: "kutte ki surat pe chot hai" }], "everyday_city"],
     ["a photo in the burst", [{ kind: "image", content: "ghatkopar", mediaUrl: "https://x/p.jpg" }], "burst"],
     ["a pin without a place label", [{ kind: "location", content: "", placeLabel: null, lat: 19.08, lng: 72.9 }], "burst"],
     ["a text over 300 characters", [{ kind: "text", content: `ghatkopar me kutta ghayal hai. ${"bahut khoon nikal raha hai, jaldi madad chahiye. ".repeat(6)}` }], "too_long"],

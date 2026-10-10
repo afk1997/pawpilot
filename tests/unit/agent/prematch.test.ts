@@ -17,6 +17,7 @@ const rows: DirectoryAmbulance[] = [
   unit("pcmc", "Pune", "PCMC", ["Pimpri", "Chinchwad"]),
   unit("ahmedabad", "Ahmedabad", null, ["Satellite", "Ghuma"]),
   unit("delhi", "Delhi", "Old Delhi", ["Model Town", "Shalimar Bagh"]),
+  unit("surat", "Surat", null, ["Surat", "Vesu"]),
 ];
 
 const CONV = "conversation-unit";
@@ -66,6 +67,8 @@ describe("prematchAmbulances and the fast path's precision rules", () => {
     ["Ghatkopar, Pune", "other_city"],
     ["Model Town me kutta ghayal hai", "generic_area"],
     ["Model Town, Ludhiana", "generic_area"],
+    ["kutte ki surat pe chot hai", "everyday_city"],
+    ["कुत्ते की सूरत पर चोट है", "everyday_city"],
   ])("pre-matches nothing for %s (%s): no block, no handle, no armed card", async (query, skipped) => {
     const { prematched, record, ctx } = await prematch(query);
     expect(prematched).toBeNull();
@@ -88,6 +91,14 @@ describe("prematchAmbulances and the fast path's precision rules", () => {
     const known = await prematch("Karve Nagar me", { city: "Pune", area: null });
     expect(known.prematched).toMatchObject({ source: "words", units: [{ display_name: "Arham Animal Ambulance, PMC", covers: "Karve Nagar" }] });
     expect(known.ctx.lastAmbulanceMatch).toBe("area");
+  });
+
+  it("pre-matches a city that is also an everyday word when the words put it next to a cue, or the conversation knows it", async () => {
+    const cued = await prematch("surat me kutta ghayal hai");
+    expect(cued.prematched).toMatchObject({ matchType: "area", source: "words", units: [{ display_name: "Arham Animal Ambulance, Surat" }] });
+    expect(cued.ctx.lastAmbulanceMatch).toBe("area");
+    const known = await prematch("kutte ki surat pe chot hai", { city: "Surat", area: null });
+    expect(known.prematched).toMatchObject({ source: "words", units: [{ display_name: "Arham Animal Ambulance, Surat" }] });
   });
 
   it("leaves the known location's lookup as it was: offered, never armed, never checked against the words", async () => {

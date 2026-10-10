@@ -1,4 +1,4 @@
-import { applyCityAliases } from "./aliases";
+import { aliasOfToken, applyCityAliases } from "./aliases";
 import { fuzzyEqual } from "./fuzzy";
 import { neighborCandidates } from "./neighbors";
 
@@ -170,13 +170,14 @@ export function hasGenericAreaWord(areaName: string): boolean {
  * Area names that are also everyday words, verb forms or surnames in English, Hindi, Marathi or Gujarati, so a message
  * can hold one without naming the place: "ambli na jhad pase" (a tamarind tree), "gaadi ghuma rahe the" (turning), "khadki
  * pase" (a lane's gate), "Hazra ji ka kutta" and "Lokhandwala ji" (surnames), "andheri raat" (a dark night), "khar" (a
- * squirrel in Marathi), "sela" (a rice). Read like GENERIC_AREA_WORDS, as whole words of the area name, so an exact
- * match through one alone needs the unit's city named or known too. Curated from the seed fixture's and
- * ambulances-clinics.csv's area names; a new area name that is an everyday word belongs here. "andheri" is the one
- * deliberate latency trade-off: Andheri is a busy Mumbai suburb, so its first messages without "Mumbai" now wait for
- * the model (which still gives the number); drop it here to trade that back.
+ * squirrel in Marathi), "sela" (a rice), "ghorpadi disli" (Marathi घोरपडी, monitor lizards, an animal people report; Pune
+ * PMC's area). Read like GENERIC_AREA_WORDS, as whole words of the area name, so an exact match through one alone needs
+ * the unit's city named or known too. Curated from the seed fixture's and ambulances-clinics.csv's area names; a new area
+ * name that is an everyday word belongs here. "andheri" is the one deliberate latency trade-off: Andheri is a busy Mumbai
+ * suburb, so its first messages without "Mumbai" now wait for the model (which still gives the number); drop it here to
+ * trade that back.
  */
-export const EVERYDAY_AREA_NAMES = ["satellite", "ghuma", "ambli", "khadki", "lokhandwala", "hazra", "andheri", "khar", "sela"] as const;
+export const EVERYDAY_AREA_NAMES = ["satellite", "ghuma", "ambli", "khadki", "lokhandwala", "hazra", "andheri", "khar", "sela", "ghorpadi"] as const;
 
 const VAGUE_AREA_WORDS: ReadonlySet<string> = new Set<string>([...GENERIC_AREA_WORDS, ...EVERYDAY_AREA_NAMES]);
 
@@ -188,23 +189,76 @@ export function isVagueAreaName(areaName: string): boolean {
   return normalize(areaName).split(" ").some((w) => VAGUE_AREA_WORDS.has(w));
 }
 
+/**
+ * Directory city names that are also everyday words: Hindi/Urdu सूरत, "surat", is a face or a look ("kutte ki surat pe
+ * chot hai", "कुत्ते की सूरत पर चोट है"). A match reached only through such a name is precise only when the name stands
+ * next to a locative cue (cityCueNear) or the conversation already knows that city: "surat me kutta ghayal hai" names
+ * the city, "kutte ki surat pe chot hai" does not (everyday_city). One-word names, normalized; a new directory city that
+ * is an everyday word belongs here.
+ */
+export const EVERYDAY_CITY_NAMES = ["surat"] as const;
+
+const EVERYDAY_CITY_SET: ReadonlySet<string> = new Set<string>(EVERYDAY_CITY_NAMES);
+
+/** A word right after the city's name that makes it a place: "surat me", "surat se", "Surat city", "सूरत में", "સુરત થી". */
+const CITY_CUE_AFTER: ReadonlySet<string> = new Set([
+  "me", "mein", "mai", "main", "madhe", "madhye", "ma", "maa", "se", "mathi", "city", "shehar", "में", "मध्ये", "માં", "થી", "શહેર",
+]);
+/** A word right before it: "in surat", "near surat". */
+const CITY_CUE_BEFORE: ReadonlySet<string> = new Set(["in", "at", "near", "to"]);
+/**
+ * Case suffixes glued to an Indic spelling of the name that make it a place: "સુરતમાં", "सूरतમાં", "सुरतमध्ये", "सुरतला"
+ * (to Surat), a Marathi locative's "त". Never the Gujarati genitive "ના" (of).
+ */
+const CITY_CUE_SUFFIXES: ReadonlySet<string> = new Set(["माँ", "मां", "में", "मे", "मध्ये", "ात", "त", "ला", "માં", "મા", "થી"]);
+
+/** The text's words as normalize reads them, but before the aliases: NFC, lowercased, punctuation as spaces. */
+function wordsOf(text: string): string[] {
+  return (text ?? "")
+    .normalize("NFC")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{M}\p{N}\s]/gu, " ")
+    .split(/\s+/)
+    .filter((w) => w.length > 0);
+}
+
+/**
+ * Whether `text` names the one-word city `city` as a place: the text is that name alone, or one of its occurrences (in
+ * any spelling the aliases read: "surat", "सूरत", "સુરત") stands next to a locative cue: a case suffix glued to it
+ * (CITY_CUE_SUFFIXES: "સુરતમાં"), the word right after it (CITY_CUE_AFTER: "surat me", "सूरत में", "Surat city") or the
+ * word right before it (CITY_CUE_BEFORE: "in surat").
+ */
+export function cityCueNear(text: string, city: string): boolean {
+  const name = normalize(city);
+  const words = wordsOf(text);
+  return words.some((word, i) => {
+    const alias = aliasOfToken(word);
+    if ((alias?.name ?? word) !== name) return false;
+    if (words.length === 1 || (alias?.suffix != null && CITY_CUE_SUFFIXES.has(alias.suffix))) return true;
+    return CITY_CUE_AFTER.has(words[i + 1] ?? "") || CITY_CUE_BEFORE.has(words[i - 1] ?? "");
+  });
+}
+
 /** Why an exact match on the reporter's words alone is not precise enough to act on without the model. */
-export type PrecisionIssue = "other_city" | "generic_area";
+export type PrecisionIssue = "other_city" | "generic_area" | "everyday_city";
 
 /**
  * The precision rules for an exact match (`result`) made on the reporter's words alone (`text`, the query it was made
  * on), which the fast path's card and the Claude turn's pre-match both follow: other_city when the text names a
  * directory city (citiesNamed) that is not every matched unit's ("Ghatkopar, Pune"); generic_area when an area match
  * reaches a unit only through vague area names (isVagueAreaName: a GENERIC_AREA_WORDS or EVERYDAY_AREA_NAMES word, found
- * by areaNamesIn) and the text does not name that unit's city ("Model Town, Ludhiana", "ambli na jhad pase"). A unit
- * reached through a plain name too ("South Bopal" also names Bopal) is precise. Null when neither holds: "ghatkopar"
- * and "Karve Nagar, Pune" are precise. Pure: rows in, issue out.
+ * by areaNamesIn) and the text does not name that unit's city ("Model Town, Ludhiana", "ambli na jhad pase");
+ * everyday_city when a city match, or an area match whose area names are all such a city's, reaches a unit only through
+ * a name of EVERYDAY_CITY_NAMES that stands next to no locative cue (cityCueNear: "kutte ki surat pe chot hai", while
+ * "surat me kutta ghayal hai", "Surat" alone and "સુરતમાં" are precise). A unit reached through a plain name too ("South
+ * Bopal" also names Bopal) is precise. Null when none holds: "ghatkopar" and "Karve Nagar, Pune" are precise. Pure: rows
+ * in, issue out.
  *
  * `knownCity` (the pre-match only; the fast path answers before any city is known): the city the conversation already
  * holds stands until the words name another, so a unit in a different city whose city the text does not name is
  * other_city ("gaadi ghuma rahe the" after Mumbai is known is not Ahmedabad's Ghuma), and a known city equal to the
- * unit's counts as named for generic_area ("Karve Nagar me" once Pune is known). It is not one of citiesNamed's: a text
- * naming a new covered city ("sorry, it is in surat") is still precise.
+ * unit's counts as named for generic_area ("Karve Nagar me" once Pune is known) and for everyday_city. It is not one of
+ * citiesNamed's: a text naming a new covered city ("sorry, it is in surat") is still precise.
  */
 export function precisionIssue(
   rows: DirectoryAmbulance[],
@@ -219,6 +273,14 @@ export function precisionIssue(
   const cityGiven = (u: DirectoryAmbulance) => named.includes(normalize(u.city)) || normalize(u.city) === known;
   const vague = (u: DirectoryAmbulance) => !cityGiven(u) && areaNamesIn(u, text).every(isVagueAreaName);
   if (result.match === "area" && result.candidates.some(vague)) return "generic_area";
+  // The names a unit was reached through: its city for a city match, the area names the text names for an area match.
+  const reachedThrough = (u: DirectoryAmbulance) => (result.match === "city" ? [u.city] : result.match === "area" ? areaNamesIn(u, text) : []);
+  const everyday = (u: DirectoryAmbulance) => {
+    if (normalize(u.city) === known) return false;
+    const names = reachedThrough(u);
+    return names.length > 0 && names.every((n) => EVERYDAY_CITY_SET.has(normalize(n))) && !names.some((n) => cityCueNear(text, n));
+  };
+  if (result.candidates.some(everyday)) return "everyday_city";
   return null;
 }
 

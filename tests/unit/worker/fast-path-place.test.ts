@@ -14,7 +14,7 @@ const rows: DirectoryAmbulance[] = [
   unit("malad", "Mumbai", "Malad", ["Malad", "Kandivali"]),
   unit("andheri", "Mumbai", "Andheri", ["Andheri West", "Vile Parle West", "Juhu", "Lokhandwala"]),
   unit("miraroad", "Mumbai", "Mira Road", ["Mira Road", "Bhayandar"]),
-  unit("pmc", "Pune", "PMC", ["Kothrud", "Karve Nagar"]),
+  unit("pmc", "Pune", "PMC", ["Kothrud", "Karve Nagar", "Ghorpadi"]),
   unit("pcmc", "Pune", "PCMC", ["Pimpri Chinchwad", "Dehu Road"]),
   unit("ahmedabad", "Ahmedabad", null, ["Satellite", "Bopal", "South Bopal", "Ghuma", "Ambli"]),
   unit("delhi", "Delhi", "Old Delhi", ["Shalimar Bagh", "Model Town", "Kamla Nagar", "Patel Nagar"]),
@@ -22,6 +22,7 @@ const rows: DirectoryAmbulance[] = [
   unit("kolkata", "Kolkata", null, ["Hazra", "Minto Park"]),
   unit("nagpur", "Nagpur", null, ["Nagpur"]),
   unit("solapur", "Solapur", null, []),
+  unit("surat", "Surat", null, ["Surat", "Vesu"]),
 ];
 
 const decide = (text: string) => {
@@ -43,6 +44,12 @@ describe("fast path place checks", () => {
     ["Satellite, Ahmedabad", "ahmedabad", "area"],
     ["Andheri West, Mumbai", "andheri", "area"],
     ["Hazra, Kolkata me kutta ghayal hai", "kolkata", "area"],
+    ["Ghorpadi, Pune", "pmc", "area"],
+    // A city name that is also an everyday word, next to a locative cue or alone.
+    ["surat me kutta ghayal hai", "surat", "area"],
+    ["Surat", "surat", "area"],
+    ["સુરતમાં ગાય ઘાયલ છે", "surat", "area"],
+    ["in surat, a dog is hurt", "surat", "area"],
   ])("fires for %s", (text, id, matchType) => {
     expect(decide(text)).toEqual({ fire: true, unit: id, matchType });
   });
@@ -62,6 +69,9 @@ describe("fast path place checks", () => {
     ["Lokhandwala ji ki gali me kutta ghayal hai", "generic_area"],
     ["andheri raat me kutta ghayal pada tha", "generic_area"],
     ["andheri west me kutta ghayal hai", "generic_area"],
+    ["ghorpadi disli", "generic_area"], // monitor lizards (Marathi घोरपडी), an animal people report
+    ["kutte ki surat pe chot hai", "everyday_city"], // the dog's face
+    ["कुत्ते की सूरत पर चोट है", "everyday_city"],
     ["Mumbai me gaadi ghuma rahe the", "other_city"],
     ["Hazra ji ka kutta ghayal hai, Mumbai", "other_city"],
     ["Ghatkopar, Pune", "other_city"],
@@ -84,13 +94,13 @@ describe("fast path place checks", () => {
   });
 
   it("reads an everyday-word area name as vague, like a generic one", () => {
-    for (const name of ["Satellite", "Ghuma", "Ambli", "Khadki", "Lokhandwala", "Hazra", "Andheri", "Andheri West", "Khar", "Sela", "Model Town"]) {
+    for (const name of ["Satellite", "Ghuma", "Ambli", "Khadki", "Lokhandwala", "Hazra", "Andheri", "Andheri West", "Khar", "Sela", "Ghorpadi", "Model Town"]) {
       expect(isVagueAreaName(name), name).toBe(true);
     }
     // Whole words only: Kharghar holds "khar" but is not Khar.
     for (const name of ["Ghatkopar", "Bopal", "Vikhroli", "Kharghar"]) expect(isVagueAreaName(name), name).toBe(false);
     expect(hasGenericAreaWord("Satellite")).toBe(false);
-    expect([...EVERYDAY_AREA_NAMES]).toEqual(["satellite", "ghuma", "ambli", "khadki", "lokhandwala", "hazra", "andheri", "khar", "sela"]);
+    expect([...EVERYDAY_AREA_NAMES]).toEqual(["satellite", "ghuma", "ambli", "khadki", "lokhandwala", "hazra", "andheri", "khar", "sela", "ghorpadi"]);
   });
 
   it("is the one generic word list the ruling fixed", () => {

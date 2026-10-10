@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { areaNamesIn, citiesNamed, matchAmbulances, normalize, precisionIssue, textNames, type DirectoryAmbulance } from "@/server/directory/matcher";
+import {
+  EVERYDAY_CITY_NAMES, areaNamesIn, cityCueNear, citiesNamed, matchAmbulances, normalize, precisionIssue, textNames, type DirectoryAmbulance,
+} from "@/server/directory/matcher";
+import { aliasOfToken } from "@/server/directory/aliases";
 
 const row = (p: Partial<DirectoryAmbulance> & Pick<DirectoryAmbulance, "id" | "city">): DirectoryAmbulance => ({
   label: p.id, area: null, state: "X", areasCovered: [], category: "Animal Ambulance", phone: "+910000000000",
@@ -41,6 +44,23 @@ describe("normalize", () => {
     expect(normalize("सुरत")).toBe("surat");
     // मुंबईला and नागपुरात resolve by suffix stripping; पुण्यात and मुंबईत need their explicit branches.
     expect(normalize("मुंबईला नागपुरात पुण्यात मुंबईत")).toBe("mumbai nagpur pune mumbai");
+  });
+
+  it("reads Akola in Devanagari and Gujarati, with its case suffixes and its Marathi locative", () => {
+    expect(normalize("अकोला")).toBe("akola");
+    expect(normalize("અકોલા")).toBe("akola");
+    expect(normalize("अकोला मध्ये कुत्रा जखमी")).toBe("akola मध्ये कुत्रा जखमी");
+    // अकोलामध्ये and અકોલામાં strip their suffix; अकोल्यात changes the stem, like पुण्यात.
+    expect(normalize("अकोलामध्ये अकोल्यात અકોલામાં")).toBe("akola akola akola");
+  });
+
+  it("names the case suffix a token carried when it aliases (aliasOfToken)", () => {
+    expect(aliasOfToken("સુરતમાં")).toEqual({ name: "surat", suffix: "માં" });
+    expect(aliasOfToken("सूरत")).toEqual({ name: "surat", suffix: null });
+    expect(aliasOfToken("bombay")).toEqual({ name: "mumbai", suffix: null });
+    expect(aliasOfToken("अकोल्यात")).toEqual({ name: "akola", suffix: "त" });
+    expect(aliasOfToken("surat")).toBeNull();
+    expect(aliasOfToken("constructor")).toBeNull();
   });
 });
 
@@ -89,6 +109,13 @@ describe("matchAmbulances", () => {
 
   it("Devanagari area matches via aliases", () => {
     expect(ids(matchAmbulances(rows, { query: "घाटकोपर में कुत्ता" }))).toEqual(["ghatkopar"]);
+  });
+
+  it("Akola's Devanagari and Gujarati names match its unit", () => {
+    const withAkola = [...rows, row({ id: "akola", city: "Akola", areasCovered: ["Akola"] })];
+    for (const query of ["अकोला मध्ये कुत्रा जखमी", "अकोल्यात कुत्रा जखमी आहे", "અકોલામાં ગાય ઘાયલ છે"]) {
+      expect(ids(matchAmbulances(withAkola, { query })), query).toEqual(["akola"]);
+    }
   });
 
   it("Gujarati city matches via aliases", () => {
@@ -340,6 +367,33 @@ describe("precisionIssue", () => {
     expect(issue("Model Town me kutta ghayal hai")).toBe("generic_area");
   });
 
+  it("is everyday_city when the words reach a city only through a name that is also an everyday word, with no locative cue", () => {
+    // सूरत and "surat" are also a face: "the dog's face is hurt".
+    expect(issue("kutte ki surat pe chot hai")).toBe("everyday_city");
+    expect(issue("कुत्ते की सूरत पर चोट है")).toBe("everyday_city");
+    expect(issue("uski surat kharab ho gayi hai")).toBe("everyday_city");
+    // The name next to a locative cue, or alone, names the city.
+    for (const text of ["surat me kutta ghayal hai", "Surat", "सूरतમાં", "સુરતમાં", "in surat", "near Surat station", "surat se hun", "Surat city", "सूरत में कुत्ता घायल है", "સુરતમાં ગાય ઘાયલ છે"]) {
+      expect(issue(text), text).toBeNull();
+    }
+    // A city match (the real directory's Surat units cover their areas, not the city's name) follows the same rule.
+    const byArea = [row({ id: "vesu", city: "Surat", area: "Vesu", areasCovered: ["Vesu"] }), row({ id: "varachha", city: "Surat", area: "Varachha", areasCovered: ["Varachha"] })];
+    const cityIssue = (text: string) => precisionIssue(byArea, text, matchAmbulances(byArea, { query: text }));
+    expect(matchAmbulances(byArea, { query: "kutte ki surat pe chot hai" }).match).toBe("city");
+    expect(cityIssue("kutte ki surat pe chot hai")).toBe("everyday_city");
+    expect(cityIssue("surat me kutta ghayal hai")).toBeNull();
+    // An area named beside it pins the place.
+    expect(cityIssue("Vesu, kutte ki surat pe chot hai")).toBeNull();
+    // The city the conversation already knows counts as named.
+    expect(issue("kutte ki surat pe chot hai", "Surat")).toBeNull();
+    expect(issue("kutte ki surat pe chot hai", "Mumbai")).toBe("everyday_city");
+  });
+
+  it("reads the ruled cue words as written: a known residual where one follows the face sense", () => {
+    // "se" is a cue ("surat se hun", from Surat), so "blood from the dog's face" still reads as the city.
+    expect(issue("kutte ki surat se khoon aa raha hai")).toBeNull();
+  });
+
   it("holds the words to the city the conversation knows, unless they name the unit's city", () => {
     // A unit elsewhere, its city unnamed: the known city stands.
     expect(issue("gaadi ghuma rahe the tab dekha", "Mumbai")).toBe("other_city");
@@ -356,5 +410,26 @@ describe("precisionIssue", () => {
     expect(issue("vikhroli me ek aur kutta", null)).toBeNull();
     expect(issue("gaadi ghuma rahe the tab dekha")).toBe("generic_area");
     expect(issue("gaadi ghuma rahe the, Ahmedabad")).toBeNull();
+  });
+});
+
+describe("cityCueNear", () => {
+  it("is true for the name alone or next to a locative cue, in any spelling the aliases read", () => {
+    for (const text of ["Surat", "surat.", "surat me", "Surat mein kutta", "surat mai", "surat main", "surat madhe", "surat madhye", "surat ma", "surat maa", "surat se", "surat mathi", "surat city", "surat shehar"]) {
+      expect(cityCueNear(text, "Surat"), text).toBe(true);
+    }
+    for (const text of ["in surat", "at Surat", "near surat", "going to surat", "सूरत में", "सुरत मध्ये", "સુરત માં", "સુરત થી", "સુરત શહેર", "સુરતમાં", "सूरतમાં", "सुरतमध्ये", "सुरतला"]) {
+      expect(cityCueNear(text, "Surat"), text).toBe(true);
+    }
+  });
+
+  it("is false without a cue next to the name, or for a word that only contains it", () => {
+    for (const text of ["kutte ki surat pe chot hai", "कुत्ते की सूरत पर चोट है", "surat, injured dog", "surat kharab hai", "suratwala", "સુરતના કૂતરા", ""]) {
+      expect(cityCueNear(text, "Surat"), text).toBe(false);
+    }
+  });
+
+  it("is the one everyday city name the ruling fixed", () => {
+    expect([...EVERYDAY_CITY_NAMES]).toEqual(["surat"]);
   });
 });
