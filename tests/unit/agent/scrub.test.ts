@@ -227,6 +227,21 @@ describe("dispatch guard: vocabulary", () => {
     expect(hasDispatchLanguage(text)).toBe(true);
   });
 
+  it.each([
+    "We are sending your location.", "I'm sending your address.", "We're sending your pin now.", "We are sending you your location.",
+    "हम आपकी लोकेशन भेज रहे हैं।", "हमने आपका पता भेज दिया है।", "हम आपका नंबर भेज रहे हैं।", "हम आपकी सही लोकेशन भेज रहे हैं।",
+    "आम्ही तुमचा पत्ता पाठवला आहे.", "आम्ही तुमची लोकेशन पाठवत आहोत.", "અમે તમારું સરનામું મોકલી રહ્યા છીએ.", "અમે તમારો નંબર મોકલી દીધો છે.",
+  ])("never exempts sending the reporter's own location, address or number, which only ever goes to a responder: %j", (text) => {
+    expect(hasDispatchLanguage(text)).toBe(true);
+  });
+
+  it.each([
+    "I'm sending you the location.", "We are sending you the hospital's address.", "मैं आपको नंबर भेज रहा हूँ।", "मैं आपके लिए लोकेशन भेज रहा हूँ।",
+    "मी तुम्हाला पत्ता पाठवत आहे.", "હું તમને સરનામું મોકલી રહ્યો છું.",
+  ])("still exempts information sent to the reporter, or for them: %j", (text) => {
+    expect(hasDispatchLanguage(text)).toBe(false);
+  });
+
   it("reads an Indic coming or road phrase only right after its vehicle or team subject (precision first)", () => {
     // Claims these rules now miss on purpose: a driver or a pronoun as the subject, or the vehicle after the verb.
     for (const t of ["ड्राइवर आ रहा है।", "वे आ रहे हैं, एम्बुलेंस के साथ।", "आप घबराइए मत वे रास्ते में हैं।", "ड्रायव्हर वाटेत आहे.", "ડ્રાઇવર રસ્તામાં છે."]) {

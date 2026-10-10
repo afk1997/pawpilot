@@ -216,10 +216,19 @@ const MARKER = String.raw`(?:पर|पे|को|तक|ला|ने|में
  */
 const WINDOW_WORD = String.raw`(?!${INDIC_VEHICLE}|${MARKER})(?:\+?\d(?:[ -]?\d)*|[^\s।.!?,]+)`;
 /**
- * What a sending verb may follow without dispatching anything: a number word within two words of it, or a place word
- * right before it (one PLACE_ADVERB may stand between).
+ * The reporter's own ("your"): आपकी, आपका, आपके, तुम्हारी…, तुमची, तुमचा…, आपला…, તમારું, તમારો…. The reporter's own
+ * location, address or number is only ever "sent" to a responder, so an information word that is theirs is never exempt.
  */
-const INFO_BEFORE_VERB = String.raw`(?:${NUMBER_WORD}(?:${GAP}${WINDOW_WORD}){0,2}|${PLACE_WORD}(?:${GAP}${PLACE_ADVERB})?)${GAP}`;
+const REPORTERS = String.raw`(?:आपकी|आपका|आपके|तुम्हारी|तुम्हारा|तुम्हारे|तेरी|तेरा|तेरे|तुमची|तुमचा|तुमचे|तुमच्या|आपली|आपला|आपले|आपल्या|તમારું|તમારો|તમારી|તમારા|તારું|તારો|તારી)${WORD_END}`;
+/** A word that ends a possessive phrase: "आपके लिए लोकेशन" is a location sent for the reporter, not theirs. */
+const PHRASE_END = String.raw`(?:${MARKER}|(?:लिए|लिये|साथ|पास|बारे|साठी|सोबत|માટે|સાથે|પાસે)${WORD_END})`;
+/** Not the reporter's: no REPORTERS word right before, or with one word between ("आपकी सही लोकेशन") that ends no phrase. */
+const NOT_REPORTERS = String.raw`(?<!${WORD_START}${REPORTERS}(?:${GAP}(?!${PHRASE_END})[^\s।.!?,]+)?${GAP})`;
+/**
+ * What a sending verb may follow without dispatching anything: a number word within two words of it, or a place word
+ * right before it (one PLACE_ADVERB may stand between), the word never the reporter's own (NOT_REPORTERS).
+ */
+const INFO_BEFORE_VERB = String.raw`(?:${NOT_REPORTERS}${NUMBER_WORD}(?:${GAP}${WINDOW_WORD}){0,2}|${NOT_REPORTERS}${PLACE_WORD}(?:${GAP}${PLACE_ADVERB})?)${GAP}`;
 /** An English information noun: what "we are sending" may name without dispatching anything. */
 const INFO_NOUN = String.raw`(?:numbers?|contacts?|details|locations?|address(?:es)?|maps?|links?|pins?|photos?|pictures?|directions|info(?:rmation)?)`;
 /**
@@ -228,8 +237,11 @@ const INFO_NOUN = String.raw`(?:numbers?|contacts?|details|locations?|address(?:
  * location").
  */
 const INFO_MODIFIER = String.raw`(?:\p{L}+['\u2019]s|google|maps?|driver|ambulance|unit|helpline|clinic|hospital|phone|contact)`;
-/** The direct object of "sending" when it is information: "(you) (the|your|a|…) (Google Maps|the driver's …) location". */
-const INFO_OBJECT = String.raw`${GAP}(?:you${GAP})?(?:(?:the|your|a|an|this|its|that|our|his|her|their)${GAP})?(?:${INFO_MODIFIER}${GAP}){0,3}${INFO_NOUN}\b`;
+/**
+ * The direct object of "sending" when it is information: "(you) (the|a|…) (Google Maps|the driver's …) location". Never
+ * "your": the reporter's own location is only ever "sent" to a responder.
+ */
+const INFO_OBJECT = String.raw`${GAP}(?:you${GAP})?(?:(?:the|a|an|this|its|that|our|his|her|their)${GAP})?(?:${INFO_MODIFIER}${GAP}){0,3}${INFO_NOUN}\b`;
 /**
  * Help, or a vehicle or people sent to help, in every script: an ambulance, vehicle, van, team, unit or crew, a driver,
  * doctor, vet or paramedic, a rescuer, volunteer, staff or people, help itself, or someone. An Indic word may carry a
