@@ -159,6 +159,24 @@ describe("cards", () => {
     expect(buildClinicCard([], "mr")).toContain("https://alwayscare.org/hospitals");
   });
 
+  it("adds a facility's Google Maps link under its address, in every language, and no line without one", () => {
+    const map = "https://maps.google.com/?q=22.48413,88.13368";
+    expect(buildClinicCard([{ ...ludlow, mapsUrl: map }], "en")).toBe(
+      "Our hospitals and clinics\n\n*Kolkata - Ludlow Hospital* (Kolkata — Ludlow)\n📞 +91 70000 00020\n📍 Near Chengail Railway Station, Howrah\n" +
+        `🗺️ Google Maps: ${map}\n🕒 Hours: 9am–6pm IST (call to confirm)`
+    );
+    for (const lang of LANGUAGES) {
+      const card = buildClinicCard([{ ...ludlow, mapsUrl: ` ${map} ` }], lang);
+      expect(card, lang).toContain(`\n🗺️ Google Maps: ${map}\n`);
+      // The link's 5-decimal coordinates hold no phone-shaped run: the scrubber finds only the facility's number.
+      expect(findDigitRuns(card), lang).toEqual(["+91 70000 00020"]);
+    }
+    // No link, or a Maps value that is not one https link: no map line.
+    for (const mapsUrl of [undefined, null, "", "near the station", "maps.google.com/?q=22.48413,88.13368"]) {
+      expect(buildClinicCard([{ ...ludlow, mapsUrl }], "en")).toBe(buildClinicCard([ludlow], "en"));
+    }
+  });
+
   it("lists at most six hospitals and clinics", () => {
     const seven = Array.from({ length: 7 }, (_, i): CardClinic => ({ ...ludlow, label: `Hospital ${i + 1}`, address: null, hours: null }));
     const card = buildClinicCard(seven, "en");

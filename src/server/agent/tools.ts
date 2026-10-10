@@ -7,7 +7,7 @@ import {
   areaNamesIn, hasFacilityWord, matchAmbulances, normalize, precisionIssue, type DirectoryAmbulance, type MatchInput, type MatchResult,
   type MatchType, type PrecisionIssue,
 } from "../directory/matcher";
-import { ambulanceDisplayName } from "../messages/cards";
+import { ambulanceDisplayName, mapsLink } from "../messages/cards";
 import { getStaticInfo, type InfoContent, type InfoTopic } from "../content/static";
 import { asciiDigits, PHONE_RUN_RE } from "../digits";
 import { log, safeErrorFields } from "../log";
@@ -75,8 +75,28 @@ function ambulanceCandidate(ctx: ToolContext, r: DirectoryAmbulance): AmbulanceC
   };
 }
 
+/** A hospital or clinic as find_clinics gives it to the model: tokens for its number and map link, never the digits. */
+export interface ClinicResult {
+  handle: string;
+  label: string;
+  city: string;
+  area: string | null;
+  /** Its number, as the token to copy into a reply: {{CLINIC:<handle>}}. */
+  phone: string;
+  /** Its Google Maps location, as the token to copy into a reply: {{MAPS:<handle>}}; null when the directory has no link. */
+  maps: string | null;
+  address: string | null;
+  hours: string | null;
+  /** What it offers; null when not published. */
+  services: string | null;
+  /** What a visitor should know (charges, calling first); null when none. */
+  notes: string | null;
+  /** Its page on the website, a plain link (it holds no digits); null when none. */
+  page: string | null;
+}
+
 export interface FindClinicsOutput {
-  clinics: { handle: string; label: string; city: string; area: string | null; address: string | null; hours: string | null }[];
+  clinics: ClinicResult[];
   /** False when a city was given and no hospital or clinic is in it; `clinics` is then the full list. */
   city_matched: boolean;
 }
@@ -308,6 +328,12 @@ export async function prematchAmbulances(
   }
 }
 
+/**
+ * The hospitals and clinics in the city (every one when no city is given, or when none is in it: city_matched false),
+ * each with its handle, the {{CLINIC}} and {{MAPS}} tokens for its number and map link (maps null without a link the
+ * renderer would insert), and its address, hours, services, notes and page. Everything goes through the tool-boundary
+ * scrub, like every tool output.
+ */
 export async function findClinicsImpl(ctx: ToolContext, input: { city?: string | null }): Promise<FindClinicsOutput> {
   return timed(ctx, "find_clinics", input, async () => {
     const rows = await loadActiveClinics();
@@ -316,10 +342,14 @@ export async function findClinicsImpl(ctx: ToolContext, input: { city?: string |
     const inCity = wanted ? rows.filter((c) => normalize(c.city) === wanted) : rows;
     const cityMatched = !wanted || inCity.length > 0;
     return {
-      clinics: (cityMatched ? inCity : rows).map((c) => ({
-        handle: ctx.registry.clinic(c.id),
-        label: c.label, city: c.city, area: c.area, address: c.address, hours: c.hours,
-      })),
+      clinics: (cityMatched ? inCity : rows).map((c): ClinicResult => {
+        const handle = ctx.registry.clinic(c.id);
+        return {
+          handle, label: c.label, city: c.city, area: c.area,
+          phone: `{{CLINIC:${handle}}}`, maps: mapsLink(c.mapsUrl) === null ? null : `{{MAPS:${handle}}}`,
+          address: c.address, hours: c.hours, services: c.services ?? null, notes: c.notes ?? null, page: c.pageUrl ?? null,
+        };
+      }),
       city_matched: cityMatched,
     };
   });
@@ -362,7 +392,7 @@ export function createArhamTools(ctx: ToolContext): {
       ),
       tool(
         "find_clinics",
-        "List Arham's animal hospitals and clinics (the label says which), optionally filtered by city, with each one's address and hours when known. Returns handles; write {{CLINIC:<handle>}} to give one's number. city_matched false: none is in the city you passed and every hospital and clinic is listed; tell the reporter that, and name each one's city before giving its number.",
+        "List Arham's animal hospitals and clinics (the label says which), optionally filtered by city. Each comes with its handle; phone, the {{CLINIC:<handle>}} token for its number; maps, the {{MAPS:<handle>}} token for its Google Maps location (null when there is none); and its address, hours, services, notes and page (its page on the website), each null when not known. Copy the phone and maps tokens into your reply exactly as returned; never write a map link yourself. city_matched false: none is in the city you passed and every hospital and clinic is listed; tell the reporter that, and name each one's city before giving its number.",
         { city: z.string().nullable().optional().describe("City as spelled in the coverage list, or null") },
         async (args) => {
           try {

@@ -4,12 +4,12 @@ import { resetDb, createConversation } from "../helpers/db";
 import { seedDirectory, type DirectoryIds } from "../helpers/fixtures";
 import { resetConfigForTests } from "@/server/config";
 import { getDb } from "@/server/db/client";
-import { ambulances, conversations, events, messages, turns } from "@/server/db/schema";
+import { ambulances, clinics, conversations, events, messages, turns } from "@/server/db/schema";
 import { storeReporterMessage } from "@/server/inbound/store";
 import { runTurn } from "@/server/worker/turn-runner";
 import { stopBoss } from "@/server/queue/boss";
 import { FakeBackend, okReply, errorResult } from "@/server/agent/fake-backend";
-import { findAmbulancesImpl } from "@/server/agent/tools";
+import { findAmbulancesImpl, findClinicsImpl } from "@/server/agent/tools";
 import { makeHandle } from "@/server/agent/handles";
 import { createTurn, finishTurn } from "@/server/worker/persist";
 import * as persist from "@/server/worker/persist";
@@ -265,6 +265,35 @@ describe("the Claude turn's guards, audit and context", () => {
     expect(m.contentTemplate).toBe("Call or {{PHONE:helpline}} now.");
     const [ev] = await eventsOf("scrub_strip");
     expect(ev.payload).toEqual({ turnId: m.turnId, runs: 1, drops: 0 });
+  });
+
+  it("sends a hospital's map link for its MAPS token and stores the token, so the next transcript shows the token, never the link", async () => {
+    const map = "https://maps.google.com/?q=19.07948,72.90119";
+    const address = "Rajawadi Colony, Ghatkopar East, Mumbai 400077";
+    await getDb().update(clinics).set({ mapsUrl: map, address }).where(eq(clinics.id, ids.hospitalGhatkopar));
+    const c = await conv();
+    await storeReporterMessage(c.id, { kind: "text", content: "ghatkopar hospital ka address aur location bhejo" });
+    const backend = new FakeBackend([
+      async (input: TurnInput) => {
+        const out = await findClinicsImpl(input.toolContext!, { city: "Mumbai" });
+        const hospital = out.clinics.find((x) => x.label === "Mumbai - Ghatkopar Hospital")!;
+        return okReply({ reply: `Address: ${hospital.address}. Google Maps: ${hospital.maps}`, intent: "clinic" });
+      },
+      okReply({ reply: "You're welcome.", intent: "smalltalk" }),
+    ]);
+    expect((await runTurn(c.id, { backend })).kind).toBe("ok");
+    const handle = makeHandle("clinic", c.id, ids.hospitalGhatkopar);
+    const [m] = await outbound(c.id);
+    expect(m.content).toBe(`Address: ${address}. Google Maps: ${map}`);
+    expect(m.contentTemplate).toBe(`Address: ${address}. Google Maps: {{MAPS:${handle}}}`);
+    const t = await lastTurn(c.id);
+    expect(t.scrubbed).toBe(false);
+    expect(t.handles).toEqual({ [handle]: { kind: "clinic", id: ids.hospitalGhatkopar } });
+    await storeReporterMessage(c.id, { kind: "text", content: "thanks" });
+    expect((await runTurn(c.id, { backend })).kind).toBe("ok");
+    expect(backend.calls[1].prompt).toContain(`Assistant: Address: ${address}. Google Maps: {{MAPS:${handle}}}`);
+    expect(backend.calls[1].prompt).toContain(`Handles already shared in this chat: ${handle}`);
+    expect(backend.calls[1].prompt).not.toContain("maps.google.com");
   });
 
   it("allows a number this turn's tool output carries, but not one retyped from an earlier reply", async () => {
