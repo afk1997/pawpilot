@@ -69,6 +69,11 @@ describe("prematchAmbulances and the fast path's precision rules", () => {
     ["Model Town, Ludhiana", "generic_area"],
     ["kutte ki surat pe chot hai", "everyday_city"],
     ["कुत्ते की सूरत पर चोट है", "everyday_city"],
+    ["kutte ki surat se khoon aa raha hai", "everyday_city"],
+    // A request for a hospital, a clinic or a doctor wants the facility, not the area's ambulance.
+    ["ghatkopar hospital ka number", "other_intent"],
+    ["Ghatkopar ke doctor ka number do", "other_intent"],
+    ["घाटकोपर में कोई दवाखाना है?", "other_intent"],
   ])("pre-matches nothing for %s (%s): no block, no handle, no armed card", async (query, skipped) => {
     const { prematched, record, ctx } = await prematch(query);
     expect(prematched).toBeNull();
@@ -91,6 +96,20 @@ describe("prematchAmbulances and the fast path's precision rules", () => {
     const known = await prematch("Karve Nagar me", { city: "Pune", area: null });
     expect(known.prematched).toMatchObject({ source: "words", units: [{ display_name: "Arham Animal Ambulance, PMC", covers: "Karve Nagar" }] });
     expect(known.ctx.lastAmbulanceMatch).toBe("area");
+  });
+
+  it("offers no ambulance for a facility request, not even the known location's, and still pre-matches an ambulance request", async () => {
+    const facility = await prematch("hospital ka number?", { city: "Mumbai", area: "Ghatkopar" });
+    expect(facility.prematched).toBeNull();
+    expect([facility.ctx.lastAmbulanceCandidates, facility.ctx.lastAmbulanceMatch]).toEqual([null, null]);
+    expect(facility.ctx.registry.toJSON()).toEqual({});
+    // The known location was not looked up: the record holds the words' own lookup.
+    expect(facility.record).toEqual({
+      name: "prematch", input: { query: "hospital ka number?" }, output: { matchType: null, count: 0, handles: [], skipped: "other_intent" }, durationMs: expect.any(Number),
+    });
+    const ambulance = await prematch("ghatkopar me kutta ghayal hai");
+    expect(ambulance.prematched).toMatchObject({ matchType: "area", source: "words", units: [{ display_name: "Arham Animal Ambulance, Ghatkopar" }] });
+    expect(ambulance.record.output).not.toHaveProperty("skipped");
   });
 
   it("pre-matches a city that is also an everyday word when the words put it next to a cue, or the conversation knows it", async () => {

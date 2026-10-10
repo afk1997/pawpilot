@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
-  EVERYDAY_CITY_NAMES, areaNamesIn, cityCueNear, citiesNamed, matchAmbulances, normalize, precisionIssue, textNames, type DirectoryAmbulance,
+  EVERYDAY_CITY_NAMES, FACILITY_WORDS, areaNamesIn, cityCueNear, citiesNamed, hasFacilityWord, listedWordFinder, matchAmbulances, normalize,
+  precisionIssue, textNames, type DirectoryAmbulance,
 } from "@/server/directory/matcher";
 import { aliasOfToken } from "@/server/directory/aliases";
 
@@ -389,9 +390,16 @@ describe("precisionIssue", () => {
     expect(issue("kutte ki surat pe chot hai", "Mumbai")).toBe("everyday_city");
   });
 
-  it("reads the ruled cue words as written: a known residual where one follows the face sense", () => {
-    // "se" is a cue ("surat se hun", from Surat), so "blood from the dog's face" still reads as the city.
-    expect(issue("kutte ki surat se khoon aa raha hai")).toBeNull();
+  it("reads the name after a possessive as a face, whatever cue follows it", () => {
+    // "se" is a cue ("surat se hun", from Surat), but after "ki" the name is the dog's face: blood from it.
+    expect(issue("kutte ki surat se khoon aa raha hai")).toBe("everyday_city");
+    expect(issue("uski surat me kuch ho gaya hai")).toBe("everyday_city");
+    expect(issue("कुत्ते की सूरत में चोट है")).toBe("everyday_city");
+    // Without a possessive before it, the cue names the city.
+    expect(issue("surat se hun")).toBeNull();
+    expect(issue("surat me kutta ghayal hai")).toBeNull();
+    // Another occurrence next to a cue, and after no possessive, still names it.
+    expect(issue("kutte ki surat pe chot hai, hum surat me hain")).toBeNull();
   });
 
   it("holds the words to the city the conversation knows, unless they name the unit's city", () => {
@@ -429,7 +437,50 @@ describe("cityCueNear", () => {
     }
   });
 
+  it("is false right after a possessive, whatever cue follows: the name is a face", () => {
+    for (const text of [
+      "kutte ki surat se khoon aa raha hai", "kutte ka surat me", "kutte ke surat me", "uski surat me", "iski surat se",
+      "कुत्ते की सूरत में", "का सूरत में", "के सूरत से", "उसकी सूरत में",
+      "કૂતરા ની સુરત માં", "નો સુરતમાં", "ના સુરત થી",
+      "कुत्र्या ची सुरत मध्ये", "चा सुरतमध्ये", "चे सुरत मध्ये",
+    ]) {
+      expect(cityCueNear(text, "Surat"), text).toBe(false);
+    }
+    // Only the word right before counts: a possessive further back does not.
+    expect(cityCueNear("kutte ki gaadi surat me hai", "Surat")).toBe(true);
+  });
+
   it("is the one everyday city name the ruling fixed", () => {
     expect([...EVERYDAY_CITY_NAMES]).toEqual(["surat"]);
+  });
+});
+
+describe("facility words", () => {
+  it("is the clinic, hospital and doctor list, every word found on its own", () => {
+    expect([...FACILITY_WORDS]).toEqual([
+      "clinic", "clinik", "hospital", "doctor", "dawakhana", "क्लिनिक", "दवाखाना", "अस्पताल", "हॉस्पिटल", "डॉक्टर", "डाक्टर",
+      "દવાખાન", "ક્લિનિક", "હોસ્પિટલ", "ડૉક્ટર", "ડોક્ટર",
+    ]);
+    for (const word of FACILITY_WORDS) expect(hasFacilityWord(word), word).toBe(true);
+  });
+
+  it("finds one at the start of a word, in any case and script, whatever ending follows", () => {
+    for (const text of [
+      "ghatkopar hospital ka number", "Hospitals in Mumbai?", "Ghatkopar ke doctor ka number do", "दवाखाना कहाँ है",
+      "पास में कोई हॉस्पिटल है?", "ડૉક્ટરનો નંબર આપો", "નજીકમાં દવાખાનું છે?", "क्लिनिक का पता",
+    ]) {
+      expect(hasFacilityWord(text), text).toBe(true);
+    }
+    for (const text of ["ghatkopar me kutta ghayal hai", "Vesu, Surat", "the dog is bleeding", "घाटकोपर में कुत्ता घायल है"]) {
+      expect(hasFacilityWord(text), text).toBe(false);
+    }
+  });
+
+  it("reads entries as literals, in the listed form (nukta, apostrophes, spaces, nahi's spellings)", () => {
+    const finds = listedWordFinder(["didn't pick", "nahi lag", "a.b"]);
+    expect(finds("driver didn’t pick up")).toBe(true);
+    expect(finds("phone nhi   lag raha")).toBe(true);
+    expect(finds("a.b")).toBe(true);
+    expect(finds("axb")).toBe(false);
   });
 });

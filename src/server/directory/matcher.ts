@@ -192,9 +192,9 @@ export function isVagueAreaName(areaName: string): boolean {
 /**
  * Directory city names that are also everyday words: Hindi/Urdu सूरत, "surat", is a face or a look ("kutte ki surat pe
  * chot hai", "कुत्ते की सूरत पर चोट है"). A match reached only through such a name is precise only when the name stands
- * next to a locative cue (cityCueNear) or the conversation already knows that city: "surat me kutta ghayal hai" names
- * the city, "kutte ki surat pe chot hai" does not (everyday_city). One-word names, normalized; a new directory city that
- * is an everyday word belongs here.
+ * next to a locative cue, and after no possessive (cityCueNear), or the conversation already knows that city: "surat
+ * me kutta ghayal hai" names the city; "kutte ki surat pe chot hai" and "kutte ki surat se khoon aa raha hai" do not
+ * (everyday_city). One-word names, normalized; a new directory city that is an everyday word belongs here.
  */
 export const EVERYDAY_CITY_NAMES = ["surat"] as const;
 
@@ -211,6 +211,11 @@ const CITY_CUE_BEFORE: ReadonlySet<string> = new Set(["in", "at", "near", "to"])
  * (to Surat), a Marathi locative's "त". Never the Gujarati genitive "ના" (of).
  */
 const CITY_CUE_SUFFIXES: ReadonlySet<string> = new Set(["माँ", "मां", "में", "मे", "मध्ये", "ात", "त", "ला", "માં", "મા", "થી"]);
+/**
+ * A possessive right before the name makes it a face, whatever cue follows: "kutte ki surat se khoon aa raha hai" (from
+ * the dog's face), "उसकी सूरत में", "કૂતરા ની સૂરત". Hindi, Gujarati and Marathi possessives written as a word of their own.
+ */
+const FACE_POSSESSIVES: ReadonlySet<string> = new Set(["ki", "ka", "ke", "uski", "iski", "की", "का", "के", "उसकी", "ની", "નો", "ના", "ची", "चा", "चे"]);
 
 /** The text's words as normalize reads them, but before the aliases: NFC, lowercased, punctuation as spaces. */
 function wordsOf(text: string): string[] {
@@ -226,7 +231,8 @@ function wordsOf(text: string): string[] {
  * Whether `text` names the one-word city `city` as a place: the text is that name alone, or one of its occurrences (in
  * any spelling the aliases read: "surat", "सूरत", "સુરત") stands next to a locative cue: a case suffix glued to it
  * (CITY_CUE_SUFFIXES: "સુરતમાં"), the word right after it (CITY_CUE_AFTER: "surat me", "सूरत में", "Surat city") or the
- * word right before it (CITY_CUE_BEFORE: "in surat").
+ * word right before it (CITY_CUE_BEFORE: "in surat"). An occurrence right after a possessive (FACE_POSSESSIVES) is a
+ * face, whatever cue follows it: "kutte ki surat se khoon aa raha hai" names no city.
  */
 export function cityCueNear(text: string, city: string): boolean {
   const name = normalize(city);
@@ -234,6 +240,7 @@ export function cityCueNear(text: string, city: string): boolean {
   return words.some((word, i) => {
     const alias = aliasOfToken(word);
     if ((alias?.name ?? word) !== name) return false;
+    if (i > 0 && FACE_POSSESSIVES.has(words[i - 1])) return false;
     if (words.length === 1 || (alias?.suffix != null && CITY_CUE_SUFFIXES.has(alias.suffix))) return true;
     return CITY_CUE_AFTER.has(words[i + 1] ?? "") || CITY_CUE_BEFORE.has(words[i - 1] ?? "");
   });
@@ -249,10 +256,10 @@ export type PrecisionIssue = "other_city" | "generic_area" | "everyday_city";
  * reaches a unit only through vague area names (isVagueAreaName: a GENERIC_AREA_WORDS or EVERYDAY_AREA_NAMES word, found
  * by areaNamesIn) and the text does not name that unit's city ("Model Town, Ludhiana", "ambli na jhad pase");
  * everyday_city when a city match, or an area match whose area names are all such a city's, reaches a unit only through
- * a name of EVERYDAY_CITY_NAMES that stands next to no locative cue (cityCueNear: "kutte ki surat pe chot hai", while
- * "surat me kutta ghayal hai", "Surat" alone and "સુરતમાં" are precise). A unit reached through a plain name too ("South
- * Bopal" also names Bopal) is precise. Null when none holds: "ghatkopar" and "Karve Nagar, Pune" are precise. Pure: rows
- * in, issue out.
+ * a name of EVERYDAY_CITY_NAMES that stands next to no locative cue, or right after a possessive (cityCueNear: "kutte
+ * ki surat pe chot hai", "kutte ki surat se khoon aa raha hai", while "surat me kutta ghayal hai", "surat se hun",
+ * "Surat" alone and "સુરતમાં" are precise). A unit reached through a plain name too ("South Bopal" also names Bopal) is
+ * precise. Null when none holds: "ghatkopar" and "Karve Nagar, Pune" are precise. Pure: rows in, issue out.
  *
  * `knownCity` (the pre-match only; the fast path answers before any city is known): the city the conversation already
  * holds stands until the words name another, so a unit in a different city whose city the text does not name is
@@ -283,6 +290,49 @@ export function precisionIssue(
   if (result.candidates.some(everyday)) return "everyday_city";
   return null;
 }
+
+/** Devanagari and Gujarati nukta: "ग़लत" is read as "गलत". */
+const NUKTA_RE = /[़઼]/g;
+
+/** Apostrophes a keyboard may send for "'": a phone's smart punctuation writes "didn’t". */
+const APOSTROPHE_RE = /[\u2018\u2019\u02BC\u0060\u00B4]/g;
+
+/** Latin spellings of "nahi" a phone keyboard produces, read as "nahi" (whole words only, so a place word is never touched). */
+const NAHI_RE = /(?<![\p{L}\p{M}\p{N}])(?:nahin|nhi|nai|nahee|nahii)(?![\p{L}\p{M}\p{N}])/giu;
+
+/**
+ * The form both listed words and the reporter's text are read in: NFC, no nukta ("लड़का" and "लडका" are one word), every
+ * apostrophe as "'" ("didn’t" is "didn't"), every whitespace run as one space, so a phrase's space matches a line break
+ * or a double space too, and "nahi"'s keyboard spellings as "nahi".
+ */
+const listedForm = (s: string) =>
+  s.normalize("NFC").replace(NUKTA_RE, "").replace(APOSTROPHE_RE, "'").replace(/\s+/g, " ").replace(NAHI_RE, "nahi");
+
+/** An entry as a literal in the pattern: a regex character in it ("switch-off" has none today) never acts as one. */
+const literal = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * A test for whether a text holds one of `entries` at the start of a word, in any case, whatever ending follows, both read
+ * in the same form (listedForm): "Clinics", "दवाखाना", "દવાખાનું" and "ખોટો" count; "vardaan" and "वरदान" do not. The
+ * fast path's OTHER_INTENT_WORDS and the pre-match's FACILITY_WORDS are read with it.
+ */
+export function listedWordFinder(entries: readonly string[]): (text: string) => boolean {
+  const re = new RegExp(`(?<![\\p{L}\\p{M}\\p{N}])(?:${entries.map((w) => literal(listedForm(w))).join("|")})`, "iu");
+  return (text) => re.test(listedForm(text));
+}
+
+/**
+ * Words for a clinic, a hospital or a doctor, in Latin script (English and Hinglish), Devanagari (Hindi and Marathi) and
+ * Gujarati, read by listedWordFinder. A burst holding one asks for a facility: the fast path leaves it to the model (the
+ * words open OTHER_INTENT_WORDS in src/server/worker/fast-path.ts) and the pre-match offers no ambulance for it.
+ */
+export const FACILITY_WORDS = [
+  "clinic", "clinik", "hospital", "doctor", "dawakhana", "क्लिनिक", "दवाखाना", "अस्पताल", "हॉस्पिटल", "डॉक्टर", "डाक्टर",
+  "દવાખાન", "ક્લિનિક", "હોસ્પિટલ", "ડૉક્ટર", "ડોક્ટર",
+] as const;
+
+/** Whether the text holds a word of FACILITY_WORDS ("ghatkopar hospital ka number", "दवाखाना कहाँ है"). */
+export const hasFacilityWord = listedWordFinder(FACILITY_WORDS);
 
 /**
  * Neighbour-map keys for a needle: each word, each adjacent word pair

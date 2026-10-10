@@ -9,6 +9,7 @@ import { runTurn } from "@/server/worker/turn-runner";
 import { stopBoss } from "@/server/queue/boss";
 import { FakeBackend, okReply } from "@/server/agent/fake-backend";
 import { makeHandle } from "@/server/agent/handles";
+import { findClinicsImpl } from "@/server/agent/tools";
 import { findDigitRuns } from "@/server/agent/scrub";
 import type { ToolCallRecord } from "@/server/agent/tools";
 import type { TurnInput } from "@/server/agent/types";
@@ -219,6 +220,28 @@ describe("pre-matched units", () => {
     expect((await runTurn(c.id, { backend })).kind).toBe("ok");
     expect(backend.calls[1].prompt).toContain(`${HEADER}\n- {{AMB:${handle}}} — Arham Animal Ambulance, PMC (Pune), covers Karve Nagar [match: area]\n`);
     expect((await outbound(c.id)).at(-1)!.content).toBe("Please call +91 98765 00005 right away.");
+  });
+
+  it("offers no ambulance for a hospital request: no block, no card, and the model's find_clinics gives the hospital", async () => {
+    const c = await answered();
+    const query = "ghatkopar hospital ka number";
+    await storeReporterMessage(c.id, { kind: "text", content: query });
+    const backend = new FakeBackend([
+      async (input: TurnInput) => {
+        const out = await findClinicsImpl(input.toolContext!, { city: "Mumbai" });
+        return okReply({ reply: `Mumbai - Ghatkopar Hospital: {{CLINIC:${out.clinics[0].handle}}}. Open 10am-11pm IST.`, intent: "clinic" });
+      },
+    ]);
+    const r = await runTurn(c.id, { backend });
+    expect(r.kind).toBe("ok");
+    expect(backend.calls[0].prompt).not.toContain("PRE-MATCHED UNITS");
+    // The hospital's number, and no ambulance card.
+    expect((await outbound(c.id)).at(-1)!.content).toBe("Mumbai - Ghatkopar Hospital: +91 70000 00020. Open 10am-11pm IST.");
+    const t = await turnOf(r.turnId!);
+    const calls = t.toolCalls as ToolCallRecord[];
+    expect(calls.map((x) => x.name)).toEqual(["prematch", "find_clinics"]);
+    expect(calls[0].output).toEqual({ matchType: "area", count: 1, handles: [], skipped: "other_intent" });
+    expect(t.handles).toEqual({ [makeHandle("clinic", c.id, ids.hospitalGhatkopar)]: { kind: "clinic", id: ids.hospitalGhatkopar } });
   });
 
   it("arms no card for a city name that is also an everyday word with no locative cue (the dog's face, not Surat)", async () => {

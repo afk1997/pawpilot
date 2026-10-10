@@ -50,6 +50,7 @@ describe("fast path place checks", () => {
     ["Surat", "surat", "area"],
     ["સુરતમાં ગાય ઘાયલ છે", "surat", "area"],
     ["in surat, a dog is hurt", "surat", "area"],
+    ["surat se hun, kutta ghayal hai", "surat", "area"],
   ])("fires for %s", (text, id, matchType) => {
     expect(decide(text)).toEqual({ fire: true, unit: id, matchType });
   });
@@ -72,6 +73,7 @@ describe("fast path place checks", () => {
     ["ghorpadi disli", "generic_area"], // monitor lizards (Marathi घोरपडी), an animal people report
     ["kutte ki surat pe chot hai", "everyday_city"], // the dog's face
     ["कुत्ते की सूरत पर चोट है", "everyday_city"],
+    ["kutte ki surat se khoon aa raha hai", "everyday_city"], // a cue after a possessive: still the face
     ["Mumbai me gaadi ghuma rahe the", "other_city"],
     ["Hazra ji ka kutta ghayal hai, Mumbai", "other_city"],
     ["Ghatkopar, Pune", "other_city"],

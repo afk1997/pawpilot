@@ -1,6 +1,6 @@
-# The model's own answer to a request for a hospital's number: find_clinics, the Ghatkopar hospital's number (the words
-# pre-match also offers the Ghatkopar ambulance, which is not what was asked), and the word hospital. Needs the real
-# model.
+# The model's own answer to a request for a hospital's number: find_clinics, the Ghatkopar hospital's number, and the
+# word hospital. "hospital" keeps the Ghatkopar ambulance out of the pre-match (skipped: other_intent), so nothing
+# offers the model the ambulance instead. Needs the real model.
 name: hospital-ghatkopar-claude
 backend: claude
 steps:

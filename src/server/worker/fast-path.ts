@@ -4,7 +4,9 @@ import { messages, turns, type Conversation, type Message } from "../db/schema";
 import { HandleRegistry } from "../agent/handles";
 import { maskDigitRuns } from "../agent/scrub";
 import { loadActiveAmbulances } from "../directory/repo";
-import { matchAmbulances, precisionIssue, textNames, type DirectoryAmbulance, type PrecisionIssue } from "../directory/matcher";
+import {
+  FACILITY_WORDS, listedWordFinder, matchAmbulances, precisionIssue, textNames, type DirectoryAmbulance, type PrecisionIssue,
+} from "../directory/matcher";
 import { buildAmbulanceCard, buildAmbulanceCardTemplate } from "../messages/cards";
 import { fallbackFoundIntro, firstContactGreeting } from "../messages/system-replies";
 import { recordEvent } from "../inbound/store";
@@ -29,10 +31,11 @@ export const FAST_PATH_MAX_CHARS = 300;
  * also an animal's young). A burst holding one goes to the model even when it names a place. The list holds the common
  * phrasings, not every one: an unlisted way of saying the same still takes the fast path. Latin script (English and
  * Hinglish), Devanagari (Hindi and Marathi) and Gujarati. An entry must start no covered place's name: "band" would block
- * Bandra, and "man", "accident" and a bare "bachcha" are left out as too broad.
+ * Bandra, and "man", "accident" and a bare "bachcha" are left out as too broad. The clinic, hospital and doctor words come
+ * first, from FACILITY_WORDS (src/server/directory/matcher.ts), which the pre-match reads too.
  */
 export const OTHER_INTENT_WORDS = [
-  "clinic", "clinik", "hospital", "doctor", "dawakhana", "क्लिनिक", "दवाखाना", "अस्पताल", "डॉक्टर", "દવાખાન", "હોસ્પિટલ",
+  ...FACILITY_WORDS,
   "donate", "donation", "daan", "दान", "દાન", "volunteer", "स्वयंसेवक", "સ્વયંસેવક",
   "human", "insaan", "इंसान", "person", "talk", "baat", "complaint", "shikayat", "शिकायत", "ફરિયાદ",
   "wrong", "galat", "गलत", "ખોટ",
@@ -52,39 +55,15 @@ export const OTHER_INTENT_WORDS = [
   "bachche ka accident", "bachche ko gaadi", "bachche ko takkar", "bachche ko maara",
   "बच्चे का एक्सीडेंट", "बच्चे को गाड़ी", "बच्चे को टक्कर", "बच्चे को मारा",
   // The menu's own words (welcome.ts) and Marathi-only words: volunteering, a complaint, a donation, a suggestion.
-  "वालंटियर", "वॉलंटियर", "ક્લિનિક", "तक्रार", "देणगी",
-  "हॉस्पिटल", "डाक्टर", "ડૉક્ટર", "ડોક્ટર", "suggestion", "sujhav", "सुझाव", "सूचना", "સૂચન",
+  "वालंटियर", "वॉलंटियर", "तक्रार", "देणगी",
+  "suggestion", "sujhav", "सुझाव", "सूचना", "સૂચન",
 ] as const;
 
-/** Devanagari and Gujarati nukta: "ग़लत" is read as "गलत". */
-const NUKTA_RE = /[़઼]/g;
-
-/** Apostrophes a keyboard may send for "'": a phone's smart punctuation writes "didn’t". */
-const APOSTROPHE_RE = /[\u2018\u2019\u02BC\u0060\u00B4]/g;
-
 /**
- * The form both the entries and the reporter's text are read in: NFC, no nukta ("लड़का" and "लडका" are one word), every
- * apostrophe as "'" ("didn’t" is "didn't"), and every whitespace run as one space, so a phrase's space matches a line
- * break or a double space too.
+ * Whether the text holds a listed entry at the start of a word, in any case, whatever ending follows (listedWordFinder):
+ * "Clinics", "दवाखाना", "દવાખાનું" and "ખોટો" count; "vardaan" and "वरदान" do not.
  */
-/** Latin spellings of "nahi" a phone keyboard produces, read as "nahi" (whole words only, so a place word is never touched). */
-const NAHI_RE = /(?<![\p{L}\p{M}\p{N}])(?:nahin|nhi|nai|nahee|nahii)(?![\p{L}\p{M}\p{N}])/giu;
-
-const intentForm = (s: string) =>
-  s.normalize("NFC").replace(NUKTA_RE, "").replace(APOSTROPHE_RE, "'").replace(/\s+/g, " ").replace(NAHI_RE, "nahi");
-
-/** An entry as a literal in the pattern: a regex character in it ("switch-off" has none today) never acts as one. */
-const literal = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-/**
- * A listed entry at the start of a word, in any case, whatever ending follows: "Clinics", "दवाखाना", "દવાખાનું" and
- * "ખોટો" count; "vardaan" and "वरदान" do not.
- */
-const OTHER_INTENT_RE = new RegExp(`(?<![\\p{L}\\p{M}\\p{N}])(?:${OTHER_INTENT_WORDS.map((w) => literal(intentForm(w))).join("|")})`, "iu");
-
-export function hasOtherIntentWord(text: string): boolean {
-  return OTHER_INTENT_RE.test(intentForm(text));
-}
+export const hasOtherIntentWord = listedWordFinder(OTHER_INTENT_WORDS);
 
 export type PlaceDecision =
   | { fire: true; unit: DirectoryAmbulance; matchType: "area" | "city" }

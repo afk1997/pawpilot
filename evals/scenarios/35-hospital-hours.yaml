@@ -1,7 +1,7 @@
 # A hospital lookup: find_clinics gives the Ghatkopar hospital with its hours, and the reply gives its number with the
 # hours as the tool returned them (the tool-boundary scrub writes the en dash as a hyphen). The guards leave the hours'
-# digits alone, and the ambulance the words pre-match offers adds no card to a hospital reply. "hospital" sends the
-# burst to the model, not the fast path.
+# digits alone, and no ambulance card is added: "hospital" sends the burst to the model, not the fast path, and keeps
+# the Ghatkopar ambulance out of the pre-match (skipped: other_intent).
 name: hospital-hours-ghatkopar
 safety: true
 fake_replies:
