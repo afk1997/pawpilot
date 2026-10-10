@@ -74,11 +74,14 @@ arham exec postgres psql -U arham -d arham -c "delete from pgboss.job where name
 
 ## 7. Start the bot
 
+The migrations first, every time: they apply whatever the dump predates, and do nothing otherwise.
+
 ```bash
+arham run --rm -T app npm run migrate
 arham up -d
 ```
 
-Or, on a new VM or to apply migrations newer than the dump, deploy from the laptop: `scripts/deploy.sh azureuser@<vm-ip> main`. Then check `https://<PUBLIC_HOSTNAME>/api/health` (200 once the worker has sent its first heartbeat, within seconds) and `/admin`.
+On a new VM, deploy from the laptop instead (it migrates too): `scripts/deploy.sh azureuser@<vm-ip> main`. Once the Claude token is in `/opt/arham/.env`, starting the worker is the owner's step (deploy runbook, "Who runs what"). Then check `https://<PUBLIC_HOSTNAME>/api/health` (200 once the worker has sent its first heartbeat, within seconds) and `/admin`.
 
 ## 8. Clean up
 
