@@ -90,8 +90,9 @@ export interface TurnContext {
 
 /**
  * The pre-matched units, one line each: the token to write, the unit, its city, the covered area an area match went
- * through, a partner's operator and the match. The header says what was looked up: the reporter's words, or the
- * location known so far (`place`), whose units the model reuses only if the reporter still needs that place.
+ * through, a partner's operator, the unit's hours when it has them and the match. The header says what was looked up:
+ * the reporter's words, or the location known so far (`place`), whose units the model reuses only if the reporter still
+ * needs that place.
  */
 function prematchedBlock(p: Prematched, place: string): string[] {
   const header = p.source === "known_location"
@@ -102,7 +103,7 @@ function prematchedBlock(p: Prematched, place: string): string[] {
     ...p.units.map(
       (u) =>
         `- {{AMB:${u.handle}}} — ${u.display_name} (${u.city})${u.covers ? `, covers ${u.covers}` : ""}` +
-        `${u.operator_is_arham ? "" : `, operated by ${u.operator_name}`} [match: ${p.matchType}]`
+        `${u.operator_is_arham ? "" : `, operated by ${u.operator_name}`}${u.hours ? `, hours ${u.hours}` : ""} [match: ${p.matchType}]`
     ),
   ];
 }

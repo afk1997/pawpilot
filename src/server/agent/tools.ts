@@ -56,6 +56,8 @@ export interface FindAmbulancesOutput {
 export interface AmbulanceCandidate {
   handle: string; display_name: string; city: string; area: string | null; areas_covered: string[];
   category: string; operator_name: string; operator_is_arham: boolean;
+  /** When the unit's team answers ("10am–7pm IST"); null when none is published. */
+  hours: string | null;
 }
 
 /** A unit as find_ambulances gives it to the model: its handle, issued through the turn's registry, and never its number. */
@@ -69,6 +71,7 @@ function ambulanceCandidate(ctx: ToolContext, r: DirectoryAmbulance): AmbulanceC
     category: r.category,
     operator_name: r.operatorName,
     operator_is_arham: r.operatorIsArham,
+    hours: r.hours ?? null,
   };
 }
 
@@ -198,6 +201,8 @@ export async function findAmbulancesImpl(
 
 /** A unit the pre-match hands the model in the turn prompt (buildTurnPrompt's PRE-MATCHED UNITS). */
 export type PrematchedUnit = Pick<AmbulanceCandidate, "handle" | "display_name" | "city" | "area" | "operator_name" | "operator_is_arham"> & {
+  /** The unit's published hours; null or absent: none. */
+  hours?: string | null;
   /** The area names an exact area match went through besides the one the display name shows ("Vikhroli"); null or absent: none. */
   covers?: string | null;
 };
@@ -267,8 +272,11 @@ export async function prematchAmbulances(
       if (skipped === null) {
         const scrubbed = scrubDeep(
           result.candidates.map((r): PrematchedUnit => {
-            const { handle, display_name, city, area, operator_name, operator_is_arham } = ambulanceCandidate(ctx, r);
-            return { handle, display_name, city, area, operator_name, operator_is_arham, covers: matchType === "area" ? coveredNames(r, lookup) : null };
+            const { handle, display_name, city, area, operator_name, operator_is_arham, hours } = ambulanceCandidate(ctx, r);
+            return {
+              handle, display_name, city, area, operator_name, operator_is_arham, hours,
+              covers: matchType === "area" ? coveredNames(r, lookup) : null,
+            };
           })
         );
         removed = scrubbed.removed;

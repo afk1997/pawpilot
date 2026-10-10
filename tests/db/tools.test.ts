@@ -87,6 +87,23 @@ describe("tools", () => {
     expect(c.lastAmbulanceMatch).toBe(out.match);
   });
 
+  it("find_ambulances returns each unit's published hours (scrubbed, so every dash is a hyphen), null when it has none", async () => {
+    const out = await findAmbulancesImpl(ctx(), { city: "Mumbai", area: null, query: "mumbai" });
+    expect(out.candidates.map((c) => [c.display_name, c.hours])).toEqual([
+      ["Arham Animal Ambulance, Andheri", null],
+      ["Arham Animal Ambulance, Bandra", null],
+      ["Arham Animal Ambulance, Chembur", null],
+      ["Arham Animal Ambulance, Ghatkopar", "10am-7pm IST"],
+      ["Arham Animal Ambulance, Malad", null],
+      ["Arham Animal Ambulance, Mulund", null],
+    ]);
+  });
+
+  it("find_clinics returns each one's address and hours", async () => {
+    const out = await findClinicsImpl(ctx(), { city: "Surat" });
+    expect(out.clinics.map((c) => [c.label, c.address, c.hours])).toEqual([["Arham Clinic Surat", "Vesu Main Road", "9am-7pm"]]);
+  });
+
   it("find_ambulances returns the area list for a big city", async () => {
     const out = await findAmbulancesImpl(ctx(), { city: "Mumbai", area: null, query: "mumbai" });
     expect(out.candidates.length).toBe(6);

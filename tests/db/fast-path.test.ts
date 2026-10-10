@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { asc, eq } from "drizzle-orm";
 import { resetDb, createConversation } from "../helpers/db";
-import { seedDirectory, type DirectoryIds } from "../helpers/fixtures";
+import { MUMBAI_HOURS, seedDirectory, type DirectoryIds } from "../helpers/fixtures";
 import { getDb } from "@/server/db/client";
 import { ambulances, conversations, events, messages, turns } from "@/server/db/schema";
 import { storeReporterMessage } from "@/server/inbound/store";
@@ -33,7 +33,9 @@ const eventsOf = async (kind: string) => getDb().select().from(events).where(eq(
 /** A backend that must never be reached: the fast path answers without it. */
 const untouched = () => new FakeBackend([okReply({ reply: "the model was called", intent: "other" })]);
 
-const GHATKOPAR_EN = "Here is the animal ambulance for your area:\n\nArham Animal Ambulance, Ghatkopar\n+91 70000 00001\nPlease call them right away.";
+/** The Ghatkopar fixture unit publishes hours, so its card has the hours line, as the directory writes them. */
+const GHATKOPAR_EN =
+  "Here is the animal ambulance for your area:\n\nArham Animal Ambulance, Ghatkopar\n+91 70000 00001\nHours: 10am–7pm IST (call to confirm)\nPlease call them right away.";
 /** A conversation with no reply yet is at first contact, whatever its welcome claim says: its card opens with this. */
 const GREETING_EN = "Namaste! 🙏 ";
 
@@ -56,12 +58,16 @@ describe("the fast path", () => {
     expect(backend.calls).toHaveLength(0);
 
     const handle = makeHandle("ambulance", c.id, ids.ghatkopar);
-    const template = `${GREETING_EN}Here is the animal ambulance for your area:\n\nArham Animal Ambulance, Ghatkopar\n{{AMB:${handle}}}\nPlease call them right away.`;
+    const template =
+      `${GREETING_EN}Here is the animal ambulance for your area:\n\nArham Animal Ambulance, Ghatkopar\n{{AMB:${handle}}}\n` +
+      "Hours: 10am–7pm IST (call to confirm)\nPlease call them right away.";
     const out = await outbound(c.id);
     expect(out.map((m) => [m.origin, m.kind, m.turnId, m.deliveryStatus, m.content, m.contentTemplate])).toEqual([
       ["system", "text", r.turnId, "test_skipped", `${GREETING_EN}${GHATKOPAR_EN}`, template],
     ]);
-    expect(template).not.toMatch(/\d/);
+    // The only digits left are the hours', as the directory writes them: no phone-shaped run.
+    expect(template.replace(MUMBAI_HOURS, "")).not.toMatch(/\d/);
+    expect(findDigitRuns(template)).toEqual([]);
 
     const t = await turnOf(r.turnId!);
     expect(t).toMatchObject({ status: "ok", model: "fast_path", error: null, handles: { [handle]: { kind: "ambulance", id: ids.ghatkopar } } });
@@ -87,7 +93,9 @@ describe("the fast path", () => {
     const r = await runTurn(c.id, { backend: untouched() });
     expect(r.kind).toBe("fast_path");
     const [m] = await outbound(c.id);
-    expect(m.content).toBe("नमस्ते! 🙏 आपके इलाके की एनिमल एम्बुलेंस यह रही:\n\nArham Animal Ambulance, Ghatkopar\n+91 70000 00001\nकृपया उन्हें तुरंत कॉल करें।");
+    expect(m.content).toBe(
+      "नमस्ते! 🙏 आपके इलाके की एनिमल एम्बुलेंस यह रही:\n\nArham Animal Ambulance, Ghatkopar\n+91 70000 00001\nसमय: 10am–7pm IST (कॉल करके पुष्टि करें)\nकृपया उन्हें तुरंत कॉल करें।"
+    );
     expect((await turnOf(r.turnId!)).structuredOutput).toMatchObject({ language: "hi", intent: "ambulance" });
     expect((await conversationRow(c.id)).language).toBe("hi");
   });
@@ -97,7 +105,7 @@ describe("the fast path", () => {
     await storeReporterMessage(c.id, { kind: "text", content: "Ghatkopar" });
     const r = await runTurn(c.id, { backend: untouched() });
     expect(r.kind).toBe("fast_path");
-    expect((await outbound(c.id))[0].content).toContain("કૃપા કરીને તેમને તરત જ કૉલ કરો.");
+    expect((await outbound(c.id))[0].content).toContain("સમય: 10am–7pm IST (કૉલ કરીને ખાતરી કરો)\nકૃપા કરીને તેમને તરત જ કૉલ કરો.");
     expect((await conversationRow(c.id)).language).toBe("gu");
   });
 
@@ -266,7 +274,9 @@ describe("the fast path", () => {
     expect((await runTurn(c.id, { backend })).kind).toBe("ok");
     const handle = makeHandle("ambulance", c.id, ids.ghatkopar);
     const prompt = backend.calls[0].prompt;
-    expect(prompt).toMatch(/\] System: Namaste! 🙏 Here is the animal ambulance for your area:\n {2}\n {2}Arham Animal Ambulance, Ghatkopar\n {2}\{\{AMB:amb_[a-p]{8}\}\}\n {2}Please call them right away\./);
+    expect(prompt).toMatch(
+      /\] System: Namaste! 🙏 Here is the animal ambulance for your area:\n {2}\n {2}Arham Animal Ambulance, Ghatkopar\n {2}\{\{AMB:amb_[a-p]{8}\}\}\n {2}Hours: 10am–7pm IST \(call to confirm\)\n {2}Please call them right away\./
+    );
     expect(prompt).toContain(`{{AMB:${handle}}}`);
     expect(prompt).toContain(`Handles already shared in this chat: ${handle}`);
     expect(prompt).toContain("Location known so far: Ghatkopar, Mumbai");
@@ -282,7 +292,7 @@ describe("the fast path", () => {
     const out = await outbound(c.id);
     expect(out.map((m) => [m.kind, m.content])).toEqual([["text", `Namaste! 🙏 ${GHATKOPAR_EN}`]]);
     expect(out[0].contentTemplate).toMatch(/^Namaste! 🙏 Here is the animal ambulance for your area:\n\n/);
-    expect(out[0].contentTemplate).not.toMatch(/\d/);
+    expect(out[0].contentTemplate!.replace(MUMBAI_HOURS, "")).not.toMatch(/\d/);
     expect((await conversationRow(c.id)).welcomedAt).not.toBeNull();
 
     const greeted = await conv({ welcomed: false });

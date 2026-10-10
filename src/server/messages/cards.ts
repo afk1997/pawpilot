@@ -5,6 +5,8 @@ export interface CardAmbulance {
   city: string;
   area: string | null;
   phone: string;
+  /** When the team answers, as the directory holds it ("10am–7pm IST"); null or absent: none published. */
+  hours?: string | null;
   operatorName: string;
   operatorIsArham: boolean;
 }
@@ -52,6 +54,24 @@ export function partnerSuffix(operatorName: string, lang: Language): string {
   return (OPERATED_BY[lang] ?? OPERATED_BY.en)(operatorName);
 }
 
+const HOURS_LINE: Record<Language, (hours: string) => string> = {
+  en: (h) => `Hours: ${h} (call to confirm)`,
+  hi: (h) => `समय: ${h} (कॉल करके पुष्टि करें)`,
+  mr: (h) => `वेळ: ${h} (कॉल करून खात्री करा)`,
+  gu: (h) => `સમય: ${h} (કૉલ કરીને ખાતરી કરો)`,
+};
+
+/**
+ * A card's line for a unit's or clinic's published hours, in the card's language, the hours shown as the directory holds
+ * them ("Hours: 10am–7pm IST (call to confirm)"); null when there are none. The hours never hold a phone-shaped run
+ * (the ingest warns about one, as it does for every text cell), so the scrubber and the template masking leave the line
+ * as it is.
+ */
+export function hoursLine(hours: string | null | undefined, lang: Language): string | null {
+  const h = (hours ?? "").trim();
+  return h === "" ? null : (HOURS_LINE[lang] ?? HOURS_LINE.en)(h);
+}
+
 export function ambulanceDisplayName(row: CardAmbulance): string {
   const place = row.area && row.area.trim().length > 0 ? row.area : row.city;
   return row.operatorIsArham ? `Arham Animal Ambulance, ${place}` : `Animal Ambulance, ${place}`;
@@ -63,9 +83,12 @@ export function renderNumberForToken(row: CardAmbulance, lang: Language): string
   return row.operatorIsArham ? phone : `${phone} ${partnerSuffix(row.operatorName, lang)}`;
 }
 
+/** The unit's name, its number, a partner unit's label, its hours when it has them, and the call line. */
 export function buildAmbulanceCard(row: CardAmbulance, lang: Language = "en"): string {
   const lines = [ambulanceDisplayName(row), formatIndianPhone(row.phone)];
   if (!row.operatorIsArham) lines.push(partnerSuffix(row.operatorName, lang));
+  const hours = hoursLine(row.hours, lang);
+  if (hours) lines.push(hours);
   lines.push(CALL_PROMPT[lang] ?? CALL_PROMPT.en);
   return lines.join("\n");
 }
@@ -73,9 +96,11 @@ export function buildAmbulanceCard(row: CardAmbulance, lang: Language = "en"): s
 /**
  * buildAmbulanceCard's template, for the stored reply the next transcript shows: `token` ({{AMB:<handle>}}) stands on
  * the number's line for what renderNumberForToken renders, the number and a partner unit's label, so no digit is left.
+ * The hours line is the card's own.
  */
 export function buildAmbulanceCardTemplate(row: CardAmbulance, lang: Language, token: string): string {
-  return [ambulanceDisplayName(row), token, CALL_PROMPT[lang] ?? CALL_PROMPT.en].join("\n");
+  const hours = hoursLine(row.hours, lang);
+  return [ambulanceDisplayName(row), token, ...(hours ? [hours] : []), CALL_PROMPT[lang] ?? CALL_PROMPT.en].join("\n");
 }
 
 const MULTI_HEADER: Record<Language, (n: number, place: string) => string> = {
@@ -105,6 +130,8 @@ export function buildMultiAmbulanceCard(rows: CardAmbulance[], lang: Language = 
     lines.push(`${i + 1}. ${ambulanceDisplayName(row)}`);
     lines.push(`   ${formatIndianPhone(row.phone)}`);
     if (!row.operatorIsArham) lines.push(`   ${partnerSuffix(row.operatorName, lang)}`);
+    const hours = hoursLine(row.hours, lang);
+    if (hours) lines.push(`   ${hours}`);
     lines.push("");
   });
   return lines.join("\n").trimEnd();
@@ -121,27 +148,37 @@ export function buildHelplineCard(phone: string, lang: Language = "en"): string 
   return `${HELPLINE_INTRO[lang] ?? HELPLINE_INTRO.en}\n${formatIndianPhone(phone)}`;
 }
 
-const CLINIC_HEADER: Record<Language, string> = { en: "Our clinics", hi: "हमारे क्लिनिक", mr: "आमचे क्लिनिक", gu: "અમારા ક્લિનિક" };
-const NO_CLINICS: Record<Language, (clinicsUrl: string) => string> = {
-  en: (url) => `We don't have a clinic in that city yet. Visit ${url} for the full list.`,
-  hi: (url) => `उस शहर में अभी हमारा क्लिनिक नहीं है। पूरी सूची के लिए ${url} देखें।`,
-  mr: (url) => `त्या शहरात अजून आमचे क्लिनिक नाही. संपूर्ण यादीसाठी ${url} पहा.`,
-  gu: (url) => `તે શહેરમાં હજી અમારું ક્લિનિક નથી. સંપૂર્ણ યાદી માટે ${url} જુઓ.`,
+const CLINIC_HEADER: Record<Language, string> = {
+  en: "Our hospitals and clinics",
+  hi: "हमारे हॉस्पिटल और क्लिनिक",
+  mr: "आमची हॉस्पिटल आणि क्लिनिक",
+  gu: "અમારી હોસ્પિટલ અને ક્લિનિક",
+};
+const NO_CLINICS: Record<Language, (url: string) => string> = {
+  en: (url) => `We don't have a hospital or clinic in that city yet. Visit ${url} for the full list.`,
+  hi: (url) => `उस शहर में अभी हमारा कोई हॉस्पिटल या क्लिनिक नहीं है। पूरी सूची के लिए ${url} देखें।`,
+  mr: (url) => `त्या शहरात अजून आमचे हॉस्पिटल किंवा क्लिनिक नाही. संपूर्ण यादीसाठी ${url} पहा.`,
+  gu: (url) => `તે શહેરમાં હજી અમારી કોઈ હોસ્પિટલ કે ક્લિનિક નથી. સંપૂર્ણ યાદી માટે ${url} જુઓ.`,
 };
 
-/** The clinic list on the configured website (WEBSITE_URL), so the link cannot drift from it. */
-function clinicsUrl(): string {
-  return `${getConfig().websiteUrl.replace(/\/+$/, "")}/clinics`;
+/** The most hospitals and clinics one card lists: the directory has six. */
+const CLINIC_CARD_MAX_ROWS = 6;
+
+/** The hospital and clinic list on the configured website (WEBSITE_URL), so the link cannot drift from it. */
+function hospitalsUrl(): string {
+  return `${getConfig().websiteUrl.replace(/\/+$/, "")}/hospitals`;
 }
 
+/** Each hospital or clinic with its number, its address and its hours when it has them; the site's list when none. */
 export function buildClinicCard(rows: CardClinic[], lang: Language = "en"): string {
-  if (rows.length === 0) return (NO_CLINICS[lang] ?? NO_CLINICS.en)(clinicsUrl());
+  if (rows.length === 0) return (NO_CLINICS[lang] ?? NO_CLINICS.en)(hospitalsUrl());
   const lines: string[] = [CLINIC_HEADER[lang] ?? CLINIC_HEADER.en, ""];
-  for (const c of rows.slice(0, 5)) {
+  for (const c of rows.slice(0, CLINIC_CARD_MAX_ROWS)) {
     lines.push(`*${c.label}* (${c.area ? `${c.city} — ${c.area}` : c.city})`);
     lines.push(`📞 ${formatIndianPhone(c.phone)}`);
     if (c.address) lines.push(`📍 ${c.address}`);
-    if (c.hours) lines.push(`🕒 ${c.hours}`);
+    const hours = hoursLine(c.hours, lang);
+    if (hours) lines.push(`🕒 ${hours}`);
     lines.push("");
   }
   return lines.join("\n").trimEnd();

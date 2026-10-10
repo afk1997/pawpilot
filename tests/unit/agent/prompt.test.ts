@@ -130,6 +130,24 @@ describe("prompts", () => {
     );
   });
 
+  it("turn prompt gives a pre-matched unit's published hours after a partner's operator", () => {
+    const ctx: TurnContext = { nowIst: "x", language: "en", knownLocation: null, handlesShared: [], firstContact: false, transcript: "t", correction: null };
+    const unit = {
+      handle: "amb_kcmfpbca", display_name: "Arham Animal Ambulance, Ghatkopar", city: "Mumbai", area: "Ghatkopar",
+      operator_name: "Arham Yuva Seva Group", operator_is_arham: true, hours: "10am-7pm IST",
+    };
+    expect(buildTurnPrompt({ ...ctx, prematched: { matchType: "area", source: "words", units: [unit] } })).toContain(
+      "- {{AMB:amb_kcmfpbca}} — Arham Animal Ambulance, Ghatkopar (Mumbai), hours 10am-7pm IST [match: area]\n"
+    );
+    const partner = { ...unit, display_name: "Animal Ambulance, Rajkot", city: "Rajkot", area: null, operator_name: "Blue Cross", operator_is_arham: false, covers: "Gondal Road", hours: "9am-6pm IST" };
+    expect(buildTurnPrompt({ ...ctx, prematched: { matchType: "area", source: "words", units: [partner] } })).toContain(
+      "- {{AMB:amb_kcmfpbca}} — Animal Ambulance, Rajkot (Rajkot), covers Gondal Road, operated by Blue Cross, hours 9am-6pm IST [match: area]\n"
+    );
+    expect(buildTurnPrompt({ ...ctx, prematched: { matchType: "area", source: "words", units: [{ ...unit, hours: null }] } })).toContain(
+      "- {{AMB:amb_kcmfpbca}} — Arham Animal Ambulance, Ghatkopar (Mumbai) [match: area]\n"
+    );
+  });
+
   it("turn prompt says when the pre-matched units are for the location known so far, not the reporter's words", () => {
     const t = buildTurnPrompt({
       nowIst: "x", language: "en", knownLocation: { city: "Mumbai", area: "Ghatkopar" }, handlesShared: [], firstContact: false, transcript: "t", correction: null,

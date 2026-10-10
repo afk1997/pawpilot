@@ -10,7 +10,10 @@ export interface DirectoryIds {
   clinicSurat: string;
 }
 
-/** Minimal directory that exercises every matcher tier and both operator kinds. */
+/** Hours as the directory writes them for the Mumbai units (an en dash, the time zone named). */
+export const MUMBAI_HOURS = "10am–7pm IST";
+
+/** Minimal directory that exercises every matcher tier and both operator kinds; Ghatkopar has published hours. */
 export async function seedDirectory(): Promise<DirectoryIds> {
   const db = getDb();
   const [arham] = await db.insert(operators).values({ name: "Arham Yuva Seva Group", isArham: true }).returning();
@@ -18,13 +21,13 @@ export async function seedDirectory(): Promise<DirectoryIds> {
   const [hope] = await db.insert(operators).values({ name: "Hope for Indies Trust", isArham: false }).returning();
 
   const amb = async (v: {
-    label: string; city: string; area: string | null; state: string; phone: string; areas: string[]; op: string;
+    label: string; city: string; area: string | null; state: string; phone: string; areas: string[]; op: string; hours?: string;
   }) => {
     const [r] = await db
       .insert(ambulances)
       .values({
         operatorId: v.op, label: v.label, city: v.city, area: v.area, state: v.state,
-        phone: v.phone, phoneRaw: v.phone, areasCovered: v.areas,
+        phone: v.phone, phoneRaw: v.phone, areasCovered: v.areas, hours: v.hours ?? null,
       })
       .returning();
     return r.id;
@@ -32,7 +35,7 @@ export async function seedDirectory(): Promise<DirectoryIds> {
 
   const ids: DirectoryIds = {
     arhamOperatorId: arham.id, blueCrossOperatorId: blue.id, hopeOperatorId: hope.id,
-    ghatkopar: await amb({ label: "Mumbai - Ghatkopar", city: "Mumbai", area: "Ghatkopar", state: "Maharashtra", phone: "+917000000001", areas: ["Ghatkopar", "Vikhroli", "Kurla"], op: arham.id }),
+    ghatkopar: await amb({ label: "Mumbai - Ghatkopar", city: "Mumbai", area: "Ghatkopar", state: "Maharashtra", phone: "+917000000001", areas: ["Ghatkopar", "Vikhroli", "Kurla"], op: arham.id, hours: MUMBAI_HOURS }),
     malad: await amb({ label: "Mumbai - Malad", city: "Mumbai", area: "Malad", state: "Maharashtra", phone: "+917000000002", areas: ["Malad", "Kandivali"], op: arham.id }),
     andheri: await amb({ label: "Mumbai - Andheri", city: "Mumbai", area: "Andheri", state: "Maharashtra", phone: "+917000000003", areas: ["Andheri", "Jogeshwari", "Vile Parle"], op: arham.id }),
     bandra: await amb({ label: "Mumbai - Bandra", city: "Mumbai", area: "Bandra", state: "Maharashtra", phone: "+917000000004", areas: ["Bandra", "Khar", "Santacruz"], op: arham.id }),

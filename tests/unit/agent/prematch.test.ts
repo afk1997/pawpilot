@@ -38,10 +38,19 @@ describe("prematchAmbulances and the fast path's precision rules", () => {
     const handle = makeHandle("ambulance", CONV, "ghatkopar");
     expect(prematched).toEqual({
       matchType: "area", source: "words",
-      units: [{ handle, display_name: "Arham Animal Ambulance, Ghatkopar", city: "Mumbai", area: "Ghatkopar", operator_name: "Arham Yuva Seva Group", operator_is_arham: true, covers: null }],
+      units: [{ handle, display_name: "Arham Animal Ambulance, Ghatkopar", city: "Mumbai", area: "Ghatkopar", operator_name: "Arham Yuva Seva Group", operator_is_arham: true, hours: null, covers: null }],
     });
     expect([ctx.lastAmbulanceCandidates?.map((u) => u.id), ctx.lastAmbulanceMatch]).toEqual([["ghatkopar"], "area"]);
     expect(record.output).toEqual({ matchType: "area", count: 1, handles: [handle] });
+  });
+
+  it("hands the model a unit's published hours, scrubbed as tool output is (every dash a hyphen)", async () => {
+    vi.spyOn(repo, "loadActiveAmbulances").mockResolvedValue([{ ...rows[0], hours: "10am–7pm IST" }, ...rows.slice(1)]);
+    const ctx = context();
+    const { prematched } = await prematchAmbulances(ctx, { query: "ghatkopar", knownLocation: null });
+    expect(prematched?.units.map((u) => u.hours)).toEqual(["10am-7pm IST"]);
+    // The card the pre-match arms is built from the directory's row, so it shows the hours as written.
+    expect(ctx.lastAmbulanceCandidates?.map((u) => u.hours)).toEqual(["10am–7pm IST"]);
   });
 
   it("still pre-matches a generic area name when the words name the unit's city (Karve Nagar, Pune)", async () => {
