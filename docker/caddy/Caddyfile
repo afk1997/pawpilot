@@ -1,0 +1,20 @@
+# Caddy in front of the app (docker/docker-compose.yml mounts this directory at /etc/caddy). It obtains and renews
+# the Let's Encrypt certificate for PUBLIC_HOSTNAME by itself, which needs the DNS A record pointing at the VM and
+# ports 80 and 443 open, and redirects HTTP to HTTPS. scripts/deploy.sh reloads it after every deploy.
+{
+	email {$ACME_EMAIL}
+}
+
+{$PUBLIC_HOSTNAME} {
+	encode gzip
+	# X-Forwarded-For: Caddy sets it to the client's bare address and drops any the client sent, since nothing here
+	# is a trusted proxy (keep it that way). The admin login limiter keys on its first entry
+	# (src/app/api/admin/login/route.ts), which holds only while Caddy is the one thing facing the internet: never
+	# publish the app's port 3000.
+	reverse_proxy app:3000 {
+		# While a deploy re-creates the app, a request (a webhook POST included: it never reached the app) waits
+		# for it instead of getting a 502.
+		lb_try_duration 30s
+		lb_try_interval 1s
+	}
+}

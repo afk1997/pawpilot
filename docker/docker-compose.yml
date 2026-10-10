@@ -6,7 +6,7 @@
 # and backup get only the variables they need, interpolated from --env-file.
 #
 # Only caddy publishes ports. Never publish the app's port 3000 or Postgres's 5432: the admin login limiter trusts
-# the first X-Forwarded-For entry, which only Caddy may set (docker/Caddyfile), and Postgres stays on this network.
+# the first X-Forwarded-For entry, which only Caddy may set (docker/caddy/Caddyfile), and Postgres stays on this network.
 
 name: arham
 
@@ -20,6 +20,8 @@ x-logging: &logging
 x-app-env: &app-env
   NODE_ENV: production
   DATABASE_URL: postgres://arham:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in /opt/arham/.env}@postgres:5432/arham
+  # The backup upload's SAS URL is for the backup service alone.
+  AZURE_BACKUP_SAS_URL: ""
 
 x-app: &app
   image: arham-helpline:latest
@@ -43,7 +45,9 @@ services:
       PUBLIC_HOSTNAME: ${PUBLIC_HOSTNAME:?set PUBLIC_HOSTNAME in /opt/arham/.env}
       ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in /opt/arham/.env}
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # The directory, not the file: a checkout replaces the Caddyfile with a new file, which a single-file mount
+      # would never show the container, so `caddy reload` (scripts/deploy.sh) would read the old one.
+      - ./caddy:/etc/caddy:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
@@ -133,6 +137,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    # A stop during the nightly dump lets it finish (seconds) rather than lose that night's dump.
+    stop_grace_period: 60s
     logging: *logging
 
 volumes:

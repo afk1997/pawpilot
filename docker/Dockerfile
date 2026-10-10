@@ -1,6 +1,8 @@
 # The helpline's one image, built on the VM by docker/docker-compose.yml (see docs/runbooks/deploy.md):
 #   app     `node server.js`, the Next.js standalone server (the default command)
-#   worker  `npm run worker`; the same image also runs `npm run migrate` and `npm run ingest:ambulances`
+#   worker  `node --import tsx src/server/worker/index.ts`: `npm run worker`'s command, run without npm, whose
+#           `sh -c` would swallow the SIGTERM of a graceful stop (docker-compose.yml)
+# The same image also runs `npm run migrate` and `npm run ingest:ambulances`.
 # Everything runs as the unprivileged `node` user. The only path it writes is the worker's Claude home,
 # /home/node/claude-home (LLM_HOME_DIR), which the compose file mounts as a named volume.
 
