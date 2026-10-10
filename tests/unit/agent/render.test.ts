@@ -49,6 +49,16 @@ describe("renderReply", () => {
     expect(out.inserted).toContain("+917000000001");
   });
 
+  it("appends the card with the unit's hours line when it has published hours", async () => {
+    const out = await renderReply(base(new HandleRegistry("conv"), {
+      replyTemplate: "Please call the Ghatkopar ambulance.", lang: "hi", lastAmbulanceCandidates: [{ ...ghatkopar, hours: "10am–7pm IST" }],
+    }));
+    expect(out.text).toBe(
+      "Please call the Ghatkopar ambulance.\n\nArham Animal Ambulance, Ghatkopar\n+91 70000 00001\nसमय: 10am–7pm IST (कॉल करके पुष्टि करें)\nकृपया उन्हें तुरंत कॉल करें।"
+    );
+    expect(out.inserted).toEqual(["+917000000001"]);
+  });
+
   it("appends a multi card for two or three matches and nothing for more or other intents", async () => {
     const two = await renderReply(base(new HandleRegistry("conv"), { replyTemplate: "Two options.", lastAmbulanceCandidates: [ghatkopar, wadala] }));
     expect(two.text).toContain("2 ambulances are available in Mumbai");

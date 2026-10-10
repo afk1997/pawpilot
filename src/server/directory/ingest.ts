@@ -8,6 +8,13 @@ import { findDigitRuns, maskDigitRuns } from "../agent/scrub";
 export interface CsvRow {
   Type: string; Name: string; City: string; Area: string; State: string; Phone: string;
   "Area of Operation": string; Category: string; "Operated By": string;
+  /**
+   * Optional columns, absent from an older file and empty when unknown. Hours: when the team answers, as cards show it
+   * ("10am–7pm IST"), for ambulance and clinic rows alike. Address: a hospital's or clinic's address; ambulances have
+   * none, so it is not read on an ambulance row.
+   */
+  Hours?: string;
+  Address?: string;
 }
 
 export interface DirectoryRows {
@@ -45,7 +52,10 @@ const AMBULANCE_PHONE = /^\+91[6-9]\d{9}$/;
 const CLINIC_PHONE = /^\+91[1-9]\d{9}$/;
 const REQUIRED_FIELDS = ["Name", "City", "State", "Operated By"] as const;
 /** Every text cell: a phone-shaped number in one is a mistake directoryWarnings names (it is not a unit's number). */
-const TEXT_FIELDS = ["Name", "City", "Area", "State", "Area of Operation", "Category", "Operated By"] as const;
+const TEXT_FIELDS = ["Name", "City", "Area", "State", "Area of Operation", "Category", "Operated By", "Hours", "Address"] as const;
+
+/** An optional cell as stored: trimmed, null when empty or when the file has no such column. */
+const optionalCell = (value: string | undefined): string | null => (value ?? "").trim() || null;
 
 export function normalizePhone(raw: string): string {
   const digits = (raw ?? "").replace(/\D/g, "");
@@ -135,7 +145,7 @@ export function validateDirectoryRows(rows: DirectoryRows): string[] {
 /**
  * Rows that are safe to ingest but hold a phone-shaped number (in any script) in a text cell, one line per row naming
  * the cells, never the digits. Tool output and the prompt's coverage list drop such a run before the model sees it,
- * but code-built cards and partner labels show the unit's area, city and operator as written.
+ * but code-built cards and partner labels show the unit's area, city, operator and hours as written.
  */
 export function directoryWarnings(rows: DirectoryRows): string[] {
   const warnings: string[] = [];
@@ -152,8 +162,10 @@ export function directoryWarnings(rows: DirectoryRows): string[] {
 /**
  * Makes the directory match the file, in one transaction: upserts operators by name and
  * ambulances and clinics by label, then deactivates every active ambulance or clinic the
- * file no longer lists (a listed row is re-activated). Throws before writing anything when
- * the file fails validateDirectoryRows; returns directoryWarnings' lines with the counts.
+ * file no longer lists (a listed row is re-activated). Hours and Address are written as the
+ * file has them, so an empty cell, or a file without the column, clears them. Throws before
+ * writing anything when the file fails validateDirectoryRows; returns directoryWarnings'
+ * lines with the counts.
  */
 export async function ingestDirectory(rows: DirectoryRows, db: Db = getDb()) {
   const errors = validateDirectoryRows(rows);
@@ -181,7 +193,7 @@ export async function ingestDirectory(rows: DirectoryRows, db: Db = getDb()) {
         operatorId, label: r.Name.trim(), city: r.City.trim(), area: leak ? null : rawArea || null, state: r.State.trim(),
         phone: normalizePhone(r.Phone), phoneRaw: (r.Phone ?? "").trim(),
         areasCovered: leak ? [r.City.trim()] : parseAreasCovered(r["Area of Operation"], r.City.trim(), rawArea),
-        category: (r.Category ?? "").trim() || "Animal Ambulance", active: true, updatedAt: new Date(),
+        category: (r.Category ?? "").trim() || "Animal Ambulance", hours: optionalCell(r.Hours), active: true, updatedAt: new Date(),
       };
       const [existing] = await tx.select({ id: ambulances.id }).from(ambulances).where(eq(ambulances.label, payload.label));
       if (existing) { await tx.update(ambulances).set(payload).where(eq(ambulances.id, existing.id)); ambulancesUpdated++; }
@@ -193,7 +205,8 @@ export async function ingestDirectory(rows: DirectoryRows, db: Db = getDb()) {
       if (!operatorId) throw new Error(`Missing operator for ${r.Name}`);
       const payload = {
         operatorId, label: r.Name.trim(), city: r.City.replace(/,.*$/, "").trim(), area: (r.Area ?? "").trim() || null,
-        state: r.State.trim(), phone: normalizePhone(r.Phone), phoneRaw: (r.Phone ?? "").trim(), active: true,
+        state: r.State.trim(), phone: normalizePhone(r.Phone), phoneRaw: (r.Phone ?? "").trim(),
+        address: optionalCell(r.Address), hours: optionalCell(r.Hours), active: true,
       };
       const [existing] = await tx.select({ id: clinics.id }).from(clinics).where(eq(clinics.label, payload.label));
       if (existing) { await tx.update(clinics).set(payload).where(eq(clinics.id, existing.id)); clinicsUpdated++; }

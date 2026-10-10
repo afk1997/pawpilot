@@ -4,8 +4,8 @@ import type { Language } from "../types";
 import { HandleRegistry } from "./handles";
 import { loadActiveAmbulances, loadActiveClinics } from "../directory/repo";
 import {
-  areaNamesIn, matchAmbulances, normalize, precisionIssue, type DirectoryAmbulance, type MatchInput, type MatchResult, type MatchType,
-  type PrecisionIssue,
+  areaNamesIn, hasFacilityWord, matchAmbulances, normalize, precisionIssue, type DirectoryAmbulance, type MatchInput, type MatchResult,
+  type MatchType, type PrecisionIssue,
 } from "../directory/matcher";
 import { ambulanceDisplayName } from "../messages/cards";
 import { getStaticInfo, type InfoContent, type InfoTopic } from "../content/static";
@@ -56,6 +56,8 @@ export interface FindAmbulancesOutput {
 export interface AmbulanceCandidate {
   handle: string; display_name: string; city: string; area: string | null; areas_covered: string[];
   category: string; operator_name: string; operator_is_arham: boolean;
+  /** When the unit's team answers ("10am–7pm IST"); null when none is published. */
+  hours: string | null;
 }
 
 /** A unit as find_ambulances gives it to the model: its handle, issued through the turn's registry, and never its number. */
@@ -69,12 +71,13 @@ function ambulanceCandidate(ctx: ToolContext, r: DirectoryAmbulance): AmbulanceC
     category: r.category,
     operator_name: r.operatorName,
     operator_is_arham: r.operatorIsArham,
+    hours: r.hours ?? null,
   };
 }
 
 export interface FindClinicsOutput {
   clinics: { handle: string; label: string; city: string; area: string | null; address: string | null; hours: string | null }[];
-  /** False when a city was given and no clinic is in it; `clinics` is then the full list. */
+  /** False when a city was given and no hospital or clinic is in it; `clinics` is then the full list. */
   city_matched: boolean;
 }
 
@@ -198,6 +201,8 @@ export async function findAmbulancesImpl(
 
 /** A unit the pre-match hands the model in the turn prompt (buildTurnPrompt's PRE-MATCHED UNITS). */
 export type PrematchedUnit = Pick<AmbulanceCandidate, "handle" | "display_name" | "city" | "area" | "operator_name" | "operator_is_arham"> & {
+  /** The unit's published hours; null or absent: none. */
+  hours?: string | null;
   /** The area names an exact area match went through besides the one the display name shows ("Vikhroli"); null or absent: none. */
   covers?: string | null;
 };
@@ -214,6 +219,12 @@ export interface Prematched {
 
 /** The most units a pre-match hands the model: as many as the card fallback lists. */
 const PREMATCH_MAX_UNITS = 3;
+
+/**
+ * Why nothing was pre-matched although the words matched exactly: a precision rule (precisionIssue), or other_intent, a
+ * burst asking for a hospital, a clinic or a doctor (hasFacilityWord), which wants the facility, not an ambulance.
+ */
+export type PrematchSkip = PrecisionIssue | "other_intent";
 
 /**
  * The unit's area names the lookup's needles (its area, then the reporter's words) name as tier 1 reads them, leaving
@@ -235,10 +246,15 @@ function coveredNames(r: DirectoryAmbulance, lookup: MatchInput): string | null 
  * earlier place's card. A match on the words follows the fast path's precision rules (precisionIssue), with the city
  * the conversation already knows: when the words also name another covered city, or match a unit in a city other than
  * the known one without naming it, or reach a unit only through generic area names without its city being named or
- * known ("Model Town"), nothing is pre-matched at all (no block, no handles, no card), the model looks the place up
- * itself with the city, and the audit record says why (`skipped`). Any looser match, or more units, leaves the lookup to the model. The units
- * are scrubbed as tool output is. `record`: the audit entry (name "prematch"), whatever the outcome; a failed lookup is
- * recorded with its error's class and code, and throws nothing.
+ * known ("Model Town"), or only through a city name that is also an everyday word with no locative cue and the city not
+ * known ("kutte ki surat pe chot hai"), nothing is pre-matched at all (no block, no handles, no card), the model looks
+ * the place up itself with the city, and the audit record says why (`skipped`). Words holding a hospital, clinic or
+ * doctor word (hasFacilityWord: "ghatkopar hospital ka number") pre-match nothing either, not even the known location's
+ * units (`skipped: "other_intent"`): the reporter wants the facility, which find_clinics gives, and an ambulance offered
+ * with "use these handles directly" would mislead the model. Any looser match, or more units, leaves the lookup to the
+ * model. The units (their hours included) are scrubbed as tool output is. `record`: the audit entry
+ * (name "prematch"), whatever the outcome; a failed lookup is recorded with its error's class and code, and throws
+ * nothing.
  */
 export async function prematchAmbulances(
   ctx: ToolContext,
@@ -250,8 +266,10 @@ export async function prematchAmbulances(
     const rows = await loadActiveAmbulances();
     let result = matchAmbulances(rows, lookup);
     let source: Prematched["source"] = "words";
+    // A request for a hospital, a clinic or a doctor: no ambulance is offered, for the words or the known location.
+    const facility = hasFacilityWord(input.query);
     const known = input.knownLocation;
-    if (result.match === null && known && (known.city || known.area)) {
+    if (!facility && result.match === null && known && (known.city || known.area)) {
       lookup = { city: known.city, area: known.area, query: input.query };
       result = matchAmbulances(rows, lookup);
       source = "known_location";
@@ -259,16 +277,19 @@ export async function prematchAmbulances(
     const count = result.candidates.length;
     let prematched: Prematched | null = null;
     let removed = false;
-    /** Why an exact match on the words was left to the model: the words alone do not pin the place down. */
-    let skipped: PrecisionIssue | null = null;
+    /** Why nothing was pre-matched: a facility request, or words that alone do not pin the place down. */
+    let skipped: PrematchSkip | null = facility ? "other_intent" : null;
     const matchType = result.match;
-    if ((matchType === "area" || matchType === "city") && count >= 1 && count <= PREMATCH_MAX_UNITS) {
+    if (!facility && (matchType === "area" || matchType === "city") && count >= 1 && count <= PREMATCH_MAX_UNITS) {
       if (source === "words") skipped = precisionIssue(rows, input.query, result, { knownCity: input.knownLocation?.city ?? null });
       if (skipped === null) {
         const scrubbed = scrubDeep(
           result.candidates.map((r): PrematchedUnit => {
-            const { handle, display_name, city, area, operator_name, operator_is_arham } = ambulanceCandidate(ctx, r);
-            return { handle, display_name, city, area, operator_name, operator_is_arham, covers: matchType === "area" ? coveredNames(r, lookup) : null };
+            const { handle, display_name, city, area, operator_name, operator_is_arham, hours } = ambulanceCandidate(ctx, r);
+            return {
+              handle, display_name, city, area, operator_name, operator_is_arham, hours,
+              covers: matchType === "area" ? coveredNames(r, lookup) : null,
+            };
           })
         );
         removed = scrubbed.removed;
@@ -341,7 +362,7 @@ export function createArhamTools(ctx: ToolContext): {
       ),
       tool(
         "find_clinics",
-        "List Arham clinics, optionally filtered by city. Returns handles; write {{CLINIC:<handle>}} to give a clinic's number. city_matched false: no clinic is in the city you passed and every clinic is listed; tell the reporter that, and name each clinic's city before giving its number.",
+        "List Arham's animal hospitals and clinics (the label says which), optionally filtered by city, with each one's address and hours when known. Returns handles; write {{CLINIC:<handle>}} to give one's number. city_matched false: none is in the city you passed and every hospital and clinic is listed; tell the reporter that, and name each one's city before giving its number.",
         { city: z.string().nullable().optional().describe("City as spelled in the coverage list, or null") },
         async (args) => {
           try {

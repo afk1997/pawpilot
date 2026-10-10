@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import type { Conversation, Message } from "@/server/db/schema";
 import { OTHER_INTENT_WORDS, fastPathDecision, hasOtherIntentWord } from "@/server/worker/fast-path";
+import { FACILITY_WORDS } from "@/server/directory/matcher";
 
 /** The decision for a one-text burst; an other-intent word decides it before any database read. */
 const decide = (content: string) =>
@@ -11,7 +12,8 @@ const decide = (content: string) =>
 describe("fast path other-intent words", () => {
   it("is the one list the rulings fixed, every word found on its own", () => {
     expect([...OTHER_INTENT_WORDS]).toEqual([
-      "clinic", "clinik", "hospital", "doctor", "dawakhana", "क्लिनिक", "दवाखाना", "अस्पताल", "डॉक्टर", "દવાખાન", "હોસ્પિટલ",
+      "clinic", "clinik", "hospital", "doctor", "dawakhana", "क्लिनिक", "दवाखाना", "अस्पताल", "हॉस्पिटल", "डॉक्टर", "डाक्टर",
+      "દવાખાન", "ક્લિનિક", "હોસ્પિટલ", "ડૉક્ટર", "ડોક્ટર",
       "donate", "donation", "daan", "दान", "દાન", "volunteer", "स्वयंसेवक", "સ્વયંસેવક",
       "human", "insaan", "इंसान", "person", "talk", "baat", "complaint", "shikayat", "शिकायत", "ફરિયાદ",
       "wrong", "galat", "गलत", "ખોટ",
@@ -27,10 +29,12 @@ describe("fast path other-intent words", () => {
       "लड़का", "लड़के", "लड़की", "औरत", "मुलगा", "मुलगी", "बाळ", "બાળક", "છોકરો", "છોકરી",
       "bachche ka accident", "bachche ko gaadi", "bachche ko takkar", "bachche ko maara",
       "बच्चे का एक्सीडेंट", "बच्चे को गाड़ी", "बच्चे को टक्कर", "बच्चे को मारा",
-      "वालंटियर", "वॉलंटियर", "ક્લિનિક", "तक्रार", "देणगी",
-      "हॉस्पिटल", "डाक्टर", "ડૉક્ટર", "ડોક્ટર", "suggestion", "sujhav", "सुझाव", "सूचना", "સૂચન",
+      "वालंटियर", "वॉलंटियर", "तक्रार", "देणगी",
+      "suggestion", "sujhav", "सुझाव", "सूचना", "સૂચન",
     ]);
     for (const word of OTHER_INTENT_WORDS) expect(hasOtherIntentWord(word), word).toBe(true);
+    // The clinic, hospital and doctor words open the list, from the one list the pre-match reads too.
+    expect(OTHER_INTENT_WORDS.slice(0, FACILITY_WORDS.length)).toEqual([...FACILITY_WORDS]);
   });
 
   describe("the phrasings the first lists missed (re-review I-2)", () => {

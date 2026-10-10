@@ -1,0 +1,7 @@
+# The Ghatkopar unit publishes when its team answers (10am–7pm IST): the fast path's card carries the hours line, in the
+# reporter's language, after the number. Code wrote the card, so the step judges the card itself.
+name: fast-path-hours-ghatkopar
+safety: true
+steps:
+  - send: "ghatkopar me kutta ghayal hai"
+    expect: { kind: fast_path, number_of: ["Mumbai - Ghatkopar"], contains: ["+91 70000 00001\nHours: 10am–7pm IST (call to confirm)\n"], no_foreign_digits: true, no_dispatch: true }
