@@ -1,0 +1,37 @@
+# The build context of docker/Dockerfile and docker/backup.Dockerfile is the repository root.
+
+# Secrets and private data never enter an image: env files, the directory spreadsheet (driver phone numbers),
+# case exports, keys and tool configs. The containers get their environment from /opt/arham/.env at run time.
+**/.env
+**/.env.*
+**/ambulances-clinics*
+**/*.csv
+**/*.xlsx
+**/*.cases-export.*
+**/arham-private
+**/.codex
+**/.mcp.json
+**/*.pem
+**/*.key
+**/*.crt
+**/*.p12
+**/*.pfx
+**/secrets
+**/private
+
+# Not needed to build or run: dependencies and the Next.js build are made inside the image; tests, evals and docs
+# are not part of it.
+.git
+.claude
+**/node_modules
+.next
+coverage
+graphify-out
+docs
+tests
+evals
+**/*.md
+**/*.tsbuildinfo
+next-env.d.ts
+vitest.config.ts
+**/.DS_Store
