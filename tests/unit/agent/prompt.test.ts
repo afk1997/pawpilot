@@ -64,14 +64,14 @@ describe("prompts", () => {
     expect(p).toContain("rule 9's immediate-danger line");
   });
 
-  it("system prompt gives a hospital's or clinic's number, map link, address and details as asked, from find_clinics", () => {
+  it("system prompt always gives a hospital's or clinic's number, then the map link and address asked for, with its hours or a call-first line", () => {
     const p = systemPrompt();
     expect(p).toContain(
-      "For a hospital or clinic, give what the reporter asked for and nothing more: the number as {{CLINIC:<handle>}}, the location as its {{MAPS:<handle>}} token (write 'Google Maps:' before it), the address, the hours, the services or the notes, each copied from the find_clinics result."
+      "For a hospital or clinic, always give its number as {{CLINIC:<handle>}}, then what the reporter asked for, each copied from the find_clinics result: a reporter who asks where it is, for the address, the location, the map or directions gets its {{MAPS:<handle>}} token (write 'Google Maps:' before it) and the address; the services or the notes when asked."
     );
-    expect(p).toContain(
-      "A reporter who asks where it is, for the address, the location, the map or directions gets the Google Maps token and the address in one short reply; never say you do not have the location when the result carries maps."
-    );
+    expect(p).toContain("Add its hours when the result has them, or a line asking to call before visiting when it has none.");
+    expect(p).toContain("Keep it to about three short lines, and never say you do not have the location when the result carries maps.");
+    expect(p).not.toContain("and nothing more");
     expect(p).not.toContain("Give the hours and address the result carries.");
   });
   it("system prompt lists the MAPS token among the tokens, and forbids typing a map link", () => {
