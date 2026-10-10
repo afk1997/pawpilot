@@ -191,31 +191,47 @@ export function isVagueAreaName(areaName: string): boolean {
 
 /**
  * Directory city names that are also everyday words: Hindi/Urdu सूरत, "surat", is a face or a look ("kutte ki surat pe
- * chot hai", "कुत्ते की सूरत पर चोट है"). A match reached only through such a name is precise only when the name stands
- * next to a locative cue, and after no possessive (cityCueNear), or the conversation already knows that city: "surat
- * me kutta ghayal hai" names the city; "kutte ki surat pe chot hai" and "kutte ki surat se khoon aa raha hai" do not
- * (everyday_city). One-word names, normalized; a new directory city that is an everyday word belongs here.
+ * chot hai", "कुत्ते की सूरत पर चोट है") and, in idioms, a case or a situation ("kisi bhi surat mein", in any case). A
+ * match reached only through such a name is precise only when the name reads as a place (cityCueNear) or the
+ * conversation already knows that city: "surat me kutta ghayal hai" and "Adajan, Surat" name the city; "kutte ki surat
+ * se khoon aa raha hai" and "kisi bhi surat mein" do not (everyday_city). One-word names, normalized; a new directory
+ * city that is an everyday word belongs here.
  */
 export const EVERYDAY_CITY_NAMES = ["surat"] as const;
 
 const EVERYDAY_CITY_SET: ReadonlySet<string> = new Set<string>(EVERYDAY_CITY_NAMES);
 
-/** A word right after the city's name that makes it a place: "surat me", "surat se", "Surat city", "सूरत में", "સુરત થી". */
+/** A word right after the city's name that makes it a place: "surat me", "surat se", "Surat city", "सूरत में", "सूरत मे", "સુરત થી". */
 const CITY_CUE_AFTER: ReadonlySet<string> = new Set([
-  "me", "mein", "mai", "main", "madhe", "madhye", "ma", "maa", "se", "mathi", "city", "shehar", "में", "मध्ये", "માં", "થી", "શહેર",
+  "me", "mein", "mai", "main", "madhe", "madhye", "ma", "maa", "se", "mathi", "city", "shehar", "में", "मे", "मध्ये", "માં", "થી", "શહેર",
 ]);
-/** A word right before it: "in surat", "near surat". */
-const CITY_CUE_BEFORE: ReadonlySet<string> = new Set(["in", "at", "near", "to"]);
+/**
+ * An English locative right before it: "in surat", "near surat". It makes the name a place whatever stands earlier, so
+ * "the dog is in surat" stays a place although English "is" is also a FACE_WORDS word (Hindi इस). Never "to", which is
+ * also the Hinglish particle तो ("kutte ki to surat kharab hai").
+ */
+const CITY_CUE_BEFORE: ReadonlySet<string> = new Set(["in", "at", "near"]);
 /**
  * Case suffixes glued to an Indic spelling of the name that make it a place: "સુરતમાં", "सूरतમાં", "सुरतमध्ये", "सुरतला"
  * (to Surat), a Marathi locative's "त". Never the Gujarati genitive "ના" (of).
  */
 const CITY_CUE_SUFFIXES: ReadonlySet<string> = new Set(["माँ", "मां", "में", "मे", "मध्ये", "ात", "त", "ला", "માં", "મા", "થી"]);
 /**
- * A possessive right before the name makes it a face, whatever cue follows: "kutte ki surat se khoon aa raha hai" (from
- * the dog's face), "उसकी सूरत में", "કૂતરા ની સૂરત". Hindi, Gujarati and Marathi possessives written as a word of their own.
+ * Words that, within the two words before the name (FACE_WORD_WINDOW), make it a face or part of an idiom, whatever cue
+ * follows: possessives ("kutte ki surat se khoon aa raha hai", the dog's face; "उसकी सूरत में", "કૂતરા ની સૂરત") and the
+ * idioms' this, that, any, every, also, such and whole ("kisi bhi surat mein", in any case; "is surat me", in this
+ * situation; "ऐसी सूरत में", in such a case; "kutte ki puri surat", its whole face). Hindi and Hinglish, Gujarati and
+ * Marathi, each written as a word of its own.
  */
-const FACE_POSSESSIVES: ReadonlySet<string> = new Set(["ki", "ka", "ke", "uski", "iski", "की", "का", "के", "उसकी", "ની", "નો", "ના", "ची", "चा", "चे"]);
+const FACE_WORDS: ReadonlySet<string> = new Set([
+  // possessives
+  "ki", "ka", "ke", "uski", "iski", "की", "का", "के", "उसकी", "ની", "નો", "ના", "ची", "चा", "चे",
+  // this, that, any, every, also, such, whole
+  "is", "us", "kisi", "har", "bhi", "aisi", "aise", "puri", "poori", "इस", "उस", "किसी", "हर", "भी", "ऐसी", "ऐसे", "पूरी",
+  "આ", "એ", "કોઈ", "દરેક", "આખી", "ही", "त्या", "कोणत्याही", "प्रत्येक", "पूर्ण",
+]);
+/** How many words before the name FACE_WORDS are looked for: "kutte ki puri surat me", "kisi bhi surat mein". */
+const FACE_WORD_WINDOW = 2;
 
 /** The text's words as normalize reads them, but before the aliases: NFC, lowercased, punctuation as spaces. */
 function wordsOf(text: string): string[] {
@@ -228,11 +244,12 @@ function wordsOf(text: string): string[] {
 }
 
 /**
- * Whether `text` names the one-word city `city` as a place: the text is that name alone, or one of its occurrences (in
- * any spelling the aliases read: "surat", "सूरत", "સુરત") stands next to a locative cue: a case suffix glued to it
- * (CITY_CUE_SUFFIXES: "સુરતમાં"), the word right after it (CITY_CUE_AFTER: "surat me", "सूरत में", "Surat city") or the
- * word right before it (CITY_CUE_BEFORE: "in surat"). An occurrence right after a possessive (FACE_POSSESSIVES) is a
- * face, whatever cue follows it: "kutte ki surat se khoon aa raha hai" names no city.
+ * Whether `text` names the one-word city `city` as a place: one of its occurrences (in any spelling the aliases read:
+ * "surat", "सूरत", "સુરત") has an English locative right before it (CITY_CUE_BEFORE: "in surat", "the dog is in surat"),
+ * or, with no FACE_WORDS word within the two words before it ("kutte ki surat se khoon", "kisi bhi surat mein" are a
+ * face and an idiom), is the text alone, carries a locative case suffix (CITY_CUE_SUFFIXES: "સુરતમાં"), is the last
+ * word, bare ("Adajan, Surat", the "<area>, <city>" the bot asks for), or has a locative word right after it
+ * (CITY_CUE_AFTER: "surat me", "सूरत मे", "Surat city").
  */
 export function cityCueNear(text: string, city: string): boolean {
   const name = normalize(city);
@@ -240,9 +257,11 @@ export function cityCueNear(text: string, city: string): boolean {
   return words.some((word, i) => {
     const alias = aliasOfToken(word);
     if ((alias?.name ?? word) !== name) return false;
-    if (i > 0 && FACE_POSSESSIVES.has(words[i - 1])) return false;
+    if (CITY_CUE_BEFORE.has(words[i - 1] ?? "")) return true;
+    if (words.slice(Math.max(0, i - FACE_WORD_WINDOW), i).some((w) => FACE_WORDS.has(w))) return false;
     if (words.length === 1 || (alias?.suffix != null && CITY_CUE_SUFFIXES.has(alias.suffix))) return true;
-    return CITY_CUE_AFTER.has(words[i + 1] ?? "") || CITY_CUE_BEFORE.has(words[i - 1] ?? "");
+    if (i === words.length - 1 && alias?.suffix == null) return true;
+    return CITY_CUE_AFTER.has(words[i + 1] ?? "");
   });
 }
 
@@ -256,9 +275,9 @@ export type PrecisionIssue = "other_city" | "generic_area" | "everyday_city";
  * reaches a unit only through vague area names (isVagueAreaName: a GENERIC_AREA_WORDS or EVERYDAY_AREA_NAMES word, found
  * by areaNamesIn) and the text does not name that unit's city ("Model Town, Ludhiana", "ambli na jhad pase");
  * everyday_city when a city match, or an area match whose area names are all such a city's, reaches a unit only through
- * a name of EVERYDAY_CITY_NAMES that stands next to no locative cue, or right after a possessive (cityCueNear: "kutte
- * ki surat pe chot hai", "kutte ki surat se khoon aa raha hai", while "surat me kutta ghayal hai", "surat se hun",
- * "Surat" alone and "સુરતમાં" are precise). A unit reached through a plain name too ("South Bopal" also names Bopal) is
+ * a name of EVERYDAY_CITY_NAMES that does not read as a place (cityCueNear: "kutte ki surat pe chot hai", "kutte ki
+ * surat se khoon aa raha hai", "kisi bhi surat mein", while "surat me kutta ghayal hai", "surat se hun", "Adajan,
+ * Surat", "Surat" alone and "સુરતમાં" are precise). A unit reached through a plain name too ("South Bopal" also names Bopal) is
  * precise. Null when none holds: "ghatkopar" and "Karve Nagar, Pune" are precise. Pure: rows in, issue out.
  *
  * `knownCity` (the pre-match only; the fast path answers before any city is known): the city the conversation already

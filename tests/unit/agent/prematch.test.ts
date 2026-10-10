@@ -70,6 +70,7 @@ describe("prematchAmbulances and the fast path's precision rules", () => {
     ["kutte ki surat pe chot hai", "everyday_city"],
     ["कुत्ते की सूरत पर चोट है", "everyday_city"],
     ["kutte ki surat se khoon aa raha hai", "everyday_city"],
+    ["is surat me kya karein", "everyday_city"],
     // A request for a hospital, a clinic or a doctor wants the facility, not the area's ambulance.
     ["ghatkopar hospital ka number", "other_intent"],
     ["Ghatkopar ke doctor ka number do", "other_intent"],

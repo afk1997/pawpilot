@@ -258,6 +258,26 @@ describe("pre-matched units", () => {
     ]);
   });
 
+  it("arms no Surat card for an idiom, in a conversation whose known city is Mumbai", async () => {
+    const c = await conv();
+    await storeReporterMessage(c.id, { kind: "text", content: "ghatkopar me kutta ghayal hai" });
+    expect((await runTurn(c.id)).kind).toBe("fast_path");
+    // "kisi bhi surat mein" is "in any case", not Surat.
+    const query = "kisi bhi surat mein jaldi aao";
+    await storeReporterMessage(c.id, { kind: "text", content: query });
+    const backend = new FakeBackend([okReply({ reply: "Aap kis area mein hain?", intent: "ambulance" })]);
+    const r = await runTurn(c.id, { backend });
+    expect(r.kind).toBe("ok");
+    expect(backend.calls[0].prompt).not.toContain("PRE-MATCHED UNITS");
+    // A reply without a token gets no Surat card.
+    const sent = (await outbound(c.id)).at(-1)!;
+    expect(sent.content).toBe("Aap kis area mein hain?");
+    expect(sent.content).not.toContain("+91 98765 00003");
+    expect(((await turnOf(r.turnId!)).toolCalls as ToolCallRecord[])[0]).toEqual({
+      name: "prematch", input: { query }, output: { matchType: "area", count: 1, handles: [], skipped: "everyday_city" }, durationMs: expect.any(Number),
+    });
+  });
+
   it("names the covered area an area match went through (Vikhroli, covered by the Ghatkopar unit)", async () => {
     const c = await answered();
     await storeReporterMessage(c.id, { kind: "text", content: "vikhroli station ke paas" });

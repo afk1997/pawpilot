@@ -402,6 +402,25 @@ describe("precisionIssue", () => {
     expect(issue("kutte ki surat pe chot hai, hum surat me hain")).toBeNull();
   });
 
+  it("reads the name in an idiom, or with a face word within two words before it, as never the city", () => {
+    for (const text of [
+      "kisi bhi surat mein", "is surat me", "किसी भी सूरत में", "ऐसी सूरत में", "kutte ki to surat kharab hai", "kutte ki puri surat me khoon hai",
+      "kisi bhi surat mein madad karo, kutta ghayal hai", "is surat me kya karein", "किसी भी सूरत में मदद कीजिए", "ऐसी सूरत में क्या करें",
+      "kutte ki to surat hi bigad gayi hai", "uski to surat pe khoon hai",
+    ]) {
+      expect(issue(text), text).toBe("everyday_city");
+      // The known city elsewhere does not make the idiom's word name Surat.
+      expect(issue(text, "Mumbai"), text).toBe("everyday_city");
+    }
+    for (const text of ["surat me kutta ghayal hai", "Adajan, Surat", "सूरत मे", "in surat", "sorry, it is in surat", "the dog is in Surat"]) {
+      expect(issue(text), text).toBeNull();
+    }
+  });
+
+  it("looks only two words back: a face word three words before the name is a known residual", () => {
+    expect(issue("kutte ki naak aur surat se khoon aa raha hai")).toBeNull();
+  });
+
   it("holds the words to the city the conversation knows, unless they name the unit's city", () => {
     // A unit elsewhere, its city unnamed: the known city stands.
     expect(issue("gaadi ghuma rahe the tab dekha", "Mumbai")).toBe("other_city");
@@ -426,9 +445,19 @@ describe("cityCueNear", () => {
     for (const text of ["Surat", "surat.", "surat me", "Surat mein kutta", "surat mai", "surat main", "surat madhe", "surat madhye", "surat ma", "surat maa", "surat se", "surat mathi", "surat city", "surat shehar"]) {
       expect(cityCueNear(text, "Surat"), text).toBe(true);
     }
-    for (const text of ["in surat", "at Surat", "near surat", "going to surat", "सूरत में", "सुरत मध्ये", "સુરત માં", "સુરત થી", "સુરત શહેર", "સુરતમાં", "सूरतમાં", "सुरतमध्ये", "सुरतला"]) {
+    for (const text of ["in surat", "at Surat", "near surat", "सूरत में", "सूरत मे", "सुरत मध्ये", "સુરત માં", "સુરત થી", "સુરત શહેર", "સુરતમાં", "सूरतમાં", "सुरतमध्ये", "सुरतला"]) {
       expect(cityCueNear(text, "Surat"), text).toBe(true);
     }
+  });
+
+  it("is true for the bare name as the last word, and for an English locative right before it whatever comes earlier", () => {
+    for (const text of ["Adajan, Surat", "kutta ghayal hai, Varachha road, Surat", "the dog is in Surat", "please help us in surat"]) {
+      expect(cityCueNear(text, "Surat"), text).toBe(true);
+    }
+    // "to" is no cue: it is also the Hinglish particle तो.
+    expect(cityCueNear("going to surat with the dog", "Surat")).toBe(false);
+    // A glued case suffix that is no locative, last: no cue.
+    expect(cityCueNear("kutra ghayal che, સુરતના", "Surat")).toBe(false);
   });
 
   it("is false without a cue next to the name, or for a word that only contains it", () => {
@@ -446,8 +475,20 @@ describe("cityCueNear", () => {
     ]) {
       expect(cityCueNear(text, "Surat"), text).toBe(false);
     }
-    // Only the word right before counts: a possessive further back does not.
-    expect(cityCueNear("kutte ki gaadi surat me hai", "Surat")).toBe(true);
+    // A possessive two words back counts too; three words back is out of the window.
+    expect(cityCueNear("kutte ki gaadi surat me hai", "Surat")).toBe(false);
+    expect(cityCueNear("kutte ki naak aur surat se khoon", "Surat")).toBe(true);
+  });
+
+  it("is false with an idiom's word within the two words before the name, whatever cue follows", () => {
+    for (const text of [
+      "kisi bhi surat mein", "is surat me", "us surat me", "har surat me", "aisi surat me", "aise surat me", "kutte ki puri surat me",
+      "kutte ki poori surat se", "किसी भी सूरत में", "इस सूरत में", "उस सूरत में", "हर सूरत में", "ऐसी सूरत में", "ऐसे सूरत में",
+      "पूरी सूरत में", "આ સુરતમાં", "એ સુરત માં", "કોઈ પણ સુરત માં", "દરેક સુરત માં", "આખી સુરત માં",
+      "ही सुरत मध्ये", "त्या सुरत मध्ये", "कोणत्याही सुरत मध्ये", "प्रत्येक सुरत मध्ये", "पूर्ण सुरत मध्ये",
+    ]) {
+      expect(cityCueNear(text, "Surat"), text).toBe(false);
+    }
   });
 
   it("is the one everyday city name the ruling fixed", () => {

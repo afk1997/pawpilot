@@ -70,6 +70,8 @@ describe("the website's content (2026-10-10)", () => {
     expect(answers[1]).toMatch(/exact location, a nearby landmark.*condition/);
     expect(answers[2]).toContain("Mumbai teams answer calls 10am–7pm IST, every day.");
     expect(answers[3]).toMatch(/^Call the hospital or clinic before visiting/);
+    // The hours promise is what the code does: cards show the hours the website publishes.
+    expect(answers[3]).toContain("The card shows the team's hours where the website publishes them.");
     expect(answers[4]).toContain("Animal Helpline India at {{PHONE:faq_1}}.");
   });
 

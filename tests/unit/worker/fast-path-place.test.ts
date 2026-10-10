@@ -51,6 +51,7 @@ describe("fast path place checks", () => {
     ["સુરતમાં ગાય ઘાયલ છે", "surat", "area"],
     ["in surat, a dog is hurt", "surat", "area"],
     ["surat se hun, kutta ghayal hai", "surat", "area"],
+    ["Adajan, Surat", "surat", "area"], // the bare name last: the "<area>, <city>" the bot asks for
   ])("fires for %s", (text, id, matchType) => {
     expect(decide(text)).toEqual({ fire: true, unit: id, matchType });
   });
@@ -74,6 +75,8 @@ describe("fast path place checks", () => {
     ["kutte ki surat pe chot hai", "everyday_city"], // the dog's face
     ["कुत्ते की सूरत पर चोट है", "everyday_city"],
     ["kutte ki surat se khoon aa raha hai", "everyday_city"], // a cue after a possessive: still the face
+    ["kisi bhi surat mein madad karo, kutta ghayal hai", "everyday_city"], // "in any case"
+    ["kutte ki puri surat me khoon hai", "everyday_city"], // a possessive two words back
     ["Mumbai me gaadi ghuma rahe the", "other_city"],
     ["Hazra ji ka kutta ghayal hai, Mumbai", "other_city"],
     ["Ghatkopar, Pune", "other_city"],
