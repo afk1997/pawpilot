@@ -36,6 +36,13 @@
       "when": 1791643905389,
       "tag": "0004_ambulance_hours",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1791654099784,
+      "tag": "0005_clinic_locations",
+      "breakpoints": true
     }
   ]
 }

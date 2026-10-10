@@ -10,11 +10,17 @@ export interface CsvRow {
   "Area of Operation": string; Category: string; "Operated By": string;
   /**
    * Optional columns, absent from an older file and empty when unknown. Hours: when the team answers, as cards show it
-   * ("10am–7pm IST"), for ambulance and clinic rows alike. Address: a hospital's or clinic's address; ambulances have
-   * none, so it is not read on an ambulance row.
+   * ("10am–7pm IST"), for ambulance and clinic rows alike. The rest are a hospital's or clinic's, so they are not read on
+   * an ambulance row: Address; Maps, its Google Maps location as one https link ("https://maps.google.com/?q=<lat>,<lng>",
+   * coordinates rounded to 5 decimals, so no 7-digit run); Page, its page on the website, one https link; Services, what
+   * it offers; Notes, what a visitor should know (charges, calling first).
    */
   Hours?: string;
   Address?: string;
+  Maps?: string;
+  Page?: string;
+  Services?: string;
+  Notes?: string;
 }
 
 export interface DirectoryRows {
@@ -52,7 +58,13 @@ const AMBULANCE_PHONE = /^\+91[6-9]\d{9}$/;
 const CLINIC_PHONE = /^\+91[1-9]\d{9}$/;
 const REQUIRED_FIELDS = ["Name", "City", "State", "Operated By"] as const;
 /** Every text cell: a phone-shaped number in one is a mistake directoryWarnings names (it is not a unit's number). */
-const TEXT_FIELDS = ["Name", "City", "Area", "State", "Area of Operation", "Category", "Operated By", "Hours", "Address"] as const;
+const TEXT_FIELDS = [
+  "Name", "City", "Area", "State", "Area of Operation", "Category", "Operated By", "Hours", "Address", "Maps", "Page", "Services", "Notes",
+] as const;
+/** A clinic row's link cells: code puts a Maps link into replies as written, so each must be one https link. */
+const LINK_FIELDS = ["Maps", "Page"] as const;
+/** One https link: no whitespace, so a cell holding a link and other words (or a bare number) is refused. */
+const LINK_RE = /^https:\/\/\S+$/;
 
 /** An optional cell as stored: trimmed, null when empty or when the file has no such column. */
 const optionalCell = (value: string | undefined): string | null => (value ?? "").trim() || null;
@@ -121,6 +133,14 @@ export function validateDirectoryRows(rows: DirectoryRows): string[] {
       problems.push(`Phone must be ${expected}, optionally after 0, 91 or +91 (the cell has ${digits} digits)`);
     }
 
+    // Ambulance rows have no link cells: they are not read there.
+    if (kind === "Clinic") {
+      for (const field of LINK_FIELDS) {
+        const value = (r[field] ?? "").trim();
+        if (value && !LINK_RE.test(value)) problems.push(`${field} must be one link starting with https://`);
+      }
+    }
+
     const operator = (r["Operated By"] ?? "").trim();
     if (isArhamNearMiss(operator)) {
       problems.push(
@@ -162,10 +182,10 @@ export function directoryWarnings(rows: DirectoryRows): string[] {
 /**
  * Makes the directory match the file, in one transaction: upserts operators by name and
  * ambulances and clinics by label, then deactivates every active ambulance or clinic the
- * file no longer lists (a listed row is re-activated). Hours and Address are written as the
- * file has them, so an empty cell, or a file without the column, clears them. Throws before
- * writing anything when the file fails validateDirectoryRows; returns directoryWarnings'
- * lines with the counts.
+ * file no longer lists (a listed row is re-activated). Hours, and a clinic's Address, Maps,
+ * Page, Services and Notes, are written as the file has them, so an empty cell, or a file
+ * without the column, clears them. Throws before writing anything when the file fails
+ * validateDirectoryRows; returns directoryWarnings' lines with the counts.
  */
 export async function ingestDirectory(rows: DirectoryRows, db: Db = getDb()) {
   const errors = validateDirectoryRows(rows);
@@ -206,7 +226,8 @@ export async function ingestDirectory(rows: DirectoryRows, db: Db = getDb()) {
       const payload = {
         operatorId, label: r.Name.trim(), city: r.City.replace(/,.*$/, "").trim(), area: (r.Area ?? "").trim() || null,
         state: r.State.trim(), phone: normalizePhone(r.Phone), phoneRaw: (r.Phone ?? "").trim(),
-        address: optionalCell(r.Address), hours: optionalCell(r.Hours), active: true,
+        address: optionalCell(r.Address), hours: optionalCell(r.Hours), mapsUrl: optionalCell(r.Maps), pageUrl: optionalCell(r.Page),
+        services: optionalCell(r.Services), notes: optionalCell(r.Notes), active: true,
       };
       const [existing] = await tx.select({ id: clinics.id }).from(clinics).where(eq(clinics.label, payload.label));
       if (existing) { await tx.update(clinics).set(payload).where(eq(clinics.id, existing.id)); clinicsUpdated++; }

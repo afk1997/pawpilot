@@ -47,6 +47,17 @@ export const clinics = pgTable("clinics", {
   phoneRaw: text("phone_raw"),
   address: text("address"),
   hours: text("hours"),
+  /**
+   * Its Google Maps location, one https link as the directory's Maps cell writes it ("https://maps.google.com/?q=<lat>,<lng>",
+   * 5-decimal coordinates): replies carry it as a {{MAPS:<handle>}} token that code renders. Null when none is known.
+   */
+  mapsUrl: text("maps_url"),
+  /** Its page on the website, one https link (the Page cell); null when none. */
+  pageUrl: text("page_url"),
+  /** What it offers (the Services cell: "IPD for cats and dogs; OPD for cats; …"); null when not published. */
+  services: text("services"),
+  /** What a visitor should know (the Notes cell: charges, calling first); null when none. */
+  notes: text("notes"),
   active: boolean("active").notNull().default(true),
   createdAt: ts("created_at").notNull().defaultNow(),
 });
