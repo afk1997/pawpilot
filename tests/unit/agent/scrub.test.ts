@@ -196,11 +196,33 @@ describe("dispatch guard: vocabulary", () => {
       "आम्ही पत्ता आणि रुग्णवाहिका पाठवली आहे.", "અમે એમ્બ્યુલન્સ અને લોકેશન મોકલી રહ્યા છીએ.",
       // "With", "for" or "to" the vehicle is no possessive: the vehicle goes too.
       "हमने एम्बुलेंस के साथ लोकेशन भेज दी है।", "एम्बुलेंस के लिए लोकेशन भेज दी है।", "અમે એમ્બ્યુલન્સ ની સાથે લોકેશન મોકલી દીધું છે.",
+      // A vehicle named but not as whose information it is: an ambulance to wait for is on its way.
+      "एम्बुलेंस का इंतज़ार करें, लोकेशन भेज दी है।",
+      // Help, rescuers, volunteers, staff or people sent fire on their own.
+      "We are sending help.", "हम मदद भेज रहे हैं।", "आम्ही मदत पाठवत आहोत.", "અમે મદદ મોકલી રહ્યા છીએ.", "We are sending help to your location.",
     ]) {
       expect(hasDispatchLanguage(t), t).toBe(true);
     }
-    // The Latin-script Hinglish gap stays as documented (CLAUDE.md, Guard residuals): no Hinglish sending is read yet.
+    // The Latin-script Hinglish gap stays as documented (CLAUDE.md, Guard residuals): no Hinglish sending is read yet,
+    // so these say nothing about the information exemption.
     expect(hasDispatchLanguage("gaadi bhej rahe hain")).toBe(false);
+    expect(hasDispatchLanguage("Yeh raha number, location bhej raha hoon.")).toBe(false);
+  });
+
+  it.each([
+    // The reporter's own location relayed to a responder.
+    "We're sending your location to the nearest unit.", "We are sending your location to our rescuers.", "I'm sending your address to the crew.",
+    "We are sending your pin to the volunteers, they will reach you.", "हम आपकी लोकेशन यूनिट को भेज रहे हैं।", "हमने आपका पता स्वयंसेवकों को भेज दिया है।",
+    // An information word as where something else is sent, or before a clause that sends something.
+    "हम आपकी लोकेशन पर मदद भेज रहे हैं।", "आपके पते पर लोग भेज रहे हैं।", "हम आपके पते पर स्वयंसेवक भेज रहे हैं।", "लोकेशन देखकर मदद भेज रहे हैं।",
+    "लोकेशन मिलते ही भेज रहे हैं।", "तुमच्या पत्त्यावर मदत पाठवत आहोत.", "तुमच्या लोकेशनवर मदत पाठवली आहे.", "તમારા લોકેશન પર મદદ મોકલી રહ્યા છીએ.",
+    "તમારા સરનામે મદદ મોકલી દીધી છે.",
+    // "पता" inside "अस्पताल" (hospital), and "पता" as "know".
+    "हम अस्पताल से मदद भेज रहे हैं।", "हम अस्पताल का स्टाफ भेज रहे हैं।", "अस्पताल वाले भेज रहे हैं।", "मुझे पता है मदद भेज दी है।",
+    // A rescuer, volunteers or help beside the information.
+    "We are sending you the location and a rescuer.", "I'm sending the location and our volunteers.", "We're sending you the location and help is coming.",
+  ])("keeps firing on the review's sentences, which name something sent besides the information: %j", (text) => {
+    expect(hasDispatchLanguage(text)).toBe(true);
   });
 
   it("reads an Indic coming or road phrase only right after its vehicle or team subject (precision first)", () => {
@@ -251,12 +273,14 @@ describe("dispatch guard: exclusions", () => {
   });
 
   it.each([
-    "I'm sending you the location and the address.", "Yeh raha number, location bhej raha hoon.", "हम लोकेशन भेज रहे हैं", "સરનામું મોકલું છું",
+    "I'm sending you the location and the address.", "मैं लोकेशन भेज रहा हूँ।", "हम लोकेशन भेज रहे हैं", "હું સરનામું મોકલી રહ્યો છું.",
     "We are sending you the Google Maps link.", "I am sending the hospital's address and directions.", "We're sending you a photo of the map.",
     "I'm sending you the location pin now.", "I'm sending you the hospital location and the ambulance number.",
     "हमने अस्पताल का पता भेज दिया है।", "मैंने नक्शा भेज दिया है।", "हम लिंक भेज रहे हैं।", "हमने एम्बुलेंस का नंबर और लोकेशन भेज दी है।",
     "आम्ही पत्ता पाठवला आहे.", "आम्ही लोकेशन पाठवत आहोत.",
     "અમે લોકેશન મોકલી રહ્યા છીએ.", "અમે સરનામું મોકલી દીધું છે.", "હું લિંક મોકલી રહ્યો છું.", "એમ્બ્યુલન્સનો નંબર મોકલી દીધો છે.",
+    // A chain of possessives still names whose number it is.
+    "हमने एम्बुलेंस के ड्राइवर का नंबर भेज दिया है।",
   ])("never reads sending a location, an address, a map, a link, a number or details as dispatching: %j", (text) => {
     expect(hasDispatchLanguage(text)).toBe(false);
   });
