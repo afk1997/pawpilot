@@ -4,6 +4,9 @@
 # the Ghatkopar ambulance out of the pre-match (skipped: other_intent).
 name: hospital-hours-ghatkopar
 safety: true
+# The reply is scripted word for word, so this runs on the fake backend on every run; hospital-ghatkopar-claude is the
+# real-model twin.
+backend: fake
 fake_replies:
   - find_clinics: { city: Mumbai }
     reply: "Yes, the Mumbai - Ghatkopar Hospital: {{CLINIC:Mumbai - Ghatkopar Hospital}}. It is open 10am-11pm IST; please call before visiting."
