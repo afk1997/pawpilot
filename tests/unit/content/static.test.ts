@@ -1,25 +1,30 @@
 import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
+import raw from "@/content/static.json";
 import { getStaticInfo, getStaticPhones, foldDigits, type InfoTopic } from "@/server/content/static";
 import { LANGUAGES } from "@/server/types";
 import { HandleRegistry } from "@/server/agent/handles";
 import type { ToolContext } from "@/server/agent/tools";
 
 describe("getStaticInfo", () => {
-  it("returns English donate content without TODO fields", () => {
+  it("returns English donate content without TODO fields, and no UPI or bank field", () => {
     const c = getStaticInfo("donate", "en");
     expect(c.summary).toMatch(/donation/i);
     expect(c.url).toBe("https://alwayscare.org/donate");
     expect(JSON.stringify(c)).not.toMatch(/TODO/);
-    expect(c.upi).toBeUndefined();
+    expect(Object.keys(c).sort()).toEqual(["summary", "tax_note", "url"]);
   });
-  it("falls back to English for unfilled languages", () => {
+  it("returns the Gujarati donate content in Gujarati, with the same link", () => {
     const c = getStaticInfo("donate", "gu");
-    expect(c.summary).toMatch(/donation/i);
+    expect(c.summary).toContain("દરેક રૂપિયો સીધો જરૂરિયાતમંદ પ્રાણી સુધી પહોંચે છે");
+    expect(c.url).toBe("https://alwayscare.org/donate");
   });
-  it("returns FAQ as question/answer pairs", () => {
-    const faq = getStaticInfo("faq", "hi").faq as { question: string; answer: string }[];
-    expect(faq.length).toBeGreaterThanOrEqual(3);
-    expect(faq[0].question).toMatch(/free/i);
+  it("returns FAQ as question/answer pairs, in the reporter's language", () => {
+    const en = getStaticInfo("faq", "en").faq as { question: string; answer: string }[];
+    expect(en.length).toBeGreaterThanOrEqual(5);
+    expect(en[0].question).toMatch(/free/i);
+    const hi = getStaticInfo("faq", "hi").faq as { question: string; answer: string }[];
+    expect(hi).toHaveLength(en.length);
+    expect(hi[0].question).toBe("क्या आपकी सेवा मुफ़्त है?");
   });
   it("tokenizes phones in volunteer content and never exposes digits", () => {
     const c = getStaticInfo("volunteer", "en");
@@ -33,6 +38,66 @@ describe("getStaticInfo", () => {
   });
   it("returns human emergency text with 112/108", () => {
     expect(getStaticInfo("human_emergency", "en").text).toMatch(/112|108/);
+  });
+});
+
+describe("the website's content (2026-10-10)", () => {
+  type Faq = { question: string; answer: string }[];
+  const faq = (lang: (typeof LANGUAGES)[number]) => getStaticInfo("faq", lang).faq as Faq;
+
+  it("says what the site says about us: 48 ambulances, 26+ cities, five hospitals and a clinic, free for street animals", () => {
+    expect(getStaticInfo("about", "en").text).toBe(
+      "Arham Always Care is the animal-rescue project of Arham Yuva Seva Group, a youth-driven Indian non-profit. We run 48 free animal ambulances with trained vets and paravets across 26+ cities, five animal hospitals and a clinic, with two more hospitals under construction. Rescue and treatment for injured street and community animals is free; for pets, call the team first."
+    );
+  });
+
+  it("links the site's donate page and its volunteer section, with no volunteer contact", () => {
+    for (const lang of LANGUAGES) {
+      expect(getStaticInfo("donate", lang).url, lang).toBe("https://alwayscare.org/donate");
+      expect(getStaticInfo("volunteer", lang).url, lang).toBe("https://alwayscare.org/#volunteer");
+      expect(Object.keys(getStaticInfo("volunteer", lang)).sort(), lang).toEqual(["summary", "url"]);
+    }
+    expect(getStaticInfo("donate", "en").summary).toContain("Every rupee goes directly to an animal in need");
+    expect(getStaticInfo("donate", "en").summary).toMatch(/once or every month.*Razorpay.*80G tax certificate.*UPI QR code/);
+    expect(getStaticInfo("volunteer", "en").summary).toMatch(
+      /on-ground rescue support.*social media and awareness.*fundraising and events.*a city coordinator reaches out within 48 hours/
+    );
+  });
+
+  it("answers the site's FAQ: free care, what to share, Mumbai's hours, calling a hospital first, an uncovered city", () => {
+    const answers = faq("en").map((e) => e.answer);
+    expect(answers[0]).toMatch(/street and community animals are free.*pets.*call the team first/);
+    expect(answers[1]).toMatch(/exact location, a nearby landmark.*condition/);
+    expect(answers[2]).toContain("Mumbai teams answer calls 10am–7pm IST, every day.");
+    expect(answers[3]).toMatch(/^Call the hospital or clinic before visiting/);
+    expect(answers[4]).toContain("Animal Helpline India at {{PHONE:faq_1}}.");
+  });
+
+  it("is written out in Hindi, Marathi and Gujarati: no field falls back to English, and digits and links stay the same", () => {
+    const digitsAndLinks = (s: string) => [...(s.match(/\d+|https?:\/\/\S+/g) ?? [])].sort();
+    const source = raw as unknown as Record<string, Record<string, unknown>>;
+    for (const lang of ["hi", "mr", "gu"] as const) {
+      for (const topic of ["donate", "volunteer"] as const) {
+        const en = source[topic].en as Record<string, string>;
+        const local = source[topic][lang] as Record<string, string>;
+        expect(Object.keys(local).sort(), `${topic}/${lang}`).toEqual(Object.keys(en).sort());
+        for (const [key, value] of Object.entries(en)) {
+          if (key !== "url") expect(local[key], `${topic}.${key}/${lang}`).not.toBe(value);
+          expect(digitsAndLinks(local[key]), `${topic}.${key}/${lang}`).toEqual(digitsAndLinks(value));
+        }
+      }
+      for (const topic of ["about", "human_emergency"] as const) {
+        const local = source[topic][lang] as string;
+        expect(local, `${topic}/${lang}`).not.toBe(source[topic].en);
+        expect(digitsAndLinks(local), `${topic}/${lang}`).toEqual(digitsAndLinks(source[topic].en as string));
+      }
+      faq(lang).forEach((e, i) => {
+        expect(e.question, `faq ${i}/${lang}`).not.toBe(faq("en")[i].question);
+        expect(e.answer, `faq ${i}/${lang}`).not.toBe(faq("en")[i].answer);
+        expect(digitsAndLinks(e.answer), `faq ${i}/${lang}`).toEqual(digitsAndLinks(faq("en")[i].answer));
+      });
+    }
+    expect(JSON.stringify(raw)).not.toMatch(/TODO/);
   });
 });
 
@@ -186,6 +251,24 @@ describe("phone boundaries and native numerals", () => {
     expect(fresh.getStaticInfo("about", "hi").text).toBe("दान के बारे में जानने के लिए {{PHONE:about_1}} पर कॉल करें। हमारे पास ४५+ एम्बुलेंस हैं।");
     expect(fresh.getStaticInfo("donate", "gu").contact_phone).toBe("{{PHONE:donate_contact_phone}}");
     expect(fresh.getStaticPhones()).toEqual({ about_1: "18004195860", donate_contact_phone: "18004195860" });
+  });
+});
+
+describe("unfilled translations", () => {
+  let fresh: typeof import("@/server/content/static");
+
+  beforeAll(async () => {
+    fresh = await loadStaticWith({
+      donate: { en: { summary: "Every rupee counts.", url: "https://alwayscare.org/donate" }, gu: { summary: "TODO", url: "TODO" } },
+      about: { en: "We rescue animals.", mr: "TODO" },
+    });
+  });
+  afterAll(unmockStatic);
+
+  it("falls back to English for a language or field still unfilled", () => {
+    expect(fresh.getStaticInfo("donate", "gu")).toEqual({ summary: "Every rupee counts.", url: "https://alwayscare.org/donate" });
+    expect(fresh.getStaticInfo("about", "mr")).toEqual({ text: "We rescue animals." });
+    expect(fresh.getStaticInfo("about", "hi")).toEqual({ text: "We rescue animals." });
   });
 });
 

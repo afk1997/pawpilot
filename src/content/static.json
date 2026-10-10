@@ -1,93 +1,113 @@
 {
   "_README": [
-    "Static content the agent uses for non-emergency intents.",
-    "Fill in the TODO fields before pilot launch. Edit via PR.",
-    "Languages: en (English), hi (Hindi), mr (Marathi), gu (Gujarati).",
-    "Clinic info is NOT here — it comes from the `clinics` DB table at runtime."
+    "Static content the agent uses for non-emergency intents (get_info), from the website's own wording (https://alwayscare.org, 2026-10-10).",
+    "Edit via PR. Keep digits and URLs identical across the four languages.",
+    "Languages: en (English), hi (Hindi), mr (Marathi), gu (Gujarati). A missing or unfilled value falls back to English.",
+    "Hospital and clinic info is NOT here — it comes from the `clinics` DB table at runtime.",
+    "Phone numbers: only in a donate or volunteer field named for a phone (contact_phone, helpline_number, …), or in the free text of about, human_emergency and the FAQ, where every 7+ digit run is read as a phone number. Never a bank account, IFSC or UPI id: those stay on the website."
   ],
   "donate": {
     "en": {
-      "summary": "Your donation keeps our 45+ ambulances on the road and our clinics open. Every rupee saves an animal in pain.",
+      "summary": "Every rupee goes directly to an animal in need: your donation pays for rescue, treatment and care. Give once or every month on our donate page, paid securely through Razorpay with an instant receipt and an 80G tax certificate. The page also has a UPI QR code you can scan with any UPI app.",
       "url": "https://alwayscare.org/donate",
-      "upi": "TODO: arham@upi",
-      "bank": "TODO: account name / number / IFSC",
       "tax_note": "Donations are eligible for 80G tax exemption."
     },
     "hi": {
-      "summary": "TODO: Hindi summary about donations.",
-      "url": "TODO",
-      "upi": "TODO",
-      "bank": "TODO",
-      "tax_note": "TODO"
+      "summary": "हर रुपया सीधे किसी ज़रूरतमंद जानवर तक पहुँचता है: आपका दान बचाव, इलाज और देखभाल में लगता है। हमारे डोनेट पेज पर एक बार या हर महीने दान करें; भुगतान Razorpay से सुरक्षित होता है, और तुरंत रसीद व 80G टैक्स सर्टिफ़िकेट मिलता है। पेज पर एक UPI QR कोड भी है, जिसे आप किसी भी UPI ऐप से स्कैन कर सकते हैं।",
+      "url": "https://alwayscare.org/donate",
+      "tax_note": "दान पर 80G के तहत टैक्स में छूट मिलती है।"
     },
     "mr": {
-      "summary": "TODO: Marathi summary about donations.",
-      "url": "TODO",
-      "upi": "TODO",
-      "bank": "TODO",
-      "tax_note": "TODO"
+      "summary": "प्रत्येक रुपया थेट गरजू प्राण्यापर्यंत पोहोचतो: तुमचे दान बचाव, उपचार आणि काळजीसाठी वापरले जाते. आमच्या डोनेट पेजवर एकदा किंवा दर महिन्याला दान करा; पेमेंट Razorpay द्वारे सुरक्षित होते, आणि लगेच पावती व 80G कर प्रमाणपत्र मिळते. पेजवर एक UPI QR कोडही आहे, जो तुम्ही कोणत्याही UPI ॲपने स्कॅन करू शकता.",
+      "url": "https://alwayscare.org/donate",
+      "tax_note": "दानावर 80G अंतर्गत करात सवलत मिळते."
     },
     "gu": {
-      "summary": "TODO: Gujarati summary about donations.",
-      "url": "TODO",
-      "upi": "TODO",
-      "bank": "TODO",
-      "tax_note": "TODO"
+      "summary": "દરેક રૂપિયો સીધો જરૂરિયાતમંદ પ્રાણી સુધી પહોંચે છે: તમારું દાન બચાવ, સારવાર અને સંભાળમાં વપરાય છે. અમારા ડોનેટ પેજ પર એક વખત અથવા દર મહિને દાન કરો; ચુકવણી Razorpay દ્વારા સુરક્ષિત છે, અને તરત રસીદ તથા 80G ટેક્સ સર્ટિફિકેટ મળે છે. પેજ પર એક UPI QR કોડ પણ છે, જે તમે કોઈ પણ UPI ઍપથી સ્કેન કરી શકો છો.",
+      "url": "https://alwayscare.org/donate",
+      "tax_note": "દાન પર 80G હેઠળ ટેક્સમાં છૂટ મળે છે."
     }
   },
   "volunteer": {
     "en": {
-      "summary": "We welcome volunteers — for ambulance ride-alongs, clinic shifts, fund-raising, and online awareness.",
-      "url": "https://alwayscare.org/volunteer",
-      "contact_phone": "TODO: +91XXXXXXXXXX",
-      "contact_email": "TODO: volunteer@alwayscare.org"
+      "summary": "Whether you have an hour a week or a day a month, your time saves lives. Volunteers help in three ways: on-ground rescue support (helping ambulance teams during rescues, transporting animals and coordinating emergency calls), social media and awareness, and fundraising and events. Fill the volunteer form on our website; a city coordinator reaches out within 48 hours.",
+      "url": "https://alwayscare.org/#volunteer"
     },
-    "hi": { "summary": "TODO", "url": "TODO", "contact_phone": "TODO", "contact_email": "TODO" },
-    "mr": { "summary": "TODO", "url": "TODO", "contact_phone": "TODO", "contact_email": "TODO" },
-    "gu": { "summary": "TODO", "url": "TODO", "contact_phone": "TODO", "contact_email": "TODO" }
+    "hi": {
+      "summary": "हफ़्ते में एक घंटा हो या महीने में एक दिन, आपका समय जानें बचाता है। वालंटियर तीन तरह से मदद करते हैं: ज़मीन पर बचाव में साथ (बचाव के दौरान एम्बुलेंस टीम की मदद, जानवरों को ले जाना और इमरजेंसी कॉल संभालना), सोशल मीडिया और जागरूकता, तथा फंड जुटाना और इवेंट। हमारी वेबसाइट पर वालंटियर फ़ॉर्म भरें; 48 घंटे के अंदर आपके शहर के कोऑर्डिनेटर आपसे संपर्क करेंगे।",
+      "url": "https://alwayscare.org/#volunteer"
+    },
+    "mr": {
+      "summary": "आठवड्यातून एक तास असो किंवा महिन्यातून एक दिवस, तुमचा वेळ जीव वाचवतो. स्वयंसेवक तीन प्रकारे मदत करतात: प्रत्यक्ष बचावकार्यात साथ (बचावादरम्यान एम्बुलन्स टीमला मदत, प्राण्यांना घेऊन जाणे आणि इमर्जन्सी कॉल सांभाळणे), सोशल मीडिया व जनजागृती, आणि निधी उभारणी व कार्यक्रम. आमच्या वेबसाइटवर स्वयंसेवक फॉर्म भरा; 48 तासांच्या आत तुमच्या शहराचे समन्वयक तुमच्याशी संपर्क साधतील.",
+      "url": "https://alwayscare.org/#volunteer"
+    },
+    "gu": {
+      "summary": "અઠવાડિયામાં એક કલાક હોય કે મહિનામાં એક દિવસ, તમારો સમય જીવ બચાવે છે. સ્વયંસેવકો ત્રણ રીતે મદદ કરે છે: સ્થળ પર બચાવમાં સાથ (બચાવ દરમિયાન એમ્બ્યુલન્સ ટીમને મદદ, પ્રાણીઓને લઈ જવા અને ઇમરજન્સી કૉલ સંભાળવા), સોશિયલ મીડિયા અને જાગૃતિ, તથા ફંડ એકઠું કરવું અને કાર્યક્રમો. અમારી વેબસાઇટ પર સ્વયંસેવક ફોર્મ ભરો; 48 કલાકમાં તમારા શહેરના કોઓર્ડિનેટર તમારો સંપર્ક કરશે.",
+      "url": "https://alwayscare.org/#volunteer"
+    }
   },
   "about": {
-    "en": "Arham Always Care is the animal-rescue project of Arham Yuva Seva Group, a registered Indian non-profit. We have donated 45+ ambulances and run 5 clinics across India. We treat injured stray animals free of cost.",
-    "hi": "TODO",
-    "mr": "TODO",
-    "gu": "TODO"
+    "en": "Arham Always Care is the animal-rescue project of Arham Yuva Seva Group, a youth-driven Indian non-profit. We run 48 free animal ambulances with trained vets and paravets across 26+ cities, five animal hospitals and a clinic, with two more hospitals under construction. Rescue and treatment for injured street and community animals is free; for pets, call the team first.",
+    "hi": "Arham Always Care, Arham Yuva Seva Group का पशु-बचाव प्रोजेक्ट है। Arham Yuva Seva Group युवाओं द्वारा चलाई जाने वाली एक भारतीय गैर-लाभकारी संस्था है। हम 26+ शहरों में प्रशिक्षित पशु-डॉक्टरों और पैरावेट्स वाली 48 मुफ़्त एनिमल एम्बुलेंस, पाँच पशु हॉस्पिटल और एक क्लिनिक चलाते हैं; दो और हॉस्पिटल बन रहे हैं। सड़क और मोहल्ले के घायल जानवरों का बचाव और इलाज मुफ़्त है; पालतू जानवरों के लिए पहले टीम को कॉल करें।",
+    "mr": "Arham Always Care हा Arham Yuva Seva Group चा प्राणी-बचाव प्रकल्प आहे. Arham Yuva Seva Group ही तरुणांनी चालवलेली एक भारतीय ना-नफा संस्था आहे. आम्ही 26+ शहरांमध्ये प्रशिक्षित पशुवैद्य आणि पॅरावेट्स असलेल्या 48 मोफत एनिमल एम्बुलन्स, पाच प्राणी हॉस्पिटल आणि एक क्लिनिक चालवतो; आणखी दोन हॉस्पिटलचे बांधकाम सुरू आहे. रस्त्यावरील आणि परिसरातील जखमी प्राण्यांचा बचाव आणि उपचार मोफत आहेत; पाळीव प्राण्यांसाठी आधी टीमला कॉल करा.",
+    "gu": "Arham Always Care એ Arham Yuva Seva Group નો પ્રાણી-બચાવ પ્રોજેક્ટ છે. Arham Yuva Seva Group યુવાનો દ્વારા ચાલતી એક ભારતીય બિન-નફાકારક સંસ્થા છે. અમે 26+ શહેરોમાં તાલીમ પામેલા પશુ-ડૉક્ટરો અને પેરાવેટ્સ સાથેની 48 મફત એનિમલ એમ્બ્યુલન્સ, પાંચ પ્રાણી હોસ્પિટલ અને એક ક્લિનિક ચલાવીએ છીએ; બીજી બે હોસ્પિટલનું બાંધકામ ચાલુ છે. શેરી અને સોસાયટીના ઘાયલ પ્રાણીઓનો બચાવ અને સારવાર મફત છે; પાળતુ પ્રાણીઓ માટે પહેલાં ટીમને કૉલ કરો."
   },
   "faq": [
     {
       "q_en": "Is your service free?",
-      "a_en": "Yes. All our ambulance rescue and clinic treatment is completely free for stray animals.",
-      "q_hi": "TODO",
-      "a_hi": "TODO",
-      "q_mr": "TODO",
-      "a_mr": "TODO",
-      "q_gu": "TODO",
-      "a_gu": "TODO"
+      "a_en": "Yes. Rescue and treatment for injured street and community animals are free of charge. For pets and other cases, call the team first to check whether they can help.",
+      "q_hi": "क्या आपकी सेवा मुफ़्त है?",
+      "a_hi": "हाँ। सड़क और मोहल्ले के घायल जानवरों का बचाव और इलाज मुफ़्त है। पालतू जानवरों और बाकी मामलों में पहले टीम को कॉल करके पूछ लें कि वे मदद कर सकते हैं या नहीं।",
+      "q_mr": "तुमची सेवा मोफत आहे का?",
+      "a_mr": "हो. रस्त्यावरील आणि परिसरातील जखमी प्राण्यांचा बचाव आणि उपचार मोफत आहेत. पाळीव प्राणी आणि इतर बाबतीत, टीम मदत करू शकते का हे आधी कॉल करून विचारा.",
+      "q_gu": "શું તમારી સેવા મફત છે?",
+      "a_gu": "હા. શેરી અને સોસાયટીના ઘાયલ પ્રાણીઓનો બચાવ અને સારવાર મફત છે. પાળતુ પ્રાણીઓ અને અન્ય કિસ્સાઓમાં, ટીમ મદદ કરી શકે કે નહીં તે પહેલાં કૉલ કરીને પૂછી લો."
     },
     {
-      "q_en": "Do you treat pets too?",
-      "a_en": "Our priority is injured stray and street animals. For pets, we'd recommend visiting a local veterinary clinic. We can share contacts on request.",
-      "q_hi": "TODO",
-      "a_hi": "TODO",
-      "q_mr": "TODO",
-      "a_mr": "TODO",
-      "q_gu": "TODO",
-      "a_gu": "TODO"
+      "q_en": "What should I tell the team when I call?",
+      "a_en": "Share the animal's exact location, a nearby landmark and a short description of its condition. The team will confirm whether an ambulance is available and guide you on what to do next.",
+      "q_hi": "कॉल करते समय टीम को क्या बताऊँ?",
+      "a_hi": "जानवर की सही जगह, पास का कोई लैंडमार्क और उसकी हालत के बारे में थोड़ा बताएँ। टीम बताएगी कि एम्बुलेंस उपलब्ध है या नहीं, और आगे क्या करना है।",
+      "q_mr": "कॉल करताना टीमला काय सांगू?",
+      "a_mr": "प्राण्याचे नेमके ठिकाण, जवळची एखादी खूण (लँडमार्क) आणि त्याची स्थिती थोडक्यात सांगा. एम्बुलन्स उपलब्ध आहे का आणि पुढे काय करायचे, हे टीम सांगेल.",
+      "q_gu": "કૉલ કરતી વખતે ટીમને શું કહેવું?",
+      "a_gu": "પ્રાણીનું ચોક્કસ સ્થળ, નજીકનું કોઈ લેન્ડમાર્ક અને તેની હાલત વિશે ટૂંકમાં જણાવો. એમ્બ્યુલન્સ ઉપલબ્ધ છે કે નહીં અને આગળ શું કરવું, તે ટીમ જણાવશે."
+    },
+    {
+      "q_en": "When do the Mumbai ambulance teams answer?",
+      "a_en": "Mumbai teams answer calls 10am–7pm IST, every day. Call the team covering the animal's location and confirm they are available before you wait.",
+      "q_hi": "मुंबई की एम्बुलेंस टीमें कब कॉल का जवाब देती हैं?",
+      "a_hi": "मुंबई की टीमें हर दिन 10am–7pm IST कॉल का जवाब देती हैं। जानवर जिस इलाके में है, वहाँ की टीम को कॉल करें और इंतज़ार करने से पहले पक्का कर लें कि टीम उपलब्ध है।",
+      "q_mr": "मुंबईच्या एम्बुलन्स टीम कधी कॉलला उत्तर देतात?",
+      "a_mr": "मुंबईच्या टीम दररोज 10am–7pm IST कॉलला उत्तर देतात. प्राणी ज्या भागात आहे तिथल्या टीमला कॉल करा आणि वाट पाहण्यापूर्वी टीम उपलब्ध असल्याची खात्री करा.",
+      "q_gu": "મુંબઈની એમ્બ્યુલન્સ ટીમો ક્યારે કૉલનો જવાબ આપે છે?",
+      "a_gu": "મુંબઈની ટીમો દરરોજ 10am–7pm IST કૉલનો જવાબ આપે છે. પ્રાણી જે વિસ્તારમાં છે ત્યાંની ટીમને કૉલ કરો અને રાહ જોતા પહેલાં ખાતરી કરી લો કે ટીમ ઉપલબ્ધ છે."
+    },
+    {
+      "q_en": "Can I bring an animal to your hospital?",
+      "a_en": "Call the hospital or clinic before visiting: the team will confirm they can take the animal and tell you how to bring it in. The hours are shown with each one's number.",
+      "q_hi": "क्या जानवर को आपके हॉस्पिटल लाया जा सकता है?",
+      "a_hi": "आने से पहले हॉस्पिटल या क्लिनिक को कॉल करें: टीम बताएगी कि वे जानवर को ले सकते हैं या नहीं, और उसे कैसे लाना है। हर एक का समय उसके नंबर के साथ दिया होता है।",
+      "q_mr": "प्राण्याला तुमच्या हॉस्पिटलमध्ये आणता येईल का?",
+      "a_mr": "येण्यापूर्वी हॉस्पिटल किंवा क्लिनिकला कॉल करा: ते प्राण्याला घेऊ शकतात का आणि त्याला कसे आणायचे, हे टीम सांगेल. प्रत्येकाची वेळ त्याच्या नंबरसोबत दिलेली असते.",
+      "q_gu": "શું હું પ્રાણીને તમારી હોસ્પિટલમાં લાવી શકું?",
+      "a_gu": "આવતા પહેલાં હોસ્પિટલ અથવા ક્લિનિકને કૉલ કરો: તેઓ પ્રાણીને લઈ શકે કે નહીં અને તેને કેવી રીતે લાવવું, તે ટીમ જણાવશે. દરેકનો સમય તેના નંબર સાથે આપેલો હોય છે."
     },
     {
       "q_en": "What if I see an injured animal but I'm not in a city you cover?",
       "a_en": "We're expanding all the time, but for now we'd recommend contacting a local rescue group. You can also try Animal Helpline India at 1800-419-5860.",
-      "q_hi": "TODO",
-      "a_hi": "TODO",
-      "q_mr": "TODO",
-      "a_mr": "TODO",
-      "q_gu": "TODO",
-      "a_gu": "TODO"
+      "q_hi": "अगर मुझे कोई घायल जानवर दिखे, पर मेरा शहर आपकी सूची में न हो, तो क्या करूँ?",
+      "a_hi": "हम लगातार नए शहरों में पहुँच रहे हैं, पर अभी के लिए किसी स्थानीय पशु-बचाव ग्रुप से संपर्क करें। आप Animal Helpline India को 1800-419-5860 पर भी कॉल कर सकते हैं।",
+      "q_mr": "मला जखमी प्राणी दिसला, पण माझे शहर तुमच्या यादीत नसेल तर काय करू?",
+      "a_mr": "आम्ही सतत नवीन शहरांमध्ये पोहोचत आहोत, पण सध्या जवळच्या प्राणी-बचाव गटाशी संपर्क साधा. तुम्ही Animal Helpline India ला 1800-419-5860 वर कॉलही करू शकता.",
+      "q_gu": "મને કોઈ ઘાયલ પ્રાણી દેખાય, પણ મારું શહેર તમારી યાદીમાં ન હોય તો શું કરવું?",
+      "a_gu": "અમે સતત નવા શહેરોમાં પહોંચી રહ્યા છીએ, પણ હાલ માટે કોઈ સ્થાનિક પ્રાણી-બચાવ જૂથનો સંપર્ક કરો. તમે Animal Helpline India ને 1800-419-5860 પર પણ કૉલ કરી શકો છો."
     }
   ],
   "human_emergency": {
     "en": "Our service is for animal emergencies only. For a human medical emergency, please call 102 or 108 immediately. For police, call 112.",
     "hi": "हमारी सेवा केवल जानवरों के लिए है। मानव चिकित्सा आपात स्थिति के लिए कृपया तुरंत 102 या 108 पर कॉल करें। पुलिस के लिए 112।",
-    "mr": "TODO",
-    "gu": "TODO"
+    "mr": "आमची सेवा फक्त प्राण्यांच्या आपत्कालीन स्थितीसाठी आहे. माणसाच्या वैद्यकीय आपत्कालीन स्थितीत कृपया लगेच 102 किंवा 108 वर कॉल करा. पोलिसांसाठी 112 वर कॉल करा.",
+    "gu": "અમારી સેવા ફક્ત પ્રાણીઓની ઇમરજન્સી માટે છે. માણસની તબીબી ઇમરજન્સીમાં કૃપા કરીને તરત 102 અથવા 108 પર કૉલ કરો. પોલીસ માટે 112 પર કૉલ કરો."
   }
 }
