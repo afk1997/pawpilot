@@ -44,8 +44,8 @@ const StepExpectSchema: z.ZodType<StepExpect> = z.strictObject({
 const lookupPlace = z.string().nullable().optional();
 
 /**
- * One scripted backend call. The lookup keys run those tools first, as the model would. In `reply`, {{AMB:<label>}} and
- * {{CLINIC:<label>}} name a fixture unit or clinic by its label (resolveLabelTokens).
+ * One scripted backend call. The lookup keys run those tools first, as the model would. In `reply`, {{AMB:<label>}},
+ * {{CLINIC:<label>}} and {{MAPS:<label>}} name a fixture unit or clinic by its label (resolveLabelTokens).
  */
 const FakeReplySchema = z.strictObject({
   reply: z.string(),
@@ -195,18 +195,19 @@ export function databaseRefusal(name: string | null, allowDb: boolean): string |
 /** Fixture labels to their unit or clinic ids, by token kind. */
 export type Labels = Record<"AMB" | "CLINIC", Map<string, string>>;
 
-/** A fixture label in a scripted reply: {{AMB:Mumbai - Ghatkopar}}, {{CLINIC:Arham Clinic Surat}}. */
-const LABEL_TOKEN_RE = /\{\{(AMB|CLINIC):([^{}]+)\}\}/g;
+/** A fixture label in a scripted reply: {{AMB:Mumbai - Ghatkopar}}, {{CLINIC:Arham Clinic Surat}}, {{MAPS:Mumbai - Ghatkopar Hospital}}. */
+const LABEL_TOKEN_RE = /\{\{(AMB|CLINIC|MAPS):([^{}]+)\}\}/g;
 
 /**
- * The reply with each {{AMB:<label>}} and {{CLINIC:<label>}} naming the handle `issued` holds for that unit or clinic: a
- * handle a lookup gave the model, in this turn or an earlier one. A label no lookup issued stays as written, so the
- * reply drops it like an invented handle; tokens that name no label (handles, PHONE keys) stay as they are.
+ * The reply with each {{AMB:<label>}}, {{CLINIC:<label>}} and {{MAPS:<label>}} (a clinic's map link) naming the handle
+ * `issued` holds for that unit or clinic: a handle a lookup gave the model, in this turn or an earlier one. A label no
+ * lookup issued stays as written, so the reply drops it like an invented handle; tokens that name no label (handles,
+ * PHONE keys) stay as they are.
  */
 export function resolveLabelTokens(reply: string, labels: Labels, issued: HandleMap): string {
   const entries = Object.entries(issued);
-  return reply.replace(LABEL_TOKEN_RE, (raw, kind: "AMB" | "CLINIC", label: string) => {
-    const id = labels[kind].get(label.trim());
+  return reply.replace(LABEL_TOKEN_RE, (raw, kind: "AMB" | "CLINIC" | "MAPS", label: string) => {
+    const id = labels[kind === "MAPS" ? "CLINIC" : kind].get(label.trim());
     const handleKind = kind === "AMB" ? "ambulance" : "clinic";
     const handle = id === undefined ? undefined : entries.find(([, ref]) => ref.kind === handleKind && ref.id === id)?.[0];
     return handle === undefined ? raw : `{{${kind}:${handle}}}`;

@@ -8,7 +8,7 @@ export interface DirectoryIds {
   ghatkopar: string; malad: string; andheri: string; bandra: string; chembur: string; mulund: string;
   rajkotA: string; rajkotB: string; surat: string; bengaluru: string; puneA: string; puneB: string;
   clinicSurat: string;
-  /** A hospital, in the clinics table like the real directory's: Ghatkopar, with published hours. */
+  /** A hospital, in the clinics table like the real directory's: Ghatkopar, with published hours, an address and a map link. */
   hospitalGhatkopar: string;
 }
 
@@ -16,10 +16,14 @@ export interface DirectoryIds {
 export const MUMBAI_HOURS = "10am–7pm IST";
 /** The Ghatkopar hospital's hours, as the directory writes them. */
 export const HOSPITAL_HOURS = "10am–11pm IST";
+/** The Ghatkopar hospital's address and Google Maps link (5-decimal coordinates), as the directory writes them. */
+export const HOSPITAL_ADDRESS = "Rajawadi Rd Number 1, Rajawadi Colony, Ghatkopar East, Mumbai 400077";
+export const HOSPITAL_MAP = "https://maps.google.com/?q=19.07948,72.90119";
 
 /**
  * Minimal directory that exercises every matcher tier and both operator kinds. The Ghatkopar unit publishes hours, and the
- * clinics table holds a clinic (Surat) and a hospital (Ghatkopar, with hours), as the real directory does.
+ * clinics table holds a clinic (Surat, with no map link) and a hospital (Ghatkopar, with hours, an address and a map link),
+ * as the real directory does.
  */
 export async function seedDirectory(): Promise<DirectoryIds> {
   const db = getDb();
@@ -64,7 +68,10 @@ export async function seedDirectory(): Promise<DirectoryIds> {
   ids.clinicSurat = clinic.id;
   const [hospital] = await db
     .insert(clinics)
-    .values({ operatorId: arham.id, label: "Mumbai - Ghatkopar Hospital", city: "Mumbai", area: "Ghatkopar", state: "Maharashtra", phone: "+917000000020", address: null, hours: HOSPITAL_HOURS })
+    .values({
+      operatorId: arham.id, label: "Mumbai - Ghatkopar Hospital", city: "Mumbai", area: "Ghatkopar", state: "Maharashtra", phone: "+917000000020",
+      address: HOSPITAL_ADDRESS, hours: HOSPITAL_HOURS, mapsUrl: HOSPITAL_MAP,
+    })
     .returning();
   ids.hospitalGhatkopar = hospital.id;
   return ids;
