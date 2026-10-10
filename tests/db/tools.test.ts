@@ -30,7 +30,7 @@ const leaksDigits = (o: unknown) => {
 const VISIBLE_PHONE = /\p{Nd}(?:[^\p{L}\p{Nd}]{0,3}\p{Nd}){6,}/u;
 const LOOKUP_FAILED = [{ type: "text", text: JSON.stringify({ error: "lookup_failed" }) }];
 const CITY_MATCHED_HELP =
-  "city_matched false: no clinic is in the city you passed and every clinic is listed; tell the reporter that, and name each clinic's city before giving its number.";
+  "city_matched false: none is in the city you passed and every hospital and clinic is listed; tell the reporter that, and name each one's city before giving its number.";
 
 function ctx(): ToolContext {
   return { conversationId: "conv-1", language: "en", registry: new HandleRegistry("conv-1"), calls: [], lastAmbulanceCandidates: null, lastAmbulanceMatch: null };

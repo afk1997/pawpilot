@@ -14,6 +14,6 @@ steps:
   - send: "surat"
     expect: { kind: fast_path, number_of: ["Surat"] }
   - send: "ok"
-    expect: { message_count: 1, not_contains: ["Animal ambulance", "Clinic info", "+91 98765 00003"], max_chars: 200, no_foreign_digits: true }
+    expect: { message_count: 1, not_contains: ["Animal ambulance", "Hospitals & clinics", "+91 98765 00003"], max_chars: 200, no_foreign_digits: true }
   - send: "thanks 🙏"
-    expect: { message_count: 1, not_contains: ["Animal ambulance", "Clinic info", "+91 98765 00003"], max_chars: 200, no_foreign_digits: true }
+    expect: { message_count: 1, not_contains: ["Animal ambulance", "Hospitals & clinics", "+91 98765 00003"], max_chars: 200, no_foreign_digits: true }

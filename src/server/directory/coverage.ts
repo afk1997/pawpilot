@@ -46,7 +46,8 @@ export function buildCoverageSummary(ambs: DirectoryAmbulance[], clinicRows: Dir
     const area = c.area ? clean(c.area) : "";
     return area ? `${city} (${area})` : city;
   }))].sort();
-  lines.push(clinicCities.length ? `Clinics: ${clinicCities.join(", ")}` : "Clinics: none listed");
+  // The hospitals and the clinic share the clinics table; find_clinics' labels say which is which.
+  lines.push(clinicCities.length ? `Hospitals and clinics: ${clinicCities.join(", ")}` : "Hospitals and clinics: none listed");
   const text = lines.join("\n");
   // Counts only: the runs are directory data and stay out of logs.
   if (removed > 0) log.warn({ runs: removed }, "digits removed from the coverage summary");

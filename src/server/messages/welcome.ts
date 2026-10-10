@@ -11,7 +11,7 @@ How may I assist you today?
 🚑  *Animal ambulance* — for an injured or sick stray animal
 💝  *Donate* — support free animal rescue
 🤝  *Volunteer* — join our team
-🏥  *Clinic info* — find a clinic near you
+🏥  *Hospitals & clinics* — find one near you
 ✉️  *Suggestion* — share feedback
 
 Just reply with what you need (e.g. "ambulance", "donate"), or visit ${site}`,
@@ -22,7 +22,7 @@ Just reply with what you need (e.g. "ambulance", "donate"), or visit ${site}`,
 🚑  *एनिमल एम्बुलेंस* — घायल या बीमार जानवर के लिए
 💝  *दान* — मुफ़्त पशु बचाव में सहयोग
 🤝  *वालंटियर* — हमारी टीम से जुड़ें
-🏥  *क्लिनिक जानकारी* — अपने पास का क्लिनिक खोजें
+🏥  *हॉस्पिटल और क्लिनिक* — अपने पास का खोजें
 ✉️  *सुझाव* — फ़ीडबैक भेजें
 
 बस जो चाहिए वो लिख दीजिए, या ${site} देखें।`,
@@ -33,7 +33,7 @@ Just reply with what you need (e.g. "ambulance", "donate"), or visit ${site}`,
 🚑  *एनिमल एम्बुलन्स* — जखमी किंवा आजारी प्राण्यासाठी
 💝  *दान* — मोफत प्राणी बचावासाठी मदत
 🤝  *स्वयंसेवक* — आमच्या टीमसोबत सामील व्हा
-🏥  *क्लिनिक माहिती* — जवळचे क्लिनिक शोधा
+🏥  *हॉस्पिटल आणि क्लिनिक* — जवळचे शोधा
 ✉️  *सूचना* — अभिप्राय शेअर करा
 
 तुम्हाला काय हवे ते लिहा, किंवा ${site} पहा.`,
@@ -44,17 +44,17 @@ Just reply with what you need (e.g. "ambulance", "donate"), or visit ${site}`,
 🚑  *એનિમલ એમ્બ્યુલન્સ* — ઘાયલ અથવા બીમાર પ્રાણી માટે
 💝  *દાન* — મફત પ્રાણી બચાવમાં સહયોગ
 🤝  *સ્વયંસેવક* — અમારી ટીમમાં જોડાઓ
-🏥  *ક્લિનિક માહિતી* — નજીકનું ક્લિનિક શોધો
+🏥  *હોસ્પિટલ અને ક્લિનિક* — નજીકનું શોધો
 ✉️  *સૂચન* — પ્રતિસાદ આપો
 
 જે જોઈતું હોય તે લખો, અથવા ${site} જુઓ.`,
 };
 
 const MENU_BY_LANG: Record<Language, (site: string) => string> = {
-  en: (site) => `How can we help?\n\n🚑  *Animal ambulance*\n💝  *Donate*\n🤝  *Volunteer*\n🏥  *Clinic info*\n✉️  *Suggestion*\n\nReply with the option, or visit ${site}`,
-  hi: (site) => `हम आपकी कैसे मदद करें?\n\n🚑  *एनिमल एम्बुलेंस*\n💝  *दान*\n🤝  *वालंटियर*\n🏥  *क्लिनिक जानकारी*\n✉️  *सुझाव*\n\nविकल्प लिखें, या ${site} देखें।`,
-  mr: (site) => `आम्ही कशी मदत करू?\n\n🚑  *एनिमल एम्बुलन्स*\n💝  *दान*\n🤝  *स्वयंसेवक*\n🏥  *क्लिनिक माहिती*\n✉️  *सूचना*\n\nपर्याय लिहा, किंवा ${site} पहा.`,
-  gu: (site) => `અમે કેવી રીતે મદદ કરી શકીએ?\n\n🚑  *એનિમલ એમ્બ્યુલન્સ*\n💝  *દાન*\n🤝  *સ્વયંસેવક*\n🏥  *ક્લિનિક માહિતી*\n✉️  *સૂચન*\n\nવિકલ્પ લખો, અથવા ${site} જુઓ.`,
+  en: (site) => `How can we help?\n\n🚑  *Animal ambulance*\n💝  *Donate*\n🤝  *Volunteer*\n🏥  *Hospitals & clinics*\n✉️  *Suggestion*\n\nReply with the option, or visit ${site}`,
+  hi: (site) => `हम आपकी कैसे मदद करें?\n\n🚑  *एनिमल एम्बुलेंस*\n💝  *दान*\n🤝  *वालंटियर*\n🏥  *हॉस्पिटल और क्लिनिक*\n✉️  *सुझाव*\n\nविकल्प लिखें, या ${site} देखें।`,
+  mr: (site) => `आम्ही कशी मदत करू?\n\n🚑  *एनिमल एम्बुलन्स*\n💝  *दान*\n🤝  *स्वयंसेवक*\n🏥  *हॉस्पिटल आणि क्लिनिक*\n✉️  *सूचना*\n\nपर्याय लिहा, किंवा ${site} पहा.`,
+  gu: (site) => `અમે કેવી રીતે મદદ કરી શકીએ?\n\n🚑  *એનિમલ એમ્બ્યુલન્સ*\n💝  *દાન*\n🤝  *સ્વયંસેવક*\n🏥  *હોસ્પિટલ અને ક્લિનિક*\n✉️  *સૂચન*\n\nવિકલ્પ લખો, અથવા ${site} જુઓ.`,
 };
 
 let site: string | null = null;
@@ -82,15 +82,18 @@ export const MENU_BUTTON_LABEL: Record<Language, string> = { en: "Options", hi: 
 export const MENU_SECTION_TITLE: Record<Language, string> = { en: "Choose an option", hi: "एक विकल्प चुनें", mr: "एक पर्याय निवडा", gu: "એક વિકલ્પ પસંદ કરો" };
 
 const ROW_TITLES: Record<Language, Record<MenuId, string>> = {
-  en: { "menu:ambulance": "Animal ambulance", "menu:clinic": "Clinic info", "menu:donate": "Donate", "menu:volunteer": "Volunteer", "menu:suggestion": "Suggestion" },
-  hi: { "menu:ambulance": "एनिमल एम्बुलेंस", "menu:clinic": "क्लिनिक जानकारी", "menu:donate": "दान", "menu:volunteer": "वालंटियर", "menu:suggestion": "सुझाव" },
-  mr: { "menu:ambulance": "एनिमल एम्बुलन्स", "menu:clinic": "क्लिनिक माहिती", "menu:donate": "दान", "menu:volunteer": "स्वयंसेवक", "menu:suggestion": "सूचना" },
-  gu: { "menu:ambulance": "એનિમલ એમ્બ્યુલન્સ", "menu:clinic": "ક્લિનિક માહિતી", "menu:donate": "દાન", "menu:volunteer": "સ્વયંસેવક", "menu:suggestion": "સૂચન" },
+  en: { "menu:ambulance": "Animal ambulance", "menu:clinic": "Hospitals & clinics", "menu:donate": "Donate", "menu:volunteer": "Volunteer", "menu:suggestion": "Suggestion" },
+  hi: { "menu:ambulance": "एनिमल एम्बुलेंस", "menu:clinic": "हॉस्पिटल और क्लिनिक", "menu:donate": "दान", "menu:volunteer": "वालंटियर", "menu:suggestion": "सुझाव" },
+  mr: { "menu:ambulance": "एनिमल एम्बुलन्स", "menu:clinic": "हॉस्पिटल आणि क्लिनिक", "menu:donate": "दान", "menu:volunteer": "स्वयंसेवक", "menu:suggestion": "सूचना" },
+  gu: { "menu:ambulance": "એનિમલ એમ્બ્યુલન્સ", "menu:clinic": "હોસ્પિટલ અને ક્લિનિક", "menu:donate": "દાન", "menu:volunteer": "સ્વયંસેવક", "menu:suggestion": "સૂચન" },
 };
 
 const MENU_ORDER: MenuId[] = ["menu:ambulance", "menu:clinic", "menu:donate", "menu:volunteer", "menu:suggestion"];
 
-/** Rows for the Interakt InteractiveList (titles ≤ 24 chars per WhatsApp). */
+/**
+ * Rows for the Interakt InteractiveList (titles ≤ 24 chars per WhatsApp). The clinic row reads "Hospitals & clinics" (the
+ * site's hospitals and its clinic); its id stays menu:clinic, as the intent and the find_clinics tool keep their names.
+ */
 export function menuRows(lang: Language = "en"): { id: MenuId; title: string }[] {
   const titles = ROW_TITLES[lang] ?? ROW_TITLES.en;
   return MENU_ORDER.map((id) => ({ id, title: titles[id] }));

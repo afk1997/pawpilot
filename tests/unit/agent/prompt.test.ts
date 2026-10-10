@@ -43,10 +43,27 @@ describe("prompts", () => {
     expect(p).toContain("[number sent]");
     expect(p).toContain('{"error": "lookup_failed"}');
     expect(p).toContain("city_matched false");
-    expect(p).toContain("say there is no clinic in that city before listing the others");
+    expect(p).toContain("say there is none in that city before listing the others");
     expect(p).toContain("noted for the team");
     expect(p).toContain("102/108/112");
   });
+  it("system prompt names the hospitals and the clinic, and how to give them and a unit's hours", () => {
+    const p = systemPrompt();
+    expect(p).toContain("Arham and partner NGOs run free animal ambulances, five animal hospitals and a clinic in the cities listed below");
+    expect(p).not.toContain("free animal ambulances and clinics");
+    expect(p).toContain(
+      "- Hospitals and clinics: call find_clinics (optionally with city) and give {{CLINIC:<handle>}} tokens; say hospital or clinic as the result's name says. If it returns city_matched false, say there is none in that city before listing the others. Give the hours and address the result carries."
+    );
+    expect(p).toContain(
+      "10. If a unit's result carries hours, say them in one short clause; outside those hours still give the number (the reporter decides), and mention {{PHONE:helpline}} only if the reporter says nobody answers."
+    );
+    expect(p).toContain("Medication or treatment questions: don't advise; offer the nearest hospital or clinic.");
+    expect(p).toContain('otherwise "clinic" (a hospital or clinic), "donate"');
+    // Rule 9 keeps its number: the style rules point at it.
+    expect(p).toContain("9. If the animal is in immediate danger");
+    expect(p).toContain("rule 9's immediate-danger line");
+  });
+
   it("system prompt defines the output fields and never writes a phone-shaped run", () => {
     const p = systemPrompt();
     expect(p).toContain('"location" is {"city": …, "area": …}, each null if unknown');

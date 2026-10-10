@@ -14,6 +14,24 @@ describe("welcome and menu", () => {
       expect(menuText(lang).length).toBeGreaterThan(10);
     }
   });
+  it("names hospitals and clinics in the welcome, the menu and the list row, in every language", () => {
+    const rows = {
+      en: ["🏥  *Hospitals & clinics* — find one near you", "🏥  *Hospitals & clinics*\n", "Hospitals & clinics"],
+      hi: ["🏥  *हॉस्पिटल और क्लिनिक* — अपने पास का खोजें", "🏥  *हॉस्पिटल और क्लिनिक*\n", "हॉस्पिटल और क्लिनिक"],
+      mr: ["🏥  *हॉस्पिटल आणि क्लिनिक* — जवळचे शोधा", "🏥  *हॉस्पिटल आणि क्लिनिक*\n", "हॉस्पिटल आणि क्लिनिक"],
+      gu: ["🏥  *હોસ્પિટલ અને ક્લિનિક* — નજીકનું શોધો", "🏥  *હોસ્પિટલ અને ક્લિનિક*\n", "હોસ્પિટલ અને ક્લિનિક"],
+    } as const;
+    for (const lang of LANGUAGES) {
+      const [welcomeLine, menuLine, rowTitle] = rows[lang];
+      expect(welcomeText(lang), lang).toContain(welcomeLine);
+      expect(menuText(lang), lang).toContain(menuLine);
+      // The row keeps its id: the intent and the find_clinics tool keep their names.
+      expect(menuRows(lang).find((r) => r.id === "menu:clinic")?.title, lang).toBe(rowTitle);
+      expect(rowTitle.length).toBeLessThanOrEqual(24);
+      expect(`${welcomeText(lang)}${menuText(lang)}`, lang).not.toMatch(/Clinic info|क्लिनिक जानकारी|क्लिनिक माहिती|ક્લિનિક માહિતી/);
+    }
+    expect(menuChoiceLabel("menu:clinic")).toBe("clinic");
+  });
   it("maps a list reply id to a transcript label", () => {
     expect(menuChoiceLabel("menu:ambulance")).toBe("ambulance");
     expect(menuChoiceLabel("nonsense")).toBeNull();

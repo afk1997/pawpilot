@@ -77,7 +77,7 @@ function ambulanceCandidate(ctx: ToolContext, r: DirectoryAmbulance): AmbulanceC
 
 export interface FindClinicsOutput {
   clinics: { handle: string; label: string; city: string; area: string | null; address: string | null; hours: string | null }[];
-  /** False when a city was given and no clinic is in it; `clinics` is then the full list. */
+  /** False when a city was given and no hospital or clinic is in it; `clinics` is then the full list. */
   city_matched: boolean;
 }
 
@@ -349,7 +349,7 @@ export function createArhamTools(ctx: ToolContext): {
       ),
       tool(
         "find_clinics",
-        "List Arham clinics, optionally filtered by city. Returns handles; write {{CLINIC:<handle>}} to give a clinic's number. city_matched false: no clinic is in the city you passed and every clinic is listed; tell the reporter that, and name each clinic's city before giving its number.",
+        "List Arham's animal hospitals and clinics (the label says which), optionally filtered by city, with each one's address and hours when known. Returns handles; write {{CLINIC:<handle>}} to give one's number. city_matched false: none is in the city you passed and every hospital and clinic is listed; tell the reporter that, and name each one's city before giving its number.",
         { city: z.string().nullable().optional().describe("City as spelled in the coverage list, or null") },
         async (args) => {
           try {
