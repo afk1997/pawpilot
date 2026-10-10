@@ -243,8 +243,9 @@ function coveredNames(r: DirectoryAmbulance, lookup: MatchInput): string | null 
  * known ("Model Town"), or only through a city name that is also an everyday word with no locative cue and the city not
  * known ("kutte ki surat pe chot hai"), nothing is pre-matched at all (no block, no handles, no card), the model looks
  * the place up itself with the city, and the audit record says why (`skipped`). Any looser match, or more units, leaves
- * the lookup to the model. The units are scrubbed as tool output is. `record`: the audit entry (name "prematch"), whatever the outcome; a failed lookup is
- * recorded with its error's class and code, and throws nothing.
+ * the lookup to the model. The units (their hours included) are scrubbed as tool output is. `record`: the audit entry
+ * (name "prematch"), whatever the outcome; a failed lookup is recorded with its error's class and code, and throws
+ * nothing.
  */
 export async function prematchAmbulances(
   ctx: ToolContext,

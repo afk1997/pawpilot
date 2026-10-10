@@ -63,9 +63,9 @@ const HOURS_LINE: Record<Language, (hours: string) => string> = {
 
 /**
  * A card's line for a unit's or clinic's published hours, in the card's language, the hours shown as the directory holds
- * them ("Hours: 10am–7pm IST (call to confirm)"); null when there are none. The hours never hold a phone-shaped run
- * (the ingest warns about one, as it does for every text cell), so the scrubber and the template masking leave the line
- * as it is.
+ * them ("Hours: 10am–7pm IST (call to confirm)"); null when there are none. Published hours hold no phone-shaped run, so
+ * the scrubber and the template masking leave the line as it is; a number typed into the Hours cell would show as
+ * written, like one in the area or city cell (the ingest warns about it).
  */
 export function hoursLine(hours: string | null | undefined, lang: Language): string | null {
   const h = (hours ?? "").trim();

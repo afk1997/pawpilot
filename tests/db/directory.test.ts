@@ -20,7 +20,7 @@ describe("directory repo", () => {
     expect(rajkot.every((r) => r.operatorIsArham === false)).toBe(true);
     const byId = await getAmbulancesByIds([ids.ghatkopar]);
     expect(byId.get(ids.ghatkopar)?.phone).toBe("+917000000001");
-    expect((await loadActiveClinics())[0].label).toBe("Arham Clinic Surat");
+    expect((await loadActiveClinics()).map((c) => c.label).sort()).toEqual(["Arham Clinic Surat", "Mumbai - Ghatkopar Hospital"]);
     const clinicById = await getClinicsByIds([ids.clinicSurat]);
     expect(clinicById.get(ids.clinicSurat)).toMatchObject({ label: "Arham Clinic Surat", phone: "+912612345678", hours: "9am-7pm" });
   });

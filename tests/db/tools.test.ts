@@ -71,7 +71,7 @@ describe("tools", () => {
     await Promise.all(clients.splice(0).map((client) => client.close()));
   });
 
-  /** Test-local rows, so the shared fixture (whose single clinic other suites rely on) stays unchanged. */
+  /** Test-local rows, so the shared fixture (whose clinic and hospital other suites rely on) stays unchanged. */
   const addClinic = (label: string, city: string, address: string | null = null) =>
     getDb().insert(clinics).values({ operatorId: ids.arhamOperatorId, label, city, area: null, state: "Maharashtra", phone: "+917000000090", address, hours: null });
 
@@ -124,9 +124,12 @@ describe("tools", () => {
     expect(out.clinics[0].handle).toMatch(/^cli_/);
     expect(JSON.stringify(out)).not.toMatch(/\d{7,}/);
     const mumbai = await findClinicsImpl(c, { city: "Mumbai" });
-    expect(mumbai.city_matched).toBe(false);
-    expect(mumbai.clinics).toHaveLength(1);
-    expect((await findClinicsImpl(c, {})).clinics).toHaveLength(1);
+    expect(mumbai.city_matched).toBe(true);
+    expect(mumbai.clinics.map((x) => [x.label, x.hours])).toEqual([["Mumbai - Ghatkopar Hospital", "10am-11pm IST"]]);
+    const pune = await findClinicsImpl(c, { city: "Pune" });
+    expect(pune.city_matched).toBe(false);
+    expect(pune.clinics).toHaveLength(2);
+    expect((await findClinicsImpl(c, {})).clinics).toHaveLength(2);
   });
 
   it("find_clinics matches the city exactly (aliases included) and otherwise returns the full list", async () => {
@@ -134,13 +137,13 @@ describe("tools", () => {
     const c = ctx();
     const nearMiss = await findClinicsImpl(c, { city: "Nagaur" });
     expect(nearMiss.city_matched).toBe(false);
-    expect(nearMiss.clinics.map((x) => x.city).sort()).toEqual(["Nagpur", "Surat"]);
+    expect(nearMiss.clinics.map((x) => x.city).sort()).toEqual(["Mumbai", "Nagpur", "Surat"]);
     const alias = await findClinicsImpl(c, { city: "नागपुर" });
     expect(alias.city_matched).toBe(true);
     expect(alias.clinics.map((x) => x.label)).toEqual(["Arham Clinic Nagpur"]);
     const dash = await findClinicsImpl(c, { city: "-" });
     expect(dash.city_matched).toBe(true);
-    expect(dash.clinics).toHaveLength(2);
+    expect(dash.clinics).toHaveLength(3);
   });
 
   it("get_info returns localized content with tokens only", () => {

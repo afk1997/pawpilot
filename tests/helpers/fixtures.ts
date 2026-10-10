@@ -8,12 +8,19 @@ export interface DirectoryIds {
   ghatkopar: string; malad: string; andheri: string; bandra: string; chembur: string; mulund: string;
   rajkotA: string; rajkotB: string; surat: string; bengaluru: string; puneA: string; puneB: string;
   clinicSurat: string;
+  /** A hospital, in the clinics table like the real directory's: Ghatkopar, with published hours. */
+  hospitalGhatkopar: string;
 }
 
 /** Hours as the directory writes them for the Mumbai units (an en dash, the time zone named). */
 export const MUMBAI_HOURS = "10am–7pm IST";
+/** The Ghatkopar hospital's hours, as the directory writes them. */
+export const HOSPITAL_HOURS = "10am–11pm IST";
 
-/** Minimal directory that exercises every matcher tier and both operator kinds; Ghatkopar has published hours. */
+/**
+ * Minimal directory that exercises every matcher tier and both operator kinds. The Ghatkopar unit publishes hours, and the
+ * clinics table holds a clinic (Surat) and a hospital (Ghatkopar, with hours), as the real directory does.
+ */
 export async function seedDirectory(): Promise<DirectoryIds> {
   const db = getDb();
   const [arham] = await db.insert(operators).values({ name: "Arham Yuva Seva Group", isArham: true }).returning();
@@ -48,11 +55,17 @@ export async function seedDirectory(): Promise<DirectoryIds> {
     puneA: await amb({ label: "Pune - PMC", city: "Pune", area: "PMC", state: "Maharashtra", phone: "+919876500005", areas: ["Kothrud", "Karve Nagar", "Shivajinagar"], op: arham.id }),
     puneB: await amb({ label: "Pune - PCMC", city: "Pune", area: "PCMC", state: "Maharashtra", phone: "+919876500006", areas: ["Pimpri", "Chinchwad", "Hinjewadi"], op: arham.id }),
     clinicSurat: "",
+    hospitalGhatkopar: "",
   };
   const [clinic] = await db
     .insert(clinics)
     .values({ operatorId: arham.id, label: "Arham Clinic Surat", city: "Surat", area: "Vesu", state: "Gujarat", phone: "+912612345678", address: "Vesu Main Road", hours: "9am-7pm" })
     .returning();
   ids.clinicSurat = clinic.id;
+  const [hospital] = await db
+    .insert(clinics)
+    .values({ operatorId: arham.id, label: "Mumbai - Ghatkopar Hospital", city: "Mumbai", area: "Ghatkopar", state: "Maharashtra", phone: "+917000000020", address: null, hours: HOSPITAL_HOURS })
+    .returning();
+  ids.hospitalGhatkopar = hospital.id;
   return ids;
 }
