@@ -22,7 +22,8 @@ const envSchema = z.object({
   // delivered, and then Claude pauses until the plan's limit resets.
   LLM_ALLOW_EXTRA_USAGE: z.preprocess((v) => (typeof v === "string" && v.trim() === "" ? undefined : v), z.stringbool().default(false)),
   // On (unset, empty or "true"): a first burst naming a place with exactly one unit gets that unit's card without
-  // Claude (src/server/worker/fast-path.ts). "false" sends every burst to Claude; a restart applies it, no deploy.
+  // Claude (src/server/worker/fast-path.ts). "false" sends every burst to Claude once the worker starts with it, no
+  // deploy: on the VM, `arham up -d` re-creates the worker (`arham restart` keeps the environment it was created with).
   FAST_PATH_ENABLED: z.preprocess((v) => (typeof v === "string" && v.trim() === "" ? undefined : v), z.stringbool().default(true)),
   HELPLINE_PHONE: e164.describe("HELPLINE_PHONE"),
   WEBSITE_URL: z.string().url().default("https://alwayscare.org"),

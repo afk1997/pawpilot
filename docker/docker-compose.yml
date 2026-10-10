@@ -1,0 +1,148 @@
+# The production stack on the Azure VM (docs/runbooks/deploy.md). Not for local development: that is
+# docker/docker-compose.dev.yml. Run from /opt/arham/app as the deploy user, the way scripts/deploy.sh does:
+#   docker compose -f docker/docker-compose.yml --env-file /opt/arham/.env <command>
+#
+# Every setting comes from /opt/arham/.env. The app and the worker read the whole file (env_file); caddy, postgres
+# and backup get only the variables they need, interpolated from --env-file.
+#
+# Only caddy publishes ports. Never publish the app's port 3000 or Postgres's 5432: the admin login limiter trusts
+# the first X-Forwarded-For entry, which only Caddy may set (docker/caddy/Caddyfile), and Postgres stays on this network.
+
+name: arham
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+# The app and the worker share one image and one environment.
+x-app-env: &app-env
+  NODE_ENV: production
+  DATABASE_URL: postgres://arham:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in /opt/arham/.env}@postgres:5432/arham
+  # The backup upload's SAS URL is for the backup service alone.
+  AZURE_BACKUP_SAS_URL: ""
+
+x-app: &app
+  image: arham-helpline:latest
+  init: true
+  restart: unless-stopped
+  env_file: /opt/arham/.env
+  depends_on:
+    postgres:
+      condition: service_healthy
+  logging: *logging
+
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      PUBLIC_HOSTNAME: ${PUBLIC_HOSTNAME:?set PUBLIC_HOSTNAME in /opt/arham/.env}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in /opt/arham/.env}
+    volumes:
+      # The directory, not the file: a checkout replaces the Caddyfile with a new file, which a single-file mount
+      # would never show the container, so `caddy reload` (scripts/deploy.sh) would read the old one.
+      - ./caddy:/etc/caddy:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+    logging: *logging
+
+  app:
+    <<: *app
+    # Builds the image the worker runs too: two services building one tag race each other.
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    environment:
+      <<: *app-env
+      HOSTNAME: 0.0.0.0
+      PORT: "3000"
+      SERVICE_NAME: arham-app
+      # The app never runs a Claude turn: only the worker holds the token.
+      CLAUDE_CODE_OAUTH_TOKEN: ""
+    healthcheck:
+      # Liveness only: the server answers HTTP, whatever the status. /api/health answers 503 while the worker or
+      # delivery is down, which is for the external monitor, not a reason to call this container unhealthy.
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/favicon.ico', { method: 'HEAD', signal: AbortSignal.timeout(5000) }).then(() => process.exit(0), () => process.exit(1))"
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
+  worker:
+    <<: *app
+    # The image app builds; never looked for in a registry.
+    pull_policy: never
+    # `npm run worker`'s own command, run directly so that SIGTERM reaches node: npm hands the signal to the `sh -c`
+    # it runs the script in, which dies without passing it on, and the worker would be killed mid-turn.
+    command: ["node", "--import", "tsx", "src/server/worker/index.ts"]
+    environment:
+      <<: *app-env
+      SERVICE_NAME: arham-worker
+      LLM_HOME_DIR: /home/node/claude-home
+    volumes:
+      - claude_home:/home/node/claude-home
+    # On SIGTERM the worker takes no new turn and gives those in flight up to 145 s (GRACEFUL_STOP_MS in
+    # src/server/worker/start.ts). Docker's default 10 s would cut a turn off, possibly after its send.
+    stop_grace_period: 170s
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: arham
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in /opt/arham/.env}
+      POSTGRES_DB: arham
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # Over TCP, as the app and the worker connect: the first start's init server listens on the socket alone.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U arham -d arham"]
+      interval: 5s
+      timeout: 3s
+      start_period: 30s
+      retries: 20
+    # Room for a clean shutdown (checkpoint) instead of a kill and crash recovery.
+    stop_grace_period: 60s
+    logging: *logging
+
+  backup:
+    build:
+      context: ..
+      dockerfile: docker/backup.Dockerfile
+    image: arham-backup:latest
+    init: true
+    restart: unless-stopped
+    environment:
+      PGHOST: postgres
+      PGUSER: arham
+      PGDATABASE: arham
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in /opt/arham/.env}
+      # Optional: a Blob container SAS URL with Create permission only (it cannot overwrite or read a dump); empty
+      # keeps the dumps on the VM only.
+      AZURE_BACKUP_SAS_URL: ${AZURE_BACKUP_SAS_URL:-}
+    volumes:
+      - /opt/arham/backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # A stop during the nightly dump lets it finish (seconds) rather than lose that night's dump.
+    stop_grace_period: 60s
+    logging: *logging
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:
+  claude_home:
