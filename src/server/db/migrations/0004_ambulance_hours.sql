@@ -1,0 +1,1 @@
+ALTER TABLE "ambulances" ADD COLUMN "hours" text;

@@ -9,6 +9,7 @@ import { runTurn } from "@/server/worker/turn-runner";
 import { stopBoss } from "@/server/queue/boss";
 import { FakeBackend, okReply } from "@/server/agent/fake-backend";
 import { makeHandle } from "@/server/agent/handles";
+import { findClinicsImpl } from "@/server/agent/tools";
 import { findDigitRuns } from "@/server/agent/scrub";
 import type { ToolCallRecord } from "@/server/agent/tools";
 import type { TurnInput } from "@/server/agent/types";
@@ -21,6 +22,8 @@ const conv = () => createConversation({ isTest: true, phone: `+91TEST_${Math.ran
 const outbound = async (id: string) =>
   (await getDb().select().from(messages).where(eq(messages.conversationId, id)).orderBy(asc(messages.createdAt))).filter((m) => m.role === "assistant");
 const turnOf = async (id: string) => (await getDb().select().from(turns).where(eq(turns.id, id)))[0];
+/** The Ghatkopar fixture unit's hours on its pre-matched line: the tool-boundary scrub writes every dash as "-". */
+const GHATKOPAR_HOURS = ", hours 10am-7pm IST";
 const HEADER = "PRE-MATCHED UNITS (the system already looked up the reporter's words; use these handles directly — do not call find_ambulances again unless the reporter means a different place)";
 const knownHeader = (place: string) =>
   `PRE-MATCHED UNITS (the system looked up the location known so far (${place}), not the reporter's new words, which the code could not match to a place; use these handles only if the reporter still needs a unit there — for any other place call find_ambulances)`;
@@ -49,7 +52,7 @@ describe("pre-matched units", () => {
     const backend = new FakeBackend([okReply({ reply: `Please call {{AMB:${handle}}} right away.`, intent: "ambulance", location: { city: "Mumbai", area: "Ghatkopar" } })]);
     const r = await runTurn(c.id, { backend });
     expect(r.kind).toBe("ok");
-    expect(backend.calls[0].prompt).toContain(`${HEADER}\n- {{AMB:${handle}}} — Arham Animal Ambulance, Ghatkopar (Mumbai) [match: area]\n`);
+    expect(backend.calls[0].prompt).toContain(`${HEADER}\n- {{AMB:${handle}}} — Arham Animal Ambulance, Ghatkopar (Mumbai)${GHATKOPAR_HOURS} [match: area]\n`);
     expect((await outbound(c.id)).at(-1)!.content).toBe("Please call +91 70000 00001 right away.");
     const t = await turnOf(r.turnId!);
     expect(t.status).toBe("ok");
@@ -64,7 +67,9 @@ describe("pre-matched units", () => {
     await storeReporterMessage(c.id, { kind: "text", content: "ghatkopar" });
     const backend = new FakeBackend([okReply({ reply: "Please call the Ghatkopar ambulance.", intent: "ambulance" })]);
     expect((await runTurn(c.id, { backend })).kind).toBe("ok");
-    expect((await outbound(c.id)).at(-1)!.content).toBe("Please call the Ghatkopar ambulance.\n\nArham Animal Ambulance, Ghatkopar\n+91 70000 00001\nPlease call them right away.");
+    expect((await outbound(c.id)).at(-1)!.content).toBe(
+      "Please call the Ghatkopar ambulance.\n\nArham Animal Ambulance, Ghatkopar\n+91 70000 00001\nHours: 10am–7pm IST (call to confirm)\nPlease call them right away."
+    );
   });
 
   it("lists two or three units of an exact match, partner operators named", async () => {
@@ -110,7 +115,7 @@ describe("pre-matched units", () => {
     const r = await runTurn(c.id, { backend });
     expect(r.kind).toBe("ok");
     const prompt = backend.calls[0].prompt;
-    expect(prompt).toContain(`${knownHeader("Ghatkopar, Mumbai")}\n- {{AMB:${handle}}} — Arham Animal Ambulance, Ghatkopar (Mumbai) [match: area]\n`);
+    expect(prompt).toContain(`${knownHeader("Ghatkopar, Mumbai")}\n- {{AMB:${handle}}} — Arham Animal Ambulance, Ghatkopar (Mumbai)${GHATKOPAR_HOURS} [match: area]\n`);
     expect(prompt).not.toContain(HEADER);
     // An ambulance reply with no token, about another place: the earlier place's card is not appended.
     const sent = (await outbound(c.id)).at(-1)!;
@@ -217,13 +222,69 @@ describe("pre-matched units", () => {
     expect((await outbound(c.id)).at(-1)!.content).toBe("Please call +91 98765 00005 right away.");
   });
 
+  it("offers no ambulance for a hospital request: no block, no card, and the model's find_clinics gives the hospital", async () => {
+    const c = await answered();
+    const query = "ghatkopar hospital ka number";
+    await storeReporterMessage(c.id, { kind: "text", content: query });
+    const backend = new FakeBackend([
+      async (input: TurnInput) => {
+        const out = await findClinicsImpl(input.toolContext!, { city: "Mumbai" });
+        return okReply({ reply: `Mumbai - Ghatkopar Hospital: {{CLINIC:${out.clinics[0].handle}}}. Open 10am-11pm IST.`, intent: "clinic" });
+      },
+    ]);
+    const r = await runTurn(c.id, { backend });
+    expect(r.kind).toBe("ok");
+    expect(backend.calls[0].prompt).not.toContain("PRE-MATCHED UNITS");
+    // The hospital's number, and no ambulance card.
+    expect((await outbound(c.id)).at(-1)!.content).toBe("Mumbai - Ghatkopar Hospital: +91 70000 00020. Open 10am-11pm IST.");
+    const t = await turnOf(r.turnId!);
+    const calls = t.toolCalls as ToolCallRecord[];
+    expect(calls.map((x) => x.name)).toEqual(["prematch", "find_clinics"]);
+    expect(calls[0].output).toEqual({ matchType: "area", count: 1, handles: [], skipped: "other_intent" });
+    expect(t.handles).toEqual({ [makeHandle("clinic", c.id, ids.hospitalGhatkopar)]: { kind: "clinic", id: ids.hospitalGhatkopar } });
+  });
+
+  it("arms no card for a city name that is also an everyday word with no locative cue (the dog's face, not Surat)", async () => {
+    const c = await answered();
+    const query = "kutte ki surat pe chot hai";
+    await storeReporterMessage(c.id, { kind: "text", content: query });
+    const backend = new FakeBackend([okReply({ reply: "Aap kis city aur area mein hain?", intent: "ambulance" })]);
+    const r = await runTurn(c.id, { backend });
+    expect(backend.calls[0].prompt).not.toContain("PRE-MATCHED UNITS");
+    // An ambulance reply asking for the place gets no Surat card.
+    expect((await outbound(c.id)).at(-1)!.content).toBe("Aap kis city aur area mein hain?");
+    expect((await turnOf(r.turnId!)).toolCalls).toEqual([
+      { name: "prematch", input: { query }, output: { matchType: "area", count: 1, handles: [], skipped: "everyday_city" }, durationMs: expect.any(Number) },
+    ]);
+  });
+
+  it("arms no Surat card for an idiom, in a conversation whose known city is Mumbai", async () => {
+    const c = await conv();
+    await storeReporterMessage(c.id, { kind: "text", content: "ghatkopar me kutta ghayal hai" });
+    expect((await runTurn(c.id)).kind).toBe("fast_path");
+    // "kisi bhi surat mein" is "in any case", not Surat.
+    const query = "kisi bhi surat mein jaldi aao";
+    await storeReporterMessage(c.id, { kind: "text", content: query });
+    const backend = new FakeBackend([okReply({ reply: "Aap kis area mein hain?", intent: "ambulance" })]);
+    const r = await runTurn(c.id, { backend });
+    expect(r.kind).toBe("ok");
+    expect(backend.calls[0].prompt).not.toContain("PRE-MATCHED UNITS");
+    // A reply without a token gets no Surat card.
+    const sent = (await outbound(c.id)).at(-1)!;
+    expect(sent.content).toBe("Aap kis area mein hain?");
+    expect(sent.content).not.toContain("+91 98765 00003");
+    expect(((await turnOf(r.turnId!)).toolCalls as ToolCallRecord[])[0]).toEqual({
+      name: "prematch", input: { query }, output: { matchType: "area", count: 1, handles: [], skipped: "everyday_city" }, durationMs: expect.any(Number),
+    });
+  });
+
   it("names the covered area an area match went through (Vikhroli, covered by the Ghatkopar unit)", async () => {
     const c = await answered();
     await storeReporterMessage(c.id, { kind: "text", content: "vikhroli station ke paas" });
     const handle = makeHandle("ambulance", c.id, ids.ghatkopar);
     const backend = new FakeBackend([okReply({ reply: `Please call {{AMB:${handle}}} right away.`, intent: "ambulance" })]);
     expect((await runTurn(c.id, { backend })).kind).toBe("ok");
-    expect(backend.calls[0].prompt).toContain(`${HEADER}\n- {{AMB:${handle}}} — Arham Animal Ambulance, Ghatkopar (Mumbai), covers Vikhroli [match: area]\n`);
+    expect(backend.calls[0].prompt).toContain(`${HEADER}\n- {{AMB:${handle}}} — Arham Animal Ambulance, Ghatkopar (Mumbai), covers Vikhroli${GHATKOPAR_HOURS} [match: area]\n`);
   });
 
   it("uses the reporter's words, not the place known so far, when they name a place", async () => {

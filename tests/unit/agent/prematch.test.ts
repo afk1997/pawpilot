@@ -17,6 +17,7 @@ const rows: DirectoryAmbulance[] = [
   unit("pcmc", "Pune", "PCMC", ["Pimpri", "Chinchwad"]),
   unit("ahmedabad", "Ahmedabad", null, ["Satellite", "Ghuma"]),
   unit("delhi", "Delhi", "Old Delhi", ["Model Town", "Shalimar Bagh"]),
+  unit("surat", "Surat", null, ["Surat", "Vesu"]),
 ];
 
 const CONV = "conversation-unit";
@@ -38,10 +39,19 @@ describe("prematchAmbulances and the fast path's precision rules", () => {
     const handle = makeHandle("ambulance", CONV, "ghatkopar");
     expect(prematched).toEqual({
       matchType: "area", source: "words",
-      units: [{ handle, display_name: "Arham Animal Ambulance, Ghatkopar", city: "Mumbai", area: "Ghatkopar", operator_name: "Arham Yuva Seva Group", operator_is_arham: true, covers: null }],
+      units: [{ handle, display_name: "Arham Animal Ambulance, Ghatkopar", city: "Mumbai", area: "Ghatkopar", operator_name: "Arham Yuva Seva Group", operator_is_arham: true, hours: null, covers: null }],
     });
     expect([ctx.lastAmbulanceCandidates?.map((u) => u.id), ctx.lastAmbulanceMatch]).toEqual([["ghatkopar"], "area"]);
     expect(record.output).toEqual({ matchType: "area", count: 1, handles: [handle] });
+  });
+
+  it("hands the model a unit's published hours, scrubbed as tool output is (every dash a hyphen)", async () => {
+    vi.spyOn(repo, "loadActiveAmbulances").mockResolvedValue([{ ...rows[0], hours: "10am–7pm IST" }, ...rows.slice(1)]);
+    const ctx = context();
+    const { prematched } = await prematchAmbulances(ctx, { query: "ghatkopar", knownLocation: null });
+    expect(prematched?.units.map((u) => u.hours)).toEqual(["10am-7pm IST"]);
+    // The card the pre-match arms is built from the directory's row, so it shows the hours as written.
+    expect(ctx.lastAmbulanceCandidates?.map((u) => u.hours)).toEqual(["10am–7pm IST"]);
   });
 
   it("still pre-matches a generic area name when the words name the unit's city (Karve Nagar, Pune)", async () => {
@@ -57,6 +67,14 @@ describe("prematchAmbulances and the fast path's precision rules", () => {
     ["Ghatkopar, Pune", "other_city"],
     ["Model Town me kutta ghayal hai", "generic_area"],
     ["Model Town, Ludhiana", "generic_area"],
+    ["kutte ki surat pe chot hai", "everyday_city"],
+    ["कुत्ते की सूरत पर चोट है", "everyday_city"],
+    ["kutte ki surat se khoon aa raha hai", "everyday_city"],
+    ["is surat me kya karein", "everyday_city"],
+    // A request for a hospital, a clinic or a doctor wants the facility, not the area's ambulance.
+    ["ghatkopar hospital ka number", "other_intent"],
+    ["Ghatkopar ke doctor ka number do", "other_intent"],
+    ["घाटकोपर में कोई दवाखाना है?", "other_intent"],
   ])("pre-matches nothing for %s (%s): no block, no handle, no armed card", async (query, skipped) => {
     const { prematched, record, ctx } = await prematch(query);
     expect(prematched).toBeNull();
@@ -79,6 +97,28 @@ describe("prematchAmbulances and the fast path's precision rules", () => {
     const known = await prematch("Karve Nagar me", { city: "Pune", area: null });
     expect(known.prematched).toMatchObject({ source: "words", units: [{ display_name: "Arham Animal Ambulance, PMC", covers: "Karve Nagar" }] });
     expect(known.ctx.lastAmbulanceMatch).toBe("area");
+  });
+
+  it("offers no ambulance for a facility request, not even the known location's, and still pre-matches an ambulance request", async () => {
+    const facility = await prematch("hospital ka number?", { city: "Mumbai", area: "Ghatkopar" });
+    expect(facility.prematched).toBeNull();
+    expect([facility.ctx.lastAmbulanceCandidates, facility.ctx.lastAmbulanceMatch]).toEqual([null, null]);
+    expect(facility.ctx.registry.toJSON()).toEqual({});
+    // The known location was not looked up: the record holds the words' own lookup.
+    expect(facility.record).toEqual({
+      name: "prematch", input: { query: "hospital ka number?" }, output: { matchType: null, count: 0, handles: [], skipped: "other_intent" }, durationMs: expect.any(Number),
+    });
+    const ambulance = await prematch("ghatkopar me kutta ghayal hai");
+    expect(ambulance.prematched).toMatchObject({ matchType: "area", source: "words", units: [{ display_name: "Arham Animal Ambulance, Ghatkopar" }] });
+    expect(ambulance.record.output).not.toHaveProperty("skipped");
+  });
+
+  it("pre-matches a city that is also an everyday word when the words put it next to a cue, or the conversation knows it", async () => {
+    const cued = await prematch("surat me kutta ghayal hai");
+    expect(cued.prematched).toMatchObject({ matchType: "area", source: "words", units: [{ display_name: "Arham Animal Ambulance, Surat" }] });
+    expect(cued.ctx.lastAmbulanceMatch).toBe("area");
+    const known = await prematch("kutte ki surat pe chot hai", { city: "Surat", area: null });
+    expect(known.prematched).toMatchObject({ source: "words", units: [{ display_name: "Arham Animal Ambulance, Surat" }] });
   });
 
   it("leaves the known location's lookup as it was: offered, never armed, never checked against the words", async () => {

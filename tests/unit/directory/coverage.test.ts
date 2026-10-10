@@ -21,7 +21,7 @@ describe("buildCoverageSummary", () => {
     );
     expect(text).toContain("- Mumbai: Ghatkopar, Malad (also covers Kandivali, Vikhroli)");
     expect(text).toContain("- Rajkot: whole city (2 units, partner-operated)");
-    expect(text).toContain("Clinics: Surat (Vesu)");
+    expect(text).toContain("Hospitals and clinics: Surat (Vesu)");
     expect(text).not.toMatch(/\d{7,}/);
   });
 
@@ -36,6 +36,6 @@ describe("buildCoverageSummary", () => {
     expect(findDigitRuns(text)).toEqual([]);
     expect(text).toContain("- Mumbai: Ghatkopar (also covers Kurla, Vikhroli, call)");
     expect(text).toContain("- Pune: whole city (1 unit)");
-    expect(text).toContain("Clinics: Surat (Vesu)");
+    expect(text).toContain("Hospitals and clinics: Surat (Vesu)");
   });
 });

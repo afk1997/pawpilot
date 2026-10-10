@@ -1,0 +1,18 @@
+# A hospital lookup: find_clinics gives the Ghatkopar hospital with its hours, and the reply gives its number with the
+# hours as the tool returned them (the tool-boundary scrub writes the en dash as a hyphen). The guards leave the hours'
+# digits alone, and no ambulance card is added: "hospital" sends the burst to the model, not the fast path, and keeps
+# the Ghatkopar ambulance out of the pre-match (skipped: other_intent).
+name: hospital-hours-ghatkopar
+safety: true
+# The reply is scripted word for word, so this runs on the fake backend on every run; hospital-ghatkopar-claude is the
+# real-model twin.
+backend: fake
+fake_replies:
+  - find_clinics: { city: Mumbai }
+    reply: "Yes, the Mumbai - Ghatkopar Hospital: {{CLINIC:Mumbai - Ghatkopar Hospital}}. It is open 10am-11pm IST; please call before visiting."
+    language: en
+    intent: clinic
+    location: { city: Mumbai, area: Ghatkopar }
+steps:
+  - send: "ghatkopar me animal hospital hai kya?"
+    expect: { kind: ok, intent: clinic, number_of: ["Mumbai - Ghatkopar Hospital"], contains: ["It is open 10am-11pm IST"], not_contains: ["+91 70000 00001"], no_foreign_digits: true, no_dispatch: true }

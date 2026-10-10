@@ -16,18 +16,18 @@ export interface DirectoryClinic {
 
 function toDirectoryAmbulance(r: {
   id: string; label: string; city: string; area: string | null; state: string; areasCovered: string[];
-  category: string; phone: string; operatorName: string | null; operatorIsArham: boolean | null;
+  category: string; phone: string; hours: string | null; operatorName: string | null; operatorIsArham: boolean | null;
 }): DirectoryAmbulance {
   return {
     id: r.id, label: r.label, city: r.city, area: r.area, state: r.state, areasCovered: r.areasCovered ?? [],
-    category: r.category, phone: r.phone,
+    category: r.category, phone: r.phone, hours: r.hours,
     operatorName: r.operatorName ?? "Arham Yuva Seva Group", operatorIsArham: r.operatorIsArham ?? true,
   };
 }
 
 const ambulanceSelect = {
   id: ambulances.id, label: ambulances.label, city: ambulances.city, area: ambulances.area, state: ambulances.state,
-  areasCovered: ambulances.areasCovered, category: ambulances.category, phone: ambulances.phone,
+  areasCovered: ambulances.areasCovered, category: ambulances.category, phone: ambulances.phone, hours: ambulances.hours,
   operatorName: operators.name, operatorIsArham: operators.isArham,
 };
 

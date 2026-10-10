@@ -43,10 +43,27 @@ describe("prompts", () => {
     expect(p).toContain("[number sent]");
     expect(p).toContain('{"error": "lookup_failed"}');
     expect(p).toContain("city_matched false");
-    expect(p).toContain("say there is no clinic in that city before listing the others");
+    expect(p).toContain("say there is none in that city before listing the others");
     expect(p).toContain("noted for the team");
     expect(p).toContain("102/108/112");
   });
+  it("system prompt names the hospitals and the clinic, and how to give them and a unit's hours", () => {
+    const p = systemPrompt();
+    expect(p).toContain("Arham and partner NGOs run free animal ambulances, five animal hospitals and a clinic in the cities listed below");
+    expect(p).not.toContain("free animal ambulances and clinics");
+    expect(p).toContain(
+      "- Hospitals and clinics: call find_clinics (optionally with city) and give {{CLINIC:<handle>}} tokens; say hospital or clinic as the result's name says. If it returns city_matched false, say there is none in that city before listing the others. Give the hours and address the result carries."
+    );
+    expect(p).toContain(
+      "10. If a unit's result carries hours, say them in one short clause; outside those hours still give the number (the reporter decides), and mention {{PHONE:helpline}} only if the reporter says nobody answers."
+    );
+    expect(p).toContain("Medication or treatment questions: don't advise; offer the nearest hospital or clinic.");
+    expect(p).toContain('otherwise "clinic" (a hospital or clinic), "donate"');
+    // Rule 9 keeps its number: the style rules point at it.
+    expect(p).toContain("9. If the animal is in immediate danger");
+    expect(p).toContain("rule 9's immediate-danger line");
+  });
+
   it("system prompt defines the output fields and never writes a phone-shaped run", () => {
     const p = systemPrompt();
     expect(p).toContain('"location" is {"city": …, "area": …}, each null if unknown');
@@ -126,6 +143,24 @@ describe("prompts", () => {
       "- {{AMB:amb_kcmfpbca}} — Animal Ambulance, Rajkot (Rajkot), covers Gondal Road, operated by Blue Cross [match: area]\n"
     );
     expect(buildTurnPrompt({ ...ctx, prematched: { matchType: "area", source: "words", units: [{ ...unit, covers: null }] } })).toContain(
+      "- {{AMB:amb_kcmfpbca}} — Arham Animal Ambulance, Ghatkopar (Mumbai) [match: area]\n"
+    );
+  });
+
+  it("turn prompt gives a pre-matched unit's published hours after a partner's operator", () => {
+    const ctx: TurnContext = { nowIst: "x", language: "en", knownLocation: null, handlesShared: [], firstContact: false, transcript: "t", correction: null };
+    const unit = {
+      handle: "amb_kcmfpbca", display_name: "Arham Animal Ambulance, Ghatkopar", city: "Mumbai", area: "Ghatkopar",
+      operator_name: "Arham Yuva Seva Group", operator_is_arham: true, hours: "10am-7pm IST",
+    };
+    expect(buildTurnPrompt({ ...ctx, prematched: { matchType: "area", source: "words", units: [unit] } })).toContain(
+      "- {{AMB:amb_kcmfpbca}} — Arham Animal Ambulance, Ghatkopar (Mumbai), hours 10am-7pm IST [match: area]\n"
+    );
+    const partner = { ...unit, display_name: "Animal Ambulance, Rajkot", city: "Rajkot", area: null, operator_name: "Blue Cross", operator_is_arham: false, covers: "Gondal Road", hours: "9am-6pm IST" };
+    expect(buildTurnPrompt({ ...ctx, prematched: { matchType: "area", source: "words", units: [partner] } })).toContain(
+      "- {{AMB:amb_kcmfpbca}} — Animal Ambulance, Rajkot (Rajkot), covers Gondal Road, operated by Blue Cross, hours 9am-6pm IST [match: area]\n"
+    );
+    expect(buildTurnPrompt({ ...ctx, prematched: { matchType: "area", source: "words", units: [{ ...unit, hours: null }] } })).toContain(
       "- {{AMB:amb_kcmfpbca}} — Arham Animal Ambulance, Ghatkopar (Mumbai) [match: area]\n"
     );
   });

@@ -30,7 +30,7 @@ const leaksDigits = (o: unknown) => {
 const VISIBLE_PHONE = /\p{Nd}(?:[^\p{L}\p{Nd}]{0,3}\p{Nd}){6,}/u;
 const LOOKUP_FAILED = [{ type: "text", text: JSON.stringify({ error: "lookup_failed" }) }];
 const CITY_MATCHED_HELP =
-  "city_matched false: no clinic is in the city you passed and every clinic is listed; tell the reporter that, and name each clinic's city before giving its number.";
+  "city_matched false: none is in the city you passed and every hospital and clinic is listed; tell the reporter that, and name each one's city before giving its number.";
 
 function ctx(): ToolContext {
   return { conversationId: "conv-1", language: "en", registry: new HandleRegistry("conv-1"), calls: [], lastAmbulanceCandidates: null, lastAmbulanceMatch: null };
@@ -71,7 +71,7 @@ describe("tools", () => {
     await Promise.all(clients.splice(0).map((client) => client.close()));
   });
 
-  /** Test-local rows, so the shared fixture (whose single clinic other suites rely on) stays unchanged. */
+  /** Test-local rows, so the shared fixture (whose clinic and hospital other suites rely on) stays unchanged. */
   const addClinic = (label: string, city: string, address: string | null = null) =>
     getDb().insert(clinics).values({ operatorId: ids.arhamOperatorId, label, city, area: null, state: "Maharashtra", phone: "+917000000090", address, hours: null });
 
@@ -85,6 +85,23 @@ describe("tools", () => {
     expect(c.registry.resolve(out.candidates[0].handle)?.kind).toBe("ambulance");
     expect(c.lastAmbulanceCandidates).toHaveLength(1);
     expect(c.lastAmbulanceMatch).toBe(out.match);
+  });
+
+  it("find_ambulances returns each unit's published hours (scrubbed, so every dash is a hyphen), null when it has none", async () => {
+    const out = await findAmbulancesImpl(ctx(), { city: "Mumbai", area: null, query: "mumbai" });
+    expect(out.candidates.map((c) => [c.display_name, c.hours])).toEqual([
+      ["Arham Animal Ambulance, Andheri", null],
+      ["Arham Animal Ambulance, Bandra", null],
+      ["Arham Animal Ambulance, Chembur", null],
+      ["Arham Animal Ambulance, Ghatkopar", "10am-7pm IST"],
+      ["Arham Animal Ambulance, Malad", null],
+      ["Arham Animal Ambulance, Mulund", null],
+    ]);
+  });
+
+  it("find_clinics returns each one's address and hours", async () => {
+    const out = await findClinicsImpl(ctx(), { city: "Surat" });
+    expect(out.clinics.map((c) => [c.label, c.address, c.hours])).toEqual([["Arham Clinic Surat", "Vesu Main Road", "9am-7pm"]]);
   });
 
   it("find_ambulances returns the area list for a big city", async () => {
@@ -107,9 +124,12 @@ describe("tools", () => {
     expect(out.clinics[0].handle).toMatch(/^cli_/);
     expect(JSON.stringify(out)).not.toMatch(/\d{7,}/);
     const mumbai = await findClinicsImpl(c, { city: "Mumbai" });
-    expect(mumbai.city_matched).toBe(false);
-    expect(mumbai.clinics).toHaveLength(1);
-    expect((await findClinicsImpl(c, {})).clinics).toHaveLength(1);
+    expect(mumbai.city_matched).toBe(true);
+    expect(mumbai.clinics.map((x) => [x.label, x.hours])).toEqual([["Mumbai - Ghatkopar Hospital", "10am-11pm IST"]]);
+    const pune = await findClinicsImpl(c, { city: "Pune" });
+    expect(pune.city_matched).toBe(false);
+    expect(pune.clinics).toHaveLength(2);
+    expect((await findClinicsImpl(c, {})).clinics).toHaveLength(2);
   });
 
   it("find_clinics matches the city exactly (aliases included) and otherwise returns the full list", async () => {
@@ -117,13 +137,13 @@ describe("tools", () => {
     const c = ctx();
     const nearMiss = await findClinicsImpl(c, { city: "Nagaur" });
     expect(nearMiss.city_matched).toBe(false);
-    expect(nearMiss.clinics.map((x) => x.city).sort()).toEqual(["Nagpur", "Surat"]);
+    expect(nearMiss.clinics.map((x) => x.city).sort()).toEqual(["Mumbai", "Nagpur", "Surat"]);
     const alias = await findClinicsImpl(c, { city: "नागपुर" });
     expect(alias.city_matched).toBe(true);
     expect(alias.clinics.map((x) => x.label)).toEqual(["Arham Clinic Nagpur"]);
     const dash = await findClinicsImpl(c, { city: "-" });
     expect(dash.city_matched).toBe(true);
-    expect(dash.clinics).toHaveLength(2);
+    expect(dash.clinics).toHaveLength(3);
   });
 
   it("get_info returns localized content with tokens only", () => {
