@@ -95,6 +95,8 @@ const row = (p: Partial<CsvRow> = {}): CsvRow => ({
 });
 const clinic = (p: Partial<CsvRow> = {}): CsvRow =>
   row({ Type: "Clinic", Name: "Arham Clinic Surat", City: "Surat", Area: "Vesu", State: "Gujarat", Phone: "02612345678", Category: "Clinic", ...p });
+const MAPS_RULE = "Maps must be a Google Maps link to coordinates, https://maps.google.com/?q=<lat>,<lng> with at most six decimals, and nothing else";
+const PAGE_RULE = (origin: string) => `Page must be a page on ${origin}, with a path of letters, digits, "/", "_" and "-" only`;
 const MOBILE = "Phone must be an Indian mobile number: 10 digits starting 6-9, optionally after 0, 91 or +91";
 const ANY_INDIAN = "Phone must be an Indian number: 10 digits, optionally after 0, 91 or +91";
 
@@ -179,23 +181,45 @@ describe("validateDirectoryRows", () => {
     ]);
   });
 
-  it("refuses a clinic's Maps or Page cell that is not one https link, and reads no link cell on an ambulance row", () => {
+  it("accepts only a Google Maps link to coordinates and a page on the website, and reads no link cell on an ambulance row", () => {
     const maps = "https://maps.google.com/?q=19.07948,72.90119";
     expect(
       validateDirectoryRows({
         ambulances: [row({ Maps: "near the station", Page: "alwayscare.org" })],
         clinics: [
           clinic({ Maps: ` ${maps} `, Page: "https://alwayscare.org/hospitals/ghatkopar" }),
+          clinic({ Name: "Six decimals, south and west", Maps: "https://maps.google.com/?q=-9.079481,-172.901193", Page: "https://www.alwayscare.org/clinics/rajkot" }),
           clinic({ Name: "Empty", Maps: "", Page: " " }),
-          clinic({ Name: "Bare", Maps: "maps.google.com/?q=19.07948,72.90119", Page: "http://alwayscare.org/hospitals/ghatkopar" }),
-          clinic({ Name: "Two", Maps: `${maps} or call 98765 43210` }),
-          clinic({ Name: "Number", Maps: "98765 43210" }),
         ],
       })
-    ).toEqual([
-      'Clinic "Bare": Maps must be one link starting with https://; Page must be one link starting with https://',
-      'Clinic "Two": Maps must be one link starting with https://',
-      'Clinic "Number": Maps must be one link starting with https://',
+    ).toEqual([]);
+  });
+
+  it("refuses any other Maps value, naming the row and never echoing its digits", () => {
+    const zeroWidth = String.fromCharCode(0x200b);
+    const others = [
+      "https://wa.me/919876543210", "http://maps.google.com/?q=19.07948,72.90119", "https://maps.google.com/?q=19.07948,72.90119&z=17",
+      "https://maps.google.com/maps?q=19.07948,72.90119", "https://maps.google.com/?q=19.07948,72.90119/x", "https://maps.google.com/?q=19.0794812,72.9011934",
+      "https://maps.google.com/?q=Arham+Ghatkopar", "https://goo.gl/maps/abcdefgh", "https://maps.google.co.in/?q=19.07948,72.90119",
+      `https://maps.google.com/?q=19.07948,72.9${zeroWidth}0119`, "maps.google.com/?q=19.07948,72.90119",
+      "https://maps.google.com/?q=19.07948,72.90119 or call 98765 43210", "98765 43210",
+    ];
+    const errors = validateDirectoryRows({ ambulances: [row()], clinics: others.map((Maps, i) => clinic({ Name: `Clinic ${i}`, Maps })) });
+    expect(errors).toEqual(others.map((_, i) => `Clinic "Clinic ${i}": ${MAPS_RULE}`));
+    expect(findDigitRuns(errors.join("\n"))).toEqual([]);
+  });
+
+  it("refuses a Page that is not a page on the website, the one WEBSITE_URL names when given", () => {
+    const pages = [
+      "http://alwayscare.org/hospitals/ghatkopar", "https://example.org/hospitals/ghatkopar", "https://alwayscare.org.example.com/hospitals",
+      "https://alwayscare.org/hospitals/ghatkopar?ref=bot", "https://alwayscare.org/#volunteer", "https://alwayscare.org", "alwayscare.org/hospitals",
+    ];
+    const errors = validateDirectoryRows({ ambulances: [row()], clinics: pages.map((Page, i) => clinic({ Name: `Clinic ${i}`, Page })) });
+    expect(errors).toEqual(pages.map((_, i) => `Clinic "Clinic ${i}": ${PAGE_RULE("https://alwayscare.org")}`));
+    const own = { websiteUrl: "https://helpline.example.org" };
+    expect(validateDirectoryRows({ ambulances: [row()], clinics: [clinic({ Page: "https://helpline.example.org/hospitals/x" })] }, own)).toEqual([]);
+    expect(validateDirectoryRows({ ambulances: [row()], clinics: [clinic({ Page: "https://alwayscare.org/hospitals/x" })] }, own)).toEqual([
+      `Clinic "Arham Clinic Surat": ${PAGE_RULE("https://helpline.example.org")}`,
     ]);
   });
 

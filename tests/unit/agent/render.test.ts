@@ -13,12 +13,20 @@ const GHATKOPAR_MAP = "https://maps.google.com/?q=19.07948,72.90119";
 const hospital: DirectoryClinic = { ...surat, id: "h", label: "Mumbai - Ghatkopar Hospital", city: "Mumbai", area: "Ghatkopar", phone: "+917000000020", mapsUrl: GHATKOPAR_MAP };
 /** A Maps value that is not one https link: never inserted. */
 const notALink: DirectoryClinic = { ...surat, id: "x", mapsUrl: "near the station" };
-/** A link the formatting cleanup would rewrite if it were the model's own text. */
-const BOLD_MAP = "https://maps.example.org/?q=**19.07948,72.90119**";
-const boldLink: DirectoryClinic = { ...surat, id: "b", mapsUrl: BOLD_MAP };
+/** Stored Maps values of any other shape than MAPS_URL_RE's, by id: none is ever inserted. */
+const OTHER_SHAPES: Record<string, string> = {
+  wa: "https://wa.me/919876543210",
+  http: "http://maps.google.com/?q=19.07948,72.90119",
+  query: "https://maps.google.com/?q=19.07948,72.90119&z=17",
+  path: "https://maps.google.com/maps?q=19.07948,72.90119",
+  seven: "https://maps.google.com/?q=19.0794812,72.9011934",
+  search: "https://maps.google.com/?q=Arham+Ghatkopar",
+  short: "https://goo.gl/maps/abcdefgh",
+};
+const otherShapes = Object.fromEntries(Object.entries(OTHER_SHAPES).map(([id, mapsUrl]) => [id, { ...surat, id, mapsUrl }]));
 const lookups: RenderLookups = {
   ambulance: async (id) => ({ g: ghatkopar, w: wadala } as Record<string, DirectoryAmbulance>)[id],
-  clinic: async (id) => ({ c: surat, h: hospital, x: notALink, b: boldLink } as Record<string, DirectoryClinic>)[id],
+  clinic: async (id) => ({ c: surat, h: hospital, x: notALink, ...otherShapes } as Record<string, DirectoryClinic>)[id],
 };
 const base = (registry: HandleRegistry, overrides: Partial<Parameters<typeof renderReply>[0]> = {}) => ({
   replyTemplate: "", lang: "en" as const, intent: "ambulance" as const, registry, lookups,
@@ -267,12 +275,18 @@ describe("renderReply: map links", () => {
     expect(out.inserted).toEqual([]);
   });
 
-  it("never cleans a map link, and keeps it whole or drops it whole at the cap", async () => {
+  it.each(Object.keys(OTHER_SHAPES))("never inserts a stored Maps value of another shape (%s): the token goes", async (id) => {
     const r = new HandleRegistry("conv");
-    const hb = r.clinic("b");
+    const h = r.clinic(id);
+    const out = await renderReply(base(r, { replyTemplate: `Google Maps: {{MAPS:${h}}}`, intent: "clinic" }));
+    expect(out.text).toBe("Google Maps:");
+    expect(out.links).toEqual([]);
+    expect(out.unknownHandles).toEqual([h]);
+  });
+
+  it("keeps a map link whole or drops it whole at the cap", async () => {
+    const r = new HandleRegistry("conv");
     const hh = r.clinic("h");
-    const bold = await renderReply(base(r, { replyTemplate: `**Map**: {{MAPS:${hb}}}`, intent: "clinic" }));
-    expect(bold.text).toBe(`*Map*: ${BOLD_MAP}`);
     const prefix = "a".repeat(4000 - GHATKOPAR_MAP.length - 1);
     const fits = await renderReply(base(r, { replyTemplate: `${prefix} {{MAPS:${hh}}}`, intent: "clinic" }));
     expect(fits.text).toBe(`${prefix} ${GHATKOPAR_MAP}`);

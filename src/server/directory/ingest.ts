@@ -4,6 +4,7 @@ import { getDb, type Db } from "../db/client";
 import { ambulances, clinics, operators } from "../db/schema";
 import { levenshtein } from "./fuzzy";
 import { findDigitRuns, maskDigitRuns } from "../agent/scrub";
+import { DEFAULT_WEBSITE_URL, MAPS_URL_RE, websitePageRe } from "../links";
 
 export interface CsvRow {
   Type: string; Name: string; City: string; Area: string; State: string; Phone: string;
@@ -61,10 +62,10 @@ const REQUIRED_FIELDS = ["Name", "City", "State", "Operated By"] as const;
 const TEXT_FIELDS = [
   "Name", "City", "Area", "State", "Area of Operation", "Category", "Operated By", "Hours", "Address", "Maps", "Page", "Services", "Notes",
 ] as const;
-/** A clinic row's link cells: code puts a Maps link into replies as written, so each must be one https link. */
-const LINK_FIELDS = ["Maps", "Page"] as const;
-/** One https link: no whitespace, so a cell holding a link and other words (or a bare number) is refused. */
-const LINK_RE = /^https:\/\/\S+$/;
+/** What validateDirectoryRows checks a clinic's Page against: the website (WEBSITE_URL), "https://alwayscare.org" by default. */
+export interface DirectoryCheckOptions {
+  websiteUrl?: string;
+}
 
 /** An optional cell as stored: trimmed, null when empty or when the file has no such column. */
 const optionalCell = (value: string | undefined): string | null => (value ?? "").trim() || null;
@@ -112,10 +113,13 @@ export function parseDirectoryCsv(text: string): DirectoryRows {
 /**
  * Every problem that makes the file unsafe to ingest, one line per row (empty when it is
  * safe). A line names the row and its problems; it never repeats phone digits, only
- * their count.
+ * their count. A clinic's Maps cell must be a Google Maps link to coordinates
+ * (MAPS_URL_RE: code puts it into replies as written) and its Page a page on the website.
  */
-export function validateDirectoryRows(rows: DirectoryRows): string[] {
+export function validateDirectoryRows(rows: DirectoryRows, options: DirectoryCheckOptions = {}): string[] {
   const errors: string[] = [];
+  const websiteUrl = options.websiteUrl ?? DEFAULT_WEBSITE_URL;
+  const pageRe = websitePageRe(websiteUrl);
   // Ingest deactivates every unit the file does not list, so an empty list would switch off the whole directory.
   if (rows.ambulances.length === 0) errors.push("no ambulance rows (check the header row and the Type column)");
   const firstRowByName = new Map<string, string>();
@@ -135,10 +139,12 @@ export function validateDirectoryRows(rows: DirectoryRows): string[] {
 
     // Ambulance rows have no link cells: they are not read there.
     if (kind === "Clinic") {
-      for (const field of LINK_FIELDS) {
-        const value = (r[field] ?? "").trim();
-        if (value && !LINK_RE.test(value)) problems.push(`${field} must be one link starting with https://`);
+      const maps = (r.Maps ?? "").trim();
+      if (maps && !MAPS_URL_RE.test(maps)) {
+        problems.push("Maps must be a Google Maps link to coordinates, https://maps.google.com/?q=<lat>,<lng> with at most six decimals, and nothing else");
       }
+      const page = (r.Page ?? "").trim();
+      if (page && !pageRe.test(page)) problems.push(`Page must be a page on ${new URL(websiteUrl).origin}, with a path of letters, digits, "/", "_" and "-" only`);
     }
 
     const operator = (r["Operated By"] ?? "").trim();
@@ -185,10 +191,10 @@ export function directoryWarnings(rows: DirectoryRows): string[] {
  * file no longer lists (a listed row is re-activated). Hours, and a clinic's Address, Maps,
  * Page, Services and Notes, are written as the file has them, so an empty cell, or a file
  * without the column, clears them. Throws before writing anything when the file fails
- * validateDirectoryRows; returns directoryWarnings' lines with the counts.
+ * validateDirectoryRows (with `options`); returns directoryWarnings' lines with the counts.
  */
-export async function ingestDirectory(rows: DirectoryRows, db: Db = getDb()) {
-  const errors = validateDirectoryRows(rows);
+export async function ingestDirectory(rows: DirectoryRows, db: Db = getDb(), options: DirectoryCheckOptions = {}) {
+  const errors = validateDirectoryRows(rows, options);
   if (errors.length > 0) throw new Error(`CSV validation failed:\n${errors.map((e) => `- ${e}`).join("\n")}`);
 
   return db.transaction(async (tx) => {

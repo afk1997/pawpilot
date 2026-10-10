@@ -1,4 +1,5 @@
 import { getConfig } from "../config";
+import { mapsLink } from "../links";
 import type { Language } from "../types";
 
 export interface CardAmbulance {
@@ -17,22 +18,9 @@ export interface CardClinic {
   area: string | null;
   phone: string;
   address?: string | null;
-  /** Its Google Maps link, as the directory holds it; null or absent: none. Shown only when it is one https link. */
+  /** Its Google Maps link, as the directory holds it; null or absent: none. Shown only when it is a MAPS_URL_RE link (mapsLink). */
   mapsUrl?: string | null;
   hours?: string | null;
-}
-
-/** One https link with no whitespace: the form the ingest requires of a clinic's Maps cell (validateDirectoryRows). */
-const ONE_LINK_RE = /^https:\/\/\S+$/;
-
-/**
- * A hospital's or clinic's Google Maps link as code puts it into a reply (for a {{MAPS:<handle>}} token, or on a card):
- * the directory's Maps value, trimmed, when it is one https link; null when there is none, or when the value is anything
- * else, so nothing but a link is ever inserted.
- */
-export function mapsLink(url: string | null | undefined): string | null {
-  const link = (url ?? "").trim();
-  return ONE_LINK_RE.test(link) ? link : null;
 }
 
 /**

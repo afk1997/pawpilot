@@ -2,7 +2,8 @@ import type { Intent, Language } from "../types";
 import type { DirectoryAmbulance, MatchType } from "../directory/matcher";
 import type { DirectoryClinic } from "../directory/repo";
 import { HandleRegistry, TOKEN_RE } from "./handles";
-import { buildAmbulanceCard, buildMultiAmbulanceCard, formatIndianPhone, mapsLink, renderNumberForToken } from "../messages/cards";
+import { buildAmbulanceCard, buildMultiAmbulanceCard, formatIndianPhone, renderNumberForToken } from "../messages/cards";
+import { mapsLink } from "../links";
 
 export interface RenderLookups {
   ambulance(id: string): Promise<DirectoryAmbulance | undefined>;
@@ -187,7 +188,8 @@ export async function renderReply(input: RenderInput): Promise<RenderResult> {
     const row = await input.lookups.clinic(ref.id);
     if (!row) { drop(key, value); continue; }
     if (kind === "MAPS") {
-      // A hospital or clinic without a map link: the token goes, as an unknown handle's does.
+      // A hospital or clinic without a map link (or with a stored value that is no MAPS_URL_RE link): the token goes, as an
+      // unknown handle's does.
       const link = mapsLink(row.mapsUrl);
       if (link) substitute(key, "link", link, link);
       else drop(key, value);

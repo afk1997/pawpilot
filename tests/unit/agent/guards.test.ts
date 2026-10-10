@@ -16,10 +16,10 @@ const rajkot: DirectoryAmbulance = { ...ghatkopar, id: "r", label: "Rajkot - Blu
 const units: Record<string, DirectoryAmbulance> = { g: ghatkopar, r: rajkot };
 /** A map link with 5-decimal coordinates, as the directory writes them: no 7-digit run. */
 const GHATKOPAR_MAP = "https://maps.google.com/?q=19.07948,72.90119";
-/** Coordinates with seven decimals: each holds a 7-digit run, which only the link's masking keeps from the scrubber. */
+/** A stored value with seven decimals: each group a 7-digit run. MAPS_URL_RE refuses it, so it is never inserted. */
 const LONG_MAP = "https://maps.google.com/?q=19.0794812,72.9011934";
-/** A link whose words would read as dispatch language if the dispatch guard read links. */
-const WORDY_MAP = "https://maps.google.com/?q=Arham+ambulance+dispatched+we+are+sending";
+/** A website link whose words would read as dispatch language if the dispatch guard read links. */
+const WORDY_PAGE = "https://alwayscare.org/ambulance-dispatched-we-are-sending";
 const hospital: DirectoryClinic = {
   id: "h", label: "Mumbai - Ghatkopar Hospital", city: "Mumbai", area: "Ghatkopar", state: "MH", phone: "+917000000020", address: null, hours: null,
   mapsUrl: GHATKOPAR_MAP,
@@ -28,7 +28,6 @@ const hospital: DirectoryClinic = {
 const facilities: Record<string, DirectoryClinic> = {
   h: hospital,
   l: { ...hospital, id: "l", phone: "+917000000021", mapsUrl: LONG_MAP },
-  w: { ...hospital, id: "w", phone: "+917000000022", mapsUrl: WORDY_MAP },
   n: { ...hospital, id: "n", phone: "+917000000023", mapsUrl: null },
 };
 const CALL_DIRECTLY = "Please call them directly and they will guide you.";
@@ -261,31 +260,31 @@ describe("guardReply", () => {
     });
   });
 
-  it("masks an inserted map link before the digit scan, even one whose coordinates hold 7-digit runs", async () => {
+  it("never inserts a stored map value with seven decimals, so no inserted link holds a 7-digit run: the token goes", async () => {
     expect(findDigitRuns(LONG_MAP)).not.toEqual([]);
     const { registry, deps, corrections } = setup();
     const l = registry.clinic("l");
     const g = await guardReply(reply({ reply: `Google Maps: {{MAPS:${l}}}`, intent: "clinic" }), deps);
     expect(corrections).toEqual([]);
-    expect(g).toMatchObject({ text: `Google Maps: ${LONG_MAP}`, template: `Google Maps: {{MAPS:${l}}}`, scrubbed: false, foreignRuns: 0 });
+    expect(g).toMatchObject({ text: `Google Maps:\n\n${HELPLINE_CARD}`, unknownHandles: [l], scrubbed: false, foreignRuns: 0 });
+    expect(g.text).not.toContain("0794812");
   });
 
-  it("still strips a number the model typed beside an inserted link, never touching the link, even where the typed digits occur in it", async () => {
+  it("still strips a number the model typed beside an inserted link, never touching the link", async () => {
     const { registry, deps, corrections } = setup();
-    const l = registry.clinic("l");
-    const g = await guardReply(reply({ reply: `Google Maps: {{MAPS:${l}}}, or call 0794812.`, intent: "clinic" }), deps);
+    const h = registry.clinic("h");
+    const g = await guardReply(reply({ reply: `Google Maps: {{MAPS:${h}}}, or call 98765 43210.`, intent: "clinic" }), deps);
     expect(corrections).toEqual([{ correction: TOKEN_CORRECTION_NOTE, purpose: "token" }]);
-    expect(g).toMatchObject({ text: `Google Maps: ${LONG_MAP}, or call.`, template: `Google Maps: {{MAPS:${l}}}, or call.`, scrubbed: true, foreignRuns: 1 });
+    expect(g).toMatchObject({ text: `Google Maps: ${GHATKOPAR_MAP}, or call.`, template: `Google Maps: {{MAPS:${h}}}, or call.`, scrubbed: true, foreignRuns: 1 });
   });
 
   it("never reads a link's words as dispatch language", async () => {
     expect(hasDispatchLanguage("The ambulance is dispatched.")).toBe(true);
-    expect(hasDispatchLanguage(`Google Maps: ${WORDY_MAP}`)).toBe(false);
-    const { registry, deps, corrections } = setup();
-    const w = registry.clinic("w");
-    const g = await guardReply(reply({ reply: `Google Maps: {{MAPS:${w}}}`, intent: "clinic" }), deps);
+    expect(hasDispatchLanguage(`See ${WORDY_PAGE}`)).toBe(false);
+    const { deps, corrections } = setup();
+    const g = await guardReply(reply({ reply: `See ${WORDY_PAGE} for the hospitals.`, intent: "clinic" }), deps);
     expect(corrections).toEqual([]);
-    expect(g).toMatchObject({ text: `Google Maps: ${WORDY_MAP}`, replaced: false });
+    expect(g).toMatchObject({ text: `See ${WORDY_PAGE} for the hospitals.`, replaced: false });
   });
 
   it("keeps the link a replaced dispatch sentence held, after the call-directly line, its token in the template", async () => {

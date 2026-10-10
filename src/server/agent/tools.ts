@@ -7,7 +7,9 @@ import {
   areaNamesIn, hasFacilityWord, matchAmbulances, normalize, precisionIssue, type DirectoryAmbulance, type MatchInput, type MatchResult,
   type MatchType, type PrecisionIssue,
 } from "../directory/matcher";
-import { ambulanceDisplayName, mapsLink } from "../messages/cards";
+import { ambulanceDisplayName } from "../messages/cards";
+import { mapsLink, websitePage } from "../links";
+import { getConfig } from "../config";
 import { getStaticInfo, type InfoContent, type InfoTopic } from "../content/static";
 import { asciiDigits, PHONE_RUN_RE } from "../digits";
 import { log, safeErrorFields } from "../log";
@@ -83,7 +85,7 @@ export interface ClinicResult {
   area: string | null;
   /** Its number, as the token to copy into a reply: {{CLINIC:<handle>}}. */
   phone: string;
-  /** Its Google Maps location, as the token to copy into a reply: {{MAPS:<handle>}}; null when the directory has no link. */
+  /** Its Google Maps location, as the token to copy into a reply: {{MAPS:<handle>}}; null when the directory has no map link. */
   maps: string | null;
   address: string | null;
   hours: string | null;
@@ -91,7 +93,7 @@ export interface ClinicResult {
   services: string | null;
   /** What a visitor should know (charges, calling first); null when none. */
   notes: string | null;
-  /** Its page on the website, a plain link (it holds no digits); null when none. */
+  /** Its page on the website, a plain link; null when none, or when the stored value is not a page on the website. */
   page: string | null;
 }
 
@@ -330,9 +332,9 @@ export async function prematchAmbulances(
 
 /**
  * The hospitals and clinics in the city (every one when no city is given, or when none is in it: city_matched false),
- * each with its handle, the {{CLINIC}} and {{MAPS}} tokens for its number and map link (maps null without a link the
- * renderer would insert), and its address, hours, services, notes and page. Everything goes through the tool-boundary
- * scrub, like every tool output.
+ * each with its handle, the {{CLINIC}} and {{MAPS}} tokens for its number and map link (maps null without a MAPS_URL_RE
+ * link, which is all the renderer inserts), and its address, hours, services, notes and page (null unless a page on the
+ * website). Everything goes through the tool-boundary scrub, like every tool output.
  */
 export async function findClinicsImpl(ctx: ToolContext, input: { city?: string | null }): Promise<FindClinicsOutput> {
   return timed(ctx, "find_clinics", input, async () => {
@@ -347,7 +349,8 @@ export async function findClinicsImpl(ctx: ToolContext, input: { city?: string |
         return {
           handle, label: c.label, city: c.city, area: c.area,
           phone: `{{CLINIC:${handle}}}`, maps: mapsLink(c.mapsUrl) === null ? null : `{{MAPS:${handle}}}`,
-          address: c.address, hours: c.hours, services: c.services ?? null, notes: c.notes ?? null, page: c.pageUrl ?? null,
+          address: c.address, hours: c.hours, services: c.services ?? null, notes: c.notes ?? null,
+          page: websitePage(c.pageUrl, getConfig().websiteUrl),
         };
       }),
       city_matched: cityMatched,

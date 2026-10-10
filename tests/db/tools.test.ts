@@ -133,9 +133,13 @@ describe("tools", () => {
     expect(surat.clinics.map((x) => [x.label, x.phone, x.maps, x.services, x.notes, x.page])).toEqual([
       ["Arham Clinic Surat", `{{CLINIC:${surat.clinics[0].handle}}}`, null, null, null, null],
     ]);
-    // Nor does one whose Maps value is not one https link: the renderer would never insert it.
-    await getDb().update(clinics).set({ mapsUrl: "near the station" }).where(eq(clinics.id, ludlowRow.id));
-    expect((await findClinicsImpl(c, { city: "Kolkata" })).clinics[0].maps).toBeNull();
+    // Nor does one whose stored Maps value is anything but a Google Maps link to coordinates: the renderer would never
+    // insert it. A stored page off the website is no page either.
+    for (const mapsUrl of ["near the station", "https://wa.me/919876543210", "https://maps.google.com/?q=22.4841312,88.1336811", "https://maps.google.com/?q=22.48413,88.13368&z=17"]) {
+      await getDb().update(clinics).set({ mapsUrl, pageUrl: "https://example.org/hospitals/ludlow" }).where(eq(clinics.id, ludlowRow.id));
+      const [stored] = (await findClinicsImpl(c, { city: "Kolkata" })).clinics;
+      expect([stored.maps, stored.page], mapsUrl).toEqual([null, null]);
+    }
   });
 
   it("find_clinics removes a phone-shaped run from a facility's services and notes, and flags the call", async () => {

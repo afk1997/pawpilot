@@ -215,11 +215,13 @@ describe("directory ingest safeguards", () => {
     expect(await loadActiveClinics()).toMatchObject([{ address: null, mapsUrl: null, pageUrl: null, services: null, notes: null }]);
   });
 
-  it("refuses a clinic whose Maps cell is not one https link, and writes nothing", async () => {
+  it("refuses a clinic whose Maps cell is not a Google Maps link to coordinates, and writes nothing", async () => {
     await ingestDirectory(rowsOf(GHATKOPAR, MALAD, SURAT_CLINIC));
     const before = await snapshot();
     const bad = parseDirectoryCsv([HEADER_WITH_LOCATIONS, `${GHATKOPAR},,,,,,`, `${SURAT_CLINIC},,,call 98765 43210,,,`].join("\n"));
-    await expect(ingestDirectory(bad)).rejects.toThrow('Clinic "Arham Clinic Surat": Maps must be one link starting with https://');
+    await expect(ingestDirectory(bad)).rejects.toThrow('Clinic "Arham Clinic Surat": Maps must be a Google Maps link to coordinates');
+    const waMe = parseDirectoryCsv([HEADER_WITH_LOCATIONS, `${GHATKOPAR},,,,,,`, `${SURAT_CLINIC},,,https://wa.me/919876543210,,,`].join("\n"));
+    await expect(ingestDirectory(waMe)).rejects.toThrow('Clinic "Arham Clinic Surat": Maps must be a Google Maps link to coordinates');
     expect(await snapshot()).toEqual(before);
   });
 
