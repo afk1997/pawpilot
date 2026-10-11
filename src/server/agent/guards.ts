@@ -242,9 +242,11 @@ export async function guardReply(first: StructuredReply, deps: GuardDeps): Promi
   }
 
   const lang = d.structured.language;
-  // An AMB, CLINIC or MAPS token was dropped (in any draft, the dispatch-corrected one included) and no draft gave any
-  // number: the reply never goes out as "call this number:" with none, so the helpline card follows, its number inserted.
-  if (entityDropped && inserted.size === 0) {
+  // An AMB, CLINIC or MAPS token was dropped (in any draft, the dispatch-corrected one included), or the sent draft had a
+  // typed link stripped and inserted none, and no draft gave any number: the reply never goes out as "call this number:"
+  // or "Ghatkopar hospital:" with nothing after it, so the helpline card follows, its number inserted.
+  const strippedToNothing = typedForeignLinks(d) && d.rendered.links.length === 0;
+  if ((entityDropped || strippedToNothing) && inserted.size === 0) {
     const card = buildHelplineCard(deps.helplinePhone, lang);
     text = appendLine(text, card);
     template = appendLine(template, card.replace(formatIndianPhone(deps.helplinePhone), "{{PHONE:helpline}}"));

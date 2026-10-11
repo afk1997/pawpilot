@@ -1,5 +1,6 @@
 # The model's own answer to "where is the hospital?": find_clinics, then a clinic reply with the Ghatkopar hospital's
-# number, its Google Maps link, its address and its hours (or a line to call before visiting). The link is the
+# number, its Google Maps link, its address and its hours (the fixture publishes 10am–11pm IST, so the hours themselves,
+# never only a "call" line, which the number line would satisfy anyway). The link is the
 # fixture's, which the model never sees: it reaches the reply only through the {{MAPS:…}} token find_clinics returned.
 # Needs the real model.
 name: hospital-location-claude
@@ -11,6 +12,6 @@ steps:
       intent: clinic
       number_of: ["Mumbai - Ghatkopar Hospital"]
       contains: ["https://maps.google.com/?q=19.07948,72.90119", "Rajawadi"]
-      regex: "10\\s*am|11\\s*pm|\\bcall\\b|कॉल"
+      regex: "\\d{1,2}\\s*(am|pm)|\\bIST\\b"
       no_foreign_digits: true
       no_dispatch: true

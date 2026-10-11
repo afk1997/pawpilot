@@ -504,6 +504,8 @@ describe("links the model typed", () => {
 
   it("strips typed links and tidies the gap, leaving inserted links whole", () => {
     expect(stripLinks("Open https://example.org/a now.", ["https://example.org/a"], [])).toBe("Open now.");
+    expect(stripLinks("Map (maps.google.com/?q=1.5,2.5) here, [https://goo.gl/maps/x].", ["maps.google.com/?q=1.5,2.5", "https://goo.gl/maps/x"], []))
+      .toBe("Map here,.");
     expect(stripLinks(`Map: ${INSERTED} or https://maps.google.com/?q=19.0`, ["https://maps.google.com/?q=19.0"], [INSERTED])).toBe(`Map: ${INSERTED} or`);
   });
 });

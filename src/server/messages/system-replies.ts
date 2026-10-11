@@ -60,7 +60,7 @@ export const TOKEN_CORRECTION_NOTE =
 
 /** The correction for a draft that typed a link to anywhere but the website: map links come only from {{MAPS:…}} tokens. */
 export const LINK_CORRECTION_NOTE =
-  "SYSTEM CORRECTION: your previous draft typed a link. A link to a map may only appear as the {{MAPS:<handle>}} token find_clinics returned, copied exactly; any other link only as a tool result gave it. Rewrite the reply without typing a link.";
+  "SYSTEM CORRECTION: your previous draft typed a link. A link to a map may only appear as the {{MAPS:<handle>}} token find_clinics returned, copied exactly. Rewrite the reply without typing that link; a link on the website that a tool result gave you may stay.";
 
 /** A handle as makeHandle writes it (letters a to p only): the only form a correction may name, so it never holds a digit. */
 const HANDLE_RE = /^(?:amb|cli)_[a-p]{8}$/;

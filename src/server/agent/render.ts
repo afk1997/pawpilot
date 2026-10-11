@@ -117,6 +117,8 @@ function dropLeftovers(text: string, dropped: string[]): string {
  * first.
  */
 const SLOT_BASE = 0xe000;
+/** A character that could continue a URL: glued to an inserted link, it would become part of it. */
+const URL_CONTINUES = "[A-Za-z0-9/?#&=%+~_-]";
 const PRIVATE_USE_RE = /[\uE000-\uF8FF]/g;
 
 /** What a slot holds: a number (`value` as stored, `text` as shown) or a map link (both the link). */
@@ -214,7 +216,14 @@ export async function renderReply(input: RenderInput): Promise<RenderResult> {
   }
   const tail = between(template.slice(last));
   text = tidy(text + tail);
-  const sentTemplate = tidy(sent + tail);
+  let sentTemplate = tidy(sent + tail);
+  // A link ends where code ends it: text glued straight after it that a URL could continue ("{{MAPS:x}}/extra") goes after
+  // a space, so WhatsApp never links the two as one; the sent template gets the same space after the token.
+  const linkSlots = slots.flatMap((s, slot) => (s.kind === "link" ? [String.fromCharCode(SLOT_BASE + slot)] : []));
+  if (linkSlots.length > 0) {
+    text = text.replace(new RegExp(`([${linkSlots.join("")}])(?=${URL_CONTINUES})`, "g"), "$1 ");
+    sentTemplate = sentTemplate.replace(new RegExp(`(\\{\\{MAPS:[A-Za-z0-9_-]+\\}\\})(?=${URL_CONTINUES})`, "g"), "$1 ");
+  }
 
   let card = "";
   const cands = input.lastAmbulanceCandidates ?? [];

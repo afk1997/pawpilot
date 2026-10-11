@@ -286,6 +286,17 @@ describe("renderReply: map links", () => {
     expect(out.unknownHandles).toEqual([h]);
   });
 
+  it("puts a space between an inserted link and text glued to it that a URL could continue, in the text and the template", async () => {
+    const r = new HandleRegistry("conv");
+    const hh = r.clinic("h");
+    const glued = await renderReply(base(r, { replyTemplate: `Google Maps: {{MAPS:${hh}}}/extra and {{MAPS:${hh}}}?x=1`, intent: "clinic" }));
+    expect(glued.text).toBe(`Google Maps: ${GHATKOPAR_MAP} /extra and ${GHATKOPAR_MAP} ?x=1`);
+    expect(glued.sentTemplate).toBe(`Google Maps: {{MAPS:${hh}}} /extra and {{MAPS:${hh}}} ?x=1`);
+    // Punctuation that ends a sentence or a bracket is no part of a URL: no space.
+    const ended = await renderReply(base(r, { replyTemplate: `Map ({{MAPS:${hh}}}). Or {{MAPS:${hh}}}, then call.`, intent: "clinic" }));
+    expect(ended.text).toBe(`Map (${GHATKOPAR_MAP}). Or ${GHATKOPAR_MAP}, then call.`);
+  });
+
   it("keeps a map link whole or drops it whole at the cap", async () => {
     const r = new HandleRegistry("conv");
     const hh = r.clinic("h");

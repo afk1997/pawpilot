@@ -335,13 +335,30 @@ describe("guardReply", () => {
     expect(g).toMatchObject({ text: "Call +91 70000 00020. Google Maps:", template: `Call {{CLINIC:${h}}}. Google Maps:`, linksStripped: 1, scrubbed: false });
   });
 
-  it("strips a goo.gl link and a map host typed without its scheme the same way", async () => {
+  it("strips a goo.gl link and a map host typed without its scheme the same way, and a reply left with nothing actionable gets the helpline card", async () => {
     for (const typed of ["https://goo.gl/maps/AbCdEfGh", "maps.google.com/?q=19.1,72.9", "https://www.google.com/maps/search/Arham"]) {
       const { deps, corrections } = setup();
       const g = await guardReply(reply({ reply: `Location: ${typed} (tap to open).`, intent: "clinic" }), deps);
       expect(corrections, typed).toEqual([{ correction: LINK_CORRECTION_NOTE, purpose: "token" }]);
-      expect(g, typed).toMatchObject({ text: "Location: (tap to open).", template: "Location: (tap to open).", linksStripped: 1 });
+      expect(g, typed).toMatchObject({
+        text: `Location: (tap to open).\n\n${HELPLINE_CARD}`, template: `Location: (tap to open).\n\n${HELPLINE_TEMPLATE}`, linksStripped: 1,
+      });
     }
+  });
+
+  it("leaves no empty brackets where a typed link stood", async () => {
+    const { deps } = setup();
+    const g = await guardReply(reply({ reply: "The hospital (maps.google.com/?q=19.1,72.9) is near the station.", intent: "clinic" }), deps);
+    expect(g).toMatchObject({ text: `The hospital is near the station.\n\n${HELPLINE_CARD}`, linksStripped: 1 });
+  });
+
+  it("adds no helpline card when the reply keeps a number or an inserted link", async () => {
+    const { registry, deps } = setup();
+    const h = registry.clinic("h");
+    const withNumber = await guardReply(reply({ reply: `Call {{CLINIC:${h}}}. Map: https://maps.google.com/?q=19.1,72.9`, intent: "clinic" }), deps);
+    expect(withNumber.text).toBe("Call +91 70000 00020. Map:");
+    const withLink = await guardReply(reply({ reply: `Map: {{MAPS:${h}}} or https://goo.gl/maps/AbCdEfGh`, intent: "clinic" }), deps);
+    expect(withLink.text).toBe(`Map: ${GHATKOPAR_MAP} or`);
   });
 
   it("lets a link on the website through, as a tool result gives it", async () => {
@@ -365,7 +382,9 @@ describe("guardReply", () => {
     const { deps, corrections } = setup();
     const g = await guardReply(reply({ reply: "Message them on https://wa.me/919876543210 now.", intent: "clinic" }), deps);
     expect(corrections).toEqual([{ correction: `${TOKEN_CORRECTION_NOTE} ${LINK_CORRECTION_NOTE}`, purpose: "token" }]);
-    expect(g).toMatchObject({ text: "Message them on now.", template: "Message them on now.", linksStripped: 1, scrubbed: true });
+    expect(g).toMatchObject({
+      text: `Message them on now.\n\n${HELPLINE_CARD}`, template: `Message them on now.\n\n${HELPLINE_TEMPLATE}`, linksStripped: 1, scrubbed: true,
+    });
   });
 
   it("sends the corrected draft when it no longer types the link", async () => {

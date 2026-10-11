@@ -304,8 +304,10 @@ describe("the Claude turn's guards, audit and context", () => {
     expect((await runTurn(c.id, { backend })).kind).toBe("ok");
     expect(backend.calls).toHaveLength(2);
     expect(backend.calls[1].prompt).toContain("SYSTEM CORRECTION: your previous draft typed a link.");
+    // Nothing actionable is left once the link goes: the helpline card follows, as for a dropped token.
     const [m] = await outbound(c.id);
-    expect([m.content, m.contentTemplate]).toEqual(["Ghatkopar hospital:", "Ghatkopar hospital:"]);
+    const card = buildHelplineCard("+919999900000", "en");
+    expect([m.content, m.contentTemplate]).toEqual([`Ghatkopar hospital:\n\n${card}`, `Ghatkopar hospital:\n\n${card.replace("+91 99999 00000", "{{PHONE:helpline}}")}`]);
     const [ev] = await eventsOf("link_strip");
     expect(ev.payload).toEqual({ turnId: m.turnId, links: 1 });
   });

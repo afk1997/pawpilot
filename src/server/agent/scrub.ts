@@ -123,13 +123,15 @@ export function typedLinks(text: string, inserted: string[]): string[] {
 }
 
 /**
- * Removes every occurrence of the links outside the links code inserted (`inserted`, kept whole), then the doubled space
- * or the space before punctuation a removal leaves, as stripRuns does. Longer links go first.
+ * Removes every occurrence of the links outside the links code inserted (`inserted`, kept whole), with the brackets that
+ * held nothing else ("(maps.google.com/…)" leaves no "()"), then the doubled space or the space before punctuation a
+ * removal leaves, as stripRuns does. Longer links go first.
  */
 export function stripLinks(text: string, links: string[], inserted: string[]): string {
   const targets = [...new Set(links)].filter((l) => l !== "").sort((a, b) => b.length - a.length);
+  const remove = (part: string, link: string) => part.replace(new RegExp(`[(\\[][^\\S\\n]*${escapeRegExp(link)}[^\\S\\n]*[)\\]]|${escapeRegExp(link)}`, "g"), "");
   const stripped = splitAllowed(normalizeDigits(text), inserted.filter(isLinkEntry))
-    .map((part, i) => (i % 2 === 1 ? part : targets.reduce((out, link) => out.split(link).join(""), part)))
+    .map((part, i) => (i % 2 === 1 ? part : targets.reduce(remove, part)))
     .join("");
   return collapseSpaces(stripped).replace(/ +([.,!?।])/g, "$1").trim();
 }
