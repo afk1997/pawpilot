@@ -12,6 +12,14 @@ export interface DirectoryClinic {
   phone: string;
   address: string | null;
   hours: string | null;
+  /** Its Google Maps link (one https link, clinics.maps_url); null or absent: none. Replies carry it as {{MAPS:<handle>}}. */
+  mapsUrl?: string | null;
+  /** Its page on the website (one https link); null or absent: none. */
+  pageUrl?: string | null;
+  /** What it offers, as the directory writes it; null or absent: not published. */
+  services?: string | null;
+  /** What a visitor should know (charges, calling first), as the directory writes it; null or absent: none. */
+  notes?: string | null;
 }
 
 function toDirectoryAmbulance(r: {
@@ -53,7 +61,8 @@ export async function getAmbulancesByIds(ids: string[]): Promise<Map<string, Dir
 
 const clinicSelect = {
   id: clinics.id, label: clinics.label, city: clinics.city, area: clinics.area, state: clinics.state,
-  phone: clinics.phone, address: clinics.address, hours: clinics.hours,
+  phone: clinics.phone, address: clinics.address, hours: clinics.hours, mapsUrl: clinics.mapsUrl, pageUrl: clinics.pageUrl,
+  services: clinics.services, notes: clinics.notes,
 };
 
 export async function loadActiveClinics(): Promise<DirectoryClinic[]> {

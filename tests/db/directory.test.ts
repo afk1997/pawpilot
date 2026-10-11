@@ -80,6 +80,8 @@ Clinic,Arham Clinic Surat,"Surat, Gujarat",Vesu,Gujarat,02612345678,,Clinic,Arha
 const HEADER = "Type,Name,City,Area,State,Phone,Area of Operation,Category,Operated By";
 /** The header with the optional columns, which the lines of a file using it carry too. */
 const HEADER_WITH_HOURS = `${HEADER},Hours,Address`;
+/** The header with every optional column: a clinic's map link, page, services and notes after Address. */
+const HEADER_WITH_LOCATIONS = `${HEADER_WITH_HOURS},Maps,Page,Services,Notes`;
 const GHATKOPAR = 'Ambulance,Mumbai - Ghatkopar,Mumbai,Ghatkopar,Maharashtra,7000000001,"Ghatkopar, Vikhroli",Animal Ambulance,Arham Yuva Seva Group';
 const MALAD = "Ambulance,Mumbai - Malad,Mumbai,Malad,Maharashtra,7000000002,Malad,Animal Ambulance,Arham Yuva Seva Group";
 const SURAT_CLINIC = 'Clinic,Arham Clinic Surat,"Surat, Gujarat",Vesu,Gujarat,02612345678,,Clinic,Arham Yuva Seva Group';
@@ -187,6 +189,40 @@ describe("directory ingest safeguards", () => {
     expect(await ingestDirectory(rowsOf(GHATKOPAR, MALAD, SURAT_CLINIC))).toMatchObject({ ambulancesUpdated: 2, clinicsUpdated: 1 });
     expect((await loadActiveAmbulances()).map((r) => r.hours)).toEqual([null, null]);
     expect(await loadActiveClinics()).toMatchObject([{ hours: null, address: null }]);
+  });
+
+  it("writes a clinic's Maps, Page, Services and Notes cells, reads them back, and clears them when the file drops the columns", async () => {
+    const maps = "https://maps.google.com/?q=21.17024,72.83106";
+    const withLocations = parseDirectoryCsv([
+      HEADER_WITH_LOCATIONS,
+      // An ambulance row's link cells are not read: units have no map link.
+      `${GHATKOPAR},10am–7pm IST,,"${maps}",https://alwayscare.org/ambulances,X-ray,Free`,
+      `${SURAT_CLINIC},10am–11pm IST,"Vesu Main Road, near the temple","${maps}",https://alwayscare.org/clinics/surat,"OPD; X-ray",Treatment for injured street animals is free; pets: call first.`,
+    ].join("\n"));
+    expect(await ingestDirectory(withLocations)).toMatchObject({ ambulancesInserted: 1, clinicsInserted: 1, warnings: [] });
+    const [surat] = await loadActiveClinics();
+    expect(surat).toMatchObject({
+      label: "Arham Clinic Surat", address: "Vesu Main Road, near the temple", mapsUrl: maps, pageUrl: "https://alwayscare.org/clinics/surat",
+      services: "OPD; X-ray", notes: "Treatment for injured street animals is free; pets: call first.",
+    });
+    expect((await getClinicsByIds([surat.id])).get(surat.id)).toEqual(surat);
+
+    // An empty cell clears its column, and so does an older file without the columns.
+    expect(await ingestDirectory(parseDirectoryCsv([HEADER_WITH_LOCATIONS, `${GHATKOPAR},,,,,,`, `${SURAT_CLINIC},,,"${maps}",,,`].join("\n"))))
+      .toMatchObject({ clinicsUpdated: 1 });
+    expect(await loadActiveClinics()).toMatchObject([{ mapsUrl: maps, pageUrl: null, services: null, notes: null }]);
+    expect(await ingestDirectory(rowsOf(GHATKOPAR, SURAT_CLINIC))).toMatchObject({ clinicsUpdated: 1 });
+    expect(await loadActiveClinics()).toMatchObject([{ address: null, mapsUrl: null, pageUrl: null, services: null, notes: null }]);
+  });
+
+  it("refuses a clinic whose Maps cell is not a Google Maps link to coordinates, and writes nothing", async () => {
+    await ingestDirectory(rowsOf(GHATKOPAR, MALAD, SURAT_CLINIC));
+    const before = await snapshot();
+    const bad = parseDirectoryCsv([HEADER_WITH_LOCATIONS, `${GHATKOPAR},,,,,,`, `${SURAT_CLINIC},,,call 98765 43210,,,`].join("\n"));
+    await expect(ingestDirectory(bad)).rejects.toThrow('Clinic "Arham Clinic Surat": Maps must be a Google Maps link to coordinates');
+    const waMe = parseDirectoryCsv([HEADER_WITH_LOCATIONS, `${GHATKOPAR},,,,,,`, `${SURAT_CLINIC},,,https://wa.me/919876543210,,,`].join("\n"));
+    await expect(ingestDirectory(waMe)).rejects.toThrow('Clinic "Arham Clinic Surat": Maps must be a Google Maps link to coordinates');
+    expect(await snapshot()).toEqual(before);
   });
 
   it("refuses a CSV with no ambulance rows instead of deactivating the whole directory", async () => {

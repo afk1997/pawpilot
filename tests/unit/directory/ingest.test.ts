@@ -57,6 +57,29 @@ Clinic,Kolkata - Ludlow Hospital,Kolkata,Ludlow,West Bengal,02612345678,,Hospita
 Ambulance,Mumbai - Ghatkopar,Mumbai,Ghatkopar,Maharashtra,7000000001,Ghatkopar,Animal Ambulance,Arham Yuva Seva Group`);
     expect([old.ambulances[0].Hours, old.ambulances[0].Address]).toEqual([undefined, undefined]);
   });
+  it("reads a clinic's optional Maps, Page, Services and Notes columns, and a file without them", () => {
+    const csv = `Type,Name,City,Area,State,Phone,Area of Operation,Category,Operated By,Hours,Address,Maps,Page,Services,Notes
+Ambulance,Mumbai - Ghatkopar,Mumbai,Ghatkopar,Maharashtra,7000000001,Ghatkopar,Animal Ambulance,Arham Yuva Seva Group,10am–7pm IST,,,,,
+=== HOSPITALS ===,,,,,,,,,,,,,,
+Clinic,Kolkata - Ludlow Hospital,Kolkata,Ludlow,West Bengal,02612345678,,Hospital,Arham Yuva Seva Group,9am–6pm IST,"Near Chengail Railway Station, Uluberia, Howrah, West Bengal 711315","https://maps.google.com/?q=22.48413,88.13368",https://alwayscare.org/hospitals/ludlow,IPD for cats and dogs; OPD for cats; X-ray,Consultation and first-aid treatment are free; call to check charges for other treatment.
+Clinic,Rajkot Clinic,"Rajkot, Gujarat",,Gujarat,02612345679,,Clinic,Arham Yuva Seva Group,10am–11pm IST,,"https://maps.google.com/?q=22.29886,70.77540",https://alwayscare.org/clinics/rajkot,,`;
+    const r = parseDirectoryCsv(csv);
+    expect(r.clinics.map((c) => [c.Name, c.Maps, c.Page, c.Services, c.Notes])).toEqual([
+      [
+        "Kolkata - Ludlow Hospital", "https://maps.google.com/?q=22.48413,88.13368", "https://alwayscare.org/hospitals/ludlow",
+        "IPD for cats and dogs; OPD for cats; X-ray", "Consultation and first-aid treatment are free; call to check charges for other treatment.",
+      ],
+      ["Rajkot Clinic", "https://maps.google.com/?q=22.29886,70.77540", "https://alwayscare.org/clinics/rajkot", "", ""],
+    ]);
+    // A 5-decimal map link holds no phone-shaped run: no warning, no validation problem.
+    expect(validateDirectoryRows(r)).toEqual([]);
+    expect(directoryWarnings(r)).toEqual([]);
+    const old = parseDirectoryCsv(`Type,Name,City,Area,State,Phone,Area of Operation,Category,Operated By,Hours,Address
+Ambulance,Mumbai - Ghatkopar,Mumbai,Ghatkopar,Maharashtra,7000000001,Ghatkopar,Animal Ambulance,Arham Yuva Seva Group,,
+Clinic,Arham Clinic Surat,"Surat, Gujarat",Vesu,Gujarat,02612345678,,Clinic,Arham Yuva Seva Group,,Vesu Main Road`);
+    expect([old.clinics[0].Maps, old.clinics[0].Page, old.clinics[0].Services, old.clinics[0].Notes]).toEqual([undefined, undefined, undefined, undefined]);
+    expect(validateDirectoryRows(old)).toEqual([]);
+  });
   it("strips the UTF-8 byte order mark an Excel CSV export starts with", () => {
     const csv = `Type,Name,City,Area,State,Phone,Area of Operation,Category,Operated By
 Ambulance,Mumbai - Ghatkopar,Mumbai,Ghatkopar,Maharashtra,7000000001,Ghatkopar,Animal Ambulance,Arham Yuva Seva Group`;
@@ -72,6 +95,8 @@ const row = (p: Partial<CsvRow> = {}): CsvRow => ({
 });
 const clinic = (p: Partial<CsvRow> = {}): CsvRow =>
   row({ Type: "Clinic", Name: "Arham Clinic Surat", City: "Surat", Area: "Vesu", State: "Gujarat", Phone: "02612345678", Category: "Clinic", ...p });
+const MAPS_RULE = "Maps must be a Google Maps link to coordinates, https://maps.google.com/?q=<lat>,<lng> with at most six decimals, and nothing else";
+const PAGE_RULE = (origin: string) => `Page must be a page on ${origin}, with a path of letters, digits, "/", "_" and "-" only`;
 const MOBILE = "Phone must be an Indian mobile number: 10 digits starting 6-9, optionally after 0, 91 or +91";
 const ANY_INDIAN = "Phone must be an Indian number: 10 digits, optionally after 0, 91 or +91";
 
@@ -156,6 +181,48 @@ describe("validateDirectoryRows", () => {
     ]);
   });
 
+  it("accepts only a Google Maps link to coordinates and a page on the website, and reads no link cell on an ambulance row", () => {
+    const maps = "https://maps.google.com/?q=19.07948,72.90119";
+    expect(
+      validateDirectoryRows({
+        ambulances: [row({ Maps: "near the station", Page: "alwayscare.org" })],
+        clinics: [
+          clinic({ Maps: ` ${maps} `, Page: "https://alwayscare.org/hospitals/ghatkopar" }),
+          clinic({ Name: "Six decimals, south and west", Maps: "https://maps.google.com/?q=-9.079481,-172.901193", Page: "https://www.alwayscare.org/clinics/rajkot" }),
+          clinic({ Name: "Empty", Maps: "", Page: " " }),
+        ],
+      })
+    ).toEqual([]);
+  });
+
+  it("refuses any other Maps value, naming the row and never echoing its digits", () => {
+    const zeroWidth = String.fromCharCode(0x200b);
+    const others = [
+      "https://wa.me/919876543210", "http://maps.google.com/?q=19.07948,72.90119", "https://maps.google.com/?q=19.07948,72.90119&z=17",
+      "https://maps.google.com/maps?q=19.07948,72.90119", "https://maps.google.com/?q=19.07948,72.90119/x", "https://maps.google.com/?q=19.0794812,72.9011934",
+      "https://maps.google.com/?q=Arham+Ghatkopar", "https://goo.gl/maps/abcdefgh", "https://maps.google.co.in/?q=19.07948,72.90119",
+      `https://maps.google.com/?q=19.07948,72.9${zeroWidth}0119`, "maps.google.com/?q=19.07948,72.90119",
+      "https://maps.google.com/?q=19.07948,72.90119 or call 98765 43210", "98765 43210",
+    ];
+    const errors = validateDirectoryRows({ ambulances: [row()], clinics: others.map((Maps, i) => clinic({ Name: `Clinic ${i}`, Maps })) });
+    expect(errors).toEqual(others.map((_, i) => `Clinic "Clinic ${i}": ${MAPS_RULE}`));
+    expect(findDigitRuns(errors.join("\n"))).toEqual([]);
+  });
+
+  it("refuses a Page that is not a page on the website, the one WEBSITE_URL names when given", () => {
+    const pages = [
+      "http://alwayscare.org/hospitals/ghatkopar", "https://example.org/hospitals/ghatkopar", "https://alwayscare.org.example.com/hospitals",
+      "https://alwayscare.org/hospitals/ghatkopar?ref=bot", "https://alwayscare.org/#volunteer", "https://alwayscare.org", "alwayscare.org/hospitals",
+    ];
+    const errors = validateDirectoryRows({ ambulances: [row()], clinics: pages.map((Page, i) => clinic({ Name: `Clinic ${i}`, Page })) });
+    expect(errors).toEqual(pages.map((_, i) => `Clinic "Clinic ${i}": ${PAGE_RULE("https://alwayscare.org")}`));
+    const own = { websiteUrl: "https://helpline.example.org" };
+    expect(validateDirectoryRows({ ambulances: [row()], clinics: [clinic({ Page: "https://helpline.example.org/hospitals/x" })] }, own)).toEqual([]);
+    expect(validateDirectoryRows({ ambulances: [row()], clinics: [clinic({ Page: "https://alwayscare.org/hospitals/x" })] }, own)).toEqual([
+      `Clinic "Arham Clinic Surat": ${PAGE_RULE("https://helpline.example.org")}`,
+    ]);
+  });
+
   it("accepts a phone-shaped number in a text cell (directoryWarnings names it instead)", () => {
     expect(validateDirectoryRows({ ambulances: [row({ "Area of Operation": "Ghatkopar, call 98765 43210" })], clinics: [] })).toEqual([]);
   });
@@ -198,5 +265,22 @@ describe("directoryWarnings", () => {
       'Ambulance "Mumbai - Ghatkopar": Hours holds a phone-shaped number: put phone numbers only in the Phone column',
       'Clinic "Arham Clinic Surat": Address holds a phone-shaped number: put phone numbers only in the Phone column',
     ]);
+  });
+
+  it("names the Maps, Page, Services and Notes cells too, and never a map link with 5-decimal coordinates", () => {
+    const warnings = directoryWarnings({
+      ambulances: [row()],
+      clinics: [
+        // Coordinates with seven decimals hold a phone-shaped run: the link goes out as written, so the owner is told.
+        clinic({ Maps: "https://maps.google.com/?q=19.0794812,72.9011934", Page: "https://alwayscare.org/hospitals/9876543210" }),
+        clinic({ Name: "Ludlow", Services: "X-ray; call 98765 43210 for the OT", Notes: "Free first aid. Ward: ९८७६५४३२१२" }),
+        clinic({ Name: "Clean", Maps: "https://maps.google.com/?q=22.48413,88.13368", Page: "https://alwayscare.org/hospitals/ludlow", Services: "X-ray", Notes: "Free." }),
+      ],
+    });
+    expect(warnings).toEqual([
+      'Clinic "Arham Clinic Surat": Maps, Page hold a phone-shaped number: put phone numbers only in the Phone column',
+      'Clinic "Ludlow": Services, Notes hold a phone-shaped number: put phone numbers only in the Phone column',
+    ]);
+    expect(findDigitRuns(warnings.join("\n"))).toEqual([]);
   });
 });

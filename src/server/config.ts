@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DEFAULT_WEBSITE_URL } from "./links";
 
 const e164 = z.string().regex(/^\+[1-9]\d{7,14}$/, "must be E.164 like +919876543210");
 
@@ -26,7 +27,7 @@ const envSchema = z.object({
   // deploy: on the VM, `arham up -d` re-creates the worker (`arham restart` keeps the environment it was created with).
   FAST_PATH_ENABLED: z.preprocess((v) => (typeof v === "string" && v.trim() === "" ? undefined : v), z.stringbool().default(true)),
   HELPLINE_PHONE: e164.describe("HELPLINE_PHONE"),
-  WEBSITE_URL: z.string().url().default("https://alwayscare.org"),
+  WEBSITE_URL: z.string().url().default(DEFAULT_WEBSITE_URL),
   ADMIN_PASSWORD: z.string().min(6),
   SESSION_SECRET: z.string().min(32),
   WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(8).default(4),

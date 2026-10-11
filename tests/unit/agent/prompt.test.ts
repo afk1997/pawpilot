@@ -52,7 +52,7 @@ describe("prompts", () => {
     expect(p).toContain("Arham and partner NGOs run free animal ambulances, five animal hospitals and a clinic in the cities listed below");
     expect(p).not.toContain("free animal ambulances and clinics");
     expect(p).toContain(
-      "- Hospitals and clinics: call find_clinics (optionally with city) and give {{CLINIC:<handle>}} tokens; say hospital or clinic as the result's name says. If it returns city_matched false, say there is none in that city before listing the others. Give the hours and address the result carries."
+      "- Hospitals and clinics: call find_clinics (optionally with city); say hospital or clinic as the result's name says. If it returns city_matched false, say there is none in that city before listing the others. "
     );
     expect(p).toContain(
       "10. If a unit's result carries hours, say them in one short clause; outside those hours still give the number (the reporter decides), and mention {{PHONE:helpline}} only if the reporter says nobody answers."
@@ -62,6 +62,26 @@ describe("prompts", () => {
     // Rule 9 keeps its number: the style rules point at it.
     expect(p).toContain("9. If the animal is in immediate danger");
     expect(p).toContain("rule 9's immediate-danger line");
+  });
+
+  it("system prompt always gives a hospital's or clinic's number, then its hours or a call-first line, then the map link and address asked for", () => {
+    const p = systemPrompt();
+    expect(p).toContain(
+      "For a hospital or clinic, always give, in this order: its number as {{CLINIC:<handle>}}; its hours as the result gives them, or a line asking to call before visiting when it has none; then what the reporter asked for, each copied from the find_clinics result (a reporter who asks where it is, for the address, the location, the map or directions gets its {{MAPS:<handle>}} token after 'Google Maps:' and the address; the services or the notes when asked), in about three short lines."
+    );
+    expect(p).toContain("Never say you do not have the location when the result carries maps.");
+    expect(p).toContain("When the reporter asks about more than two hospitals or clinics, ask which city first, or give one short line each.");
+    // The hours come right after the number: placed last, they were sometimes left out.
+    expect(p).not.toContain("Add its hours when the result has them");
+    expect(p).not.toContain("and nothing more");
+    expect(p).not.toContain("Give the hours and address the result carries.");
+  });
+  it("system prompt lists the MAPS token among the tokens, and forbids typing a map link", () => {
+    const p = systemPrompt();
+    expect(p).toContain("TOKENS (the only way a phone number or a map link may appear)\n{{AMB:<handle>}}  {{CLINIC:<handle>}}  {{MAPS:<handle>}}  {{PHONE:helpline}}\n");
+    expect(p).toContain(
+      "{{MAPS:<handle>}} is a hospital's or clinic's Google Maps link: copy it exactly as find_clinics returned it in maps; never type a map link yourself."
+    );
   });
 
   it("system prompt defines the output fields and never writes a phone-shaped run", () => {

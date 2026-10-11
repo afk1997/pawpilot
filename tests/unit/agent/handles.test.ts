@@ -69,6 +69,13 @@ describe("handles", () => {
     expect(r.resolve("CONSTRUCTOR")).toBeUndefined();
     expect(r.resolve("__PROTO__")).toBeUndefined();
   });
+  it("extracts a MAPS token, whose value is the clinic handle its CLINIC token uses", () => {
+    expect(extractTokens("Call {{CLINIC:cli_abcdefgh}}. Google Maps: {{MAPS:cli_abcdefgh}}")).toEqual([
+      { kind: "CLINIC", value: "cli_abcdefgh", raw: "{{CLINIC:cli_abcdefgh}}" },
+      { kind: "MAPS", value: "cli_abcdefgh", raw: "{{MAPS:cli_abcdefgh}}" },
+    ]);
+    expect(extractTokens("{{maps:cli_abcdefgh}} {{MAP:cli_abcdefgh}}")).toEqual([]);
+  });
   it("extracts PHONE keys with digits and underscores", () => {
     expect(extractTokens("FAQ {{PHONE:faq_1}}, volunteers {{PHONE:volunteer_contact_phone}}")).toEqual([
       { kind: "PHONE", value: "faq_1", raw: "{{PHONE:faq_1}}" },

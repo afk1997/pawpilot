@@ -1,4 +1,5 @@
 import { getConfig } from "../config";
+import { mapsLink } from "../links";
 import type { Language } from "../types";
 
 export interface CardAmbulance {
@@ -17,6 +18,8 @@ export interface CardClinic {
   area: string | null;
   phone: string;
   address?: string | null;
+  /** Its Google Maps link, as the directory holds it; null or absent: none. Shown only when it is a MAPS_URL_RE link (mapsLink). */
+  mapsUrl?: string | null;
   hours?: string | null;
 }
 
@@ -169,7 +172,10 @@ function hospitalsUrl(): string {
   return `${getConfig().websiteUrl.replace(/\/+$/, "")}/hospitals`;
 }
 
-/** Each hospital or clinic with its number, its address and its hours when it has them; the site's list when none. */
+/**
+ * Each hospital or clinic with its number, and its address, its Google Maps link and its hours when it has them; the
+ * site's list when none.
+ */
 export function buildClinicCard(rows: CardClinic[], lang: Language = "en"): string {
   if (rows.length === 0) return (NO_CLINICS[lang] ?? NO_CLINICS.en)(hospitalsUrl());
   const lines: string[] = [CLINIC_HEADER[lang] ?? CLINIC_HEADER.en, ""];
@@ -177,6 +183,8 @@ export function buildClinicCard(rows: CardClinic[], lang: Language = "en"): stri
     lines.push(`*${c.label}* (${c.area ? `${c.city} — ${c.area}` : c.city})`);
     lines.push(`📞 ${formatIndianPhone(c.phone)}`);
     if (c.address) lines.push(`📍 ${c.address}`);
+    const link = mapsLink(c.mapsUrl);
+    if (link) lines.push(`🗺️ Google Maps: ${link}`);
     const hours = hoursLine(c.hours, lang);
     if (hours) lines.push(`🕒 ${hours}`);
     lines.push("");

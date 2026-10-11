@@ -42,11 +42,17 @@ export class HandleRegistry {
   }
 }
 
-export const TOKEN_RE = /\{\{(AMB|CLINIC|PHONE):([A-Za-z0-9_-]+)\}\}/g;
+/**
+ * What a token stands for: AMB a unit's number, CLINIC a hospital's or clinic's number, MAPS a hospital's or clinic's
+ * Google Maps link (the same cli_ handle as its CLINIC token), PHONE the helpline's or a static content number.
+ */
+export type TokenKind = "AMB" | "CLINIC" | "MAPS" | "PHONE";
+
+export const TOKEN_RE = /\{\{(AMB|CLINIC|MAPS|PHONE):([A-Za-z0-9_-]+)\}\}/g;
 
 /** Scans a fresh copy of TOKEN_RE: matchAll resumes from a regex's lastIndex, which a caller's TOKEN_RE.test/exec leaves advanced. */
-export function extractTokens(text: string): { kind: "AMB" | "CLINIC" | "PHONE"; value: string; raw: string }[] {
-  const out: { kind: "AMB" | "CLINIC" | "PHONE"; value: string; raw: string }[] = [];
-  for (const m of text.matchAll(new RegExp(TOKEN_RE.source, TOKEN_RE.flags))) out.push({ kind: m[1] as "AMB" | "CLINIC" | "PHONE", value: m[2], raw: m[0] });
+export function extractTokens(text: string): { kind: TokenKind; value: string; raw: string }[] {
+  const out: { kind: TokenKind; value: string; raw: string }[] = [];
+  for (const m of text.matchAll(new RegExp(TOKEN_RE.source, TOKEN_RE.flags))) out.push({ kind: m[1] as TokenKind, value: m[2], raw: m[0] });
   return out;
 }

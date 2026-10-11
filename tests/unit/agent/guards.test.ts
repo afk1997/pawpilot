@@ -3,8 +3,10 @@ import { guardReply, type GuardDeps } from "@/server/agent/guards";
 import { HandleRegistry } from "@/server/agent/handles";
 import type { StructuredReply } from "@/server/agent/types";
 import type { DirectoryAmbulance, MatchType } from "@/server/directory/matcher";
+import type { DirectoryClinic } from "@/server/directory/repo";
+import { findDigitRuns, hasDispatchLanguage } from "@/server/agent/scrub";
 import { buildHelplineCard } from "@/server/messages/cards";
-import { DISPATCH_CORRECTION_NOTE, TOKEN_CORRECTION_NOTE, staleHandleNote } from "@/server/messages/system-replies";
+import { DISPATCH_CORRECTION_NOTE, LINK_CORRECTION_NOTE, TOKEN_CORRECTION_NOTE, staleHandleNote } from "@/server/messages/system-replies";
 
 const ghatkopar: DirectoryAmbulance = {
   id: "g", label: "Mumbai - Ghatkopar", city: "Mumbai", area: "Ghatkopar", state: "MH", areasCovered: [], category: "Animal Ambulance",
@@ -12,6 +14,22 @@ const ghatkopar: DirectoryAmbulance = {
 };
 const rajkot: DirectoryAmbulance = { ...ghatkopar, id: "r", label: "Rajkot - Blue Cross", city: "Rajkot", area: null, phone: "+919876500001", operatorName: "Blue Cross", operatorIsArham: false };
 const units: Record<string, DirectoryAmbulance> = { g: ghatkopar, r: rajkot };
+/** A map link with 5-decimal coordinates, as the directory writes them: no 7-digit run. */
+const GHATKOPAR_MAP = "https://maps.google.com/?q=19.07948,72.90119";
+/** A stored value with seven decimals: each group a 7-digit run. MAPS_URL_RE refuses it, so it is never inserted. */
+const LONG_MAP = "https://maps.google.com/?q=19.0794812,72.9011934";
+/** A website link whose words would read as dispatch language if the dispatch guard read links. */
+const WORDY_PAGE = "https://alwayscare.org/ambulance-dispatched-we-are-sending";
+const hospital: DirectoryClinic = {
+  id: "h", label: "Mumbai - Ghatkopar Hospital", city: "Mumbai", area: "Ghatkopar", state: "MH", phone: "+917000000020", address: null, hours: null,
+  mapsUrl: GHATKOPAR_MAP,
+};
+/** Hospitals and clinics by id; any other id is retired. */
+const facilities: Record<string, DirectoryClinic> = {
+  h: hospital,
+  l: { ...hospital, id: "l", phone: "+917000000021", mapsUrl: LONG_MAP },
+  n: { ...hospital, id: "n", phone: "+917000000023", mapsUrl: null },
+};
 const CALL_DIRECTLY = "Please call them directly and they will guide you.";
 
 const HELPLINE_CARD = buildHelplineCard("+919999900000", "en");
@@ -35,9 +53,10 @@ function setup(opts: {
   const corrections: { correction: string; purpose: string }[] = [];
   const deps: GuardDeps = {
     registry,
-    lookups: { ambulance: async (id) => (active.has(id) ? units[id] : undefined), clinic: async () => undefined },
+    lookups: { ambulance: async (id) => (active.has(id) ? units[id] : undefined), clinic: async (id) => facilities[id] },
     helplinePhone: "+919999900000",
     staticPhones: { volunteer: "+919888800000" },
+    websiteUrl: "https://alwayscare.org",
     toolState: () => ({ candidates: opts.candidates ?? null, match: opts.match ?? null }),
     toolRuns: () => opts.toolRuns ?? [],
     retry: async (correction, purpose) => {
@@ -158,12 +177,12 @@ describe("guardReply", () => {
   it("appends the helpline card when a stale handle leaves an ambulance reply with no number", async () => {
     const { registry, deps, corrections } = setup({ active: ["r"] });
     const h = registry.ambulance("g");
-    const g = await guardReply(reply({ reply: `Is number par call karein: {{AMB:${h}}}`, intent: "ambulance", language: "hi" }), deps);
+    const g = await guardReply(reply({ reply: `इस नंबर पर कॉल करें: {{AMB:${h}}}`, intent: "ambulance", language: "hi" }), deps);
     expect(corrections).toHaveLength(1);
     const card = buildHelplineCard("+919999900000", "hi");
     expect(g).toMatchObject({
-      text: `Is number par call karein:\n\n${card}`,
-      template: `Is number par call karein:\n\n${card.replace("+91 99999 00000", "{{PHONE:helpline}}")}`,
+      text: `इस नंबर पर कॉल करें:\n\n${card}`,
+      template: `इस नंबर पर कॉल करें:\n\n${card.replace("+91 99999 00000", "{{PHONE:helpline}}")}`,
       staleHandles: [h], restored: 0,
     });
   });
@@ -218,6 +237,70 @@ describe("guardReply", () => {
     });
   });
 
+  it("renders a reply with no character of its label's script in English: the partner label, the card and the call-directly line", async () => {
+    const { registry, deps, corrections } = setup();
+    const h = registry.ambulance("r");
+    const hinglish = await guardReply(reply({ reply: `Rajkot mein ye unit hai: {{AMB:${h}}}`, intent: "ambulance", language: "hi" }), deps);
+    expect(hinglish).toMatchObject({
+      text: "Rajkot mein ye unit hai: +91 98765 00001 (operated by Blue Cross)", structured: { language: "en" }, languageCorrected: { from: "hi", to: "en" },
+    });
+    for (const language of ["mr", "gu"] as const) {
+      const g = await guardReply(reply({ reply: `Call karo: {{AMB:${h}}}`, intent: "ambulance", language }), deps);
+      expect(g, language).toMatchObject({
+        text: "Call karo: +91 98765 00001 (operated by Blue Cross)", structured: { language: "en" }, languageCorrected: { from: language, to: "en" },
+      });
+    }
+    const dispatch = await guardReply(reply({ reply: `We are sending {{AMB:${h}}} to you now. Stay calm.`, intent: "ambulance", language: "hi" }), deps);
+    expect(corrections.map((c) => c.purpose)).toEqual(["dispatch"]);
+    expect(dispatch).toMatchObject({ text: `${CALL_DIRECTLY} +91 98765 00001 (operated by Blue Cross) Stay calm.`, replaced: true, languageCorrected: { from: "hi", to: "en" } });
+    const stale = setup({ active: ["r"] });
+    const gone = stale.registry.ambulance("g");
+    const card = await guardReply(reply({ reply: `Is number par call karein: {{AMB:${gone}}}`, intent: "ambulance", language: "hi" }), stale.deps);
+    expect(card).toMatchObject({ text: `Is number par call karein:\n\n${HELPLINE_CARD}`, template: `Is number par call karein:\n\n${HELPLINE_TEMPLATE}`, staleHandles: [gone] });
+  });
+
+  it("keeps a label the reply's script carries, and never changes one the other way", async () => {
+    const { registry, deps } = setup();
+    const h = registry.ambulance("r");
+    const cases = [
+      ["hi", `कृपया {{AMB:${h}}} पर कॉल करें।`, "कृपया +91 98765 00001 (Blue Cross द्वारा संचालित) पर कॉल करें।"],
+      ["mr", `कृपया {{AMB:${h}}} वर कॉल करा.`, "कृपया +91 98765 00001 (Blue Cross द्वारे चालवले जाते) वर कॉल करा."],
+      ["gu", `કૃપા કરીને {{AMB:${h}}} પર કૉલ કરો.`, "કૃપા કરીને +91 98765 00001 (Blue Cross દ્વારા સંચાલિત) પર કૉલ કરો."],
+      // A Devanagari reply labelled en keeps en, and a Devanagari one labelled mr keeps mr: hi against mr is the model's call.
+      ["en", `कृपया {{AMB:${h}}} पर कॉल करें।`, "कृपया +91 98765 00001 (operated by Blue Cross) पर कॉल करें।"],
+      ["mr", `कृपया {{AMB:${h}}} पर कॉल करें।`, "कृपया +91 98765 00001 (Blue Cross द्वारे चालवले जाते) पर कॉल करें।"],
+    ] as const;
+    for (const [language, written, text] of cases) {
+      const g = await guardReply(reply({ reply: written, intent: "ambulance", language }), deps);
+      expect(g, `${language}: ${written}`).toMatchObject({ text, structured: { language }, languageCorrected: null });
+    }
+  });
+
+  it("checks every draft's label against its script, and reports the sent draft's correction", async () => {
+    const { registry, deps } = setup();
+    const h = registry.ambulance("r");
+    const answer = (corrected: StructuredReply) => {
+      deps.retry = async () => corrected;
+    };
+    // A Devanagari draft typed digits; the corrected draft, Hinglish labelled hi, goes out in English.
+    answer(reply({ reply: `Call karein: {{AMB:${h}}}`, intent: "ambulance", language: "hi" }));
+    expect(await guardReply(reply({ reply: "कॉल करें 9876543210", intent: "ambulance", language: "hi" }), deps)).toMatchObject({
+      text: "Call karein: +91 98765 00001 (operated by Blue Cross)", structured: { language: "en" }, languageCorrected: { from: "hi", to: "en" },
+    });
+    // The other way round: the sent draft is Devanagari, so its hi stands.
+    answer(reply({ reply: `कृपया {{AMB:${h}}} पर कॉल करें।`, intent: "ambulance", language: "hi" }));
+    expect(await guardReply(reply({ reply: "Call karein 9876543210", intent: "ambulance", language: "hi" }), deps)).toMatchObject({
+      text: "कृपया +91 98765 00001 (Blue Cross द्वारा संचालित) पर कॉल करें।", structured: { language: "hi" }, languageCorrected: null,
+    });
+    // A number an earlier draft gave goes out again in the sent draft's corrected language: the line and the label.
+    answer(reply({ reply: "Rajkot ambulance ko turant call karein.", intent: "ambulance", language: "hi" }));
+    expect(await guardReply(reply({ reply: `कृपया {{AMB:${h}}} या 9876543210 पर कॉल करें।`, intent: "ambulance", language: "hi" }), deps)).toMatchObject({
+      text: `Rajkot ambulance ko turant call karein.\n\n${CALL_DIRECTLY} +91 98765 00001 (operated by Blue Cross)`,
+      template: `Rajkot ambulance ko turant call karein.\n\n${CALL_DIRECTLY} {{AMB:${h}}}`,
+      restored: 1, languageCorrected: { from: "hi", to: "en" },
+    });
+  });
+
   it("keeps needs_human once any draft set it, and then appends no guessed card", async () => {
     const ambulanceReply = reply({ reply: "Please call the Ghatkopar ambulance.", intent: "ambulance" });
     const control = setup({ candidates: [ghatkopar], match: "area" });
@@ -226,6 +309,154 @@ describe("guardReply", () => {
     const g = await guardReply(reply({ reply: "Call 9876543210.", intent: "ambulance", needs_human: true }), deps);
     expect(g.text).toBe("Please call the Ghatkopar ambulance.");
     expect(g.structured).toMatchObject({ reply: "Please call the Ghatkopar ambulance.", needs_human: true });
+  });
+
+  it("passes an inserted map link through: no corrective call, the link whole in the text, its token in the template", async () => {
+    // 5-decimal coordinates hold no phone-shaped run in the first place.
+    expect(findDigitRuns(GHATKOPAR_MAP)).toEqual([]);
+    const { registry, deps, corrections } = setup();
+    const h = registry.clinic("h");
+    const g = await guardReply(reply({ reply: `Ghatkopar hospital: {{CLINIC:${h}}}. Google Maps: {{MAPS:${h}}}`, intent: "clinic" }), deps);
+    expect(corrections).toEqual([]);
+    expect(g).toMatchObject({
+      text: `Ghatkopar hospital: +91 70000 00020. Google Maps: ${GHATKOPAR_MAP}`,
+      template: `Ghatkopar hospital: {{CLINIC:${h}}}. Google Maps: {{MAPS:${h}}}`,
+      scrubbed: false, foreignRuns: 0, replaced: false, restored: 0, unknownHandles: [], staleHandles: [],
+    });
+  });
+
+  it("never inserts a stored map value with seven decimals, so no inserted link holds a 7-digit run: the token goes", async () => {
+    expect(findDigitRuns(LONG_MAP)).not.toEqual([]);
+    const { registry, deps, corrections } = setup();
+    const l = registry.clinic("l");
+    const g = await guardReply(reply({ reply: `Google Maps: {{MAPS:${l}}}`, intent: "clinic" }), deps);
+    expect(corrections).toEqual([]);
+    expect(g).toMatchObject({ text: `Google Maps:\n\n${HELPLINE_CARD}`, unknownHandles: [l], scrubbed: false, foreignRuns: 0 });
+    expect(g.text).not.toContain("0794812");
+  });
+
+  it("still strips a number the model typed beside an inserted link, never touching the link", async () => {
+    const { registry, deps, corrections } = setup();
+    const h = registry.clinic("h");
+    const g = await guardReply(reply({ reply: `Google Maps: {{MAPS:${h}}}, or call 98765 43210.`, intent: "clinic" }), deps);
+    expect(corrections).toEqual([{ correction: TOKEN_CORRECTION_NOTE, purpose: "token" }]);
+    expect(g).toMatchObject({ text: `Google Maps: ${GHATKOPAR_MAP}, or call.`, template: `Google Maps: {{MAPS:${h}}}, or call.`, scrubbed: true, foreignRuns: 1 });
+  });
+
+  it("never reads a link's words as dispatch language", async () => {
+    expect(hasDispatchLanguage("The ambulance is dispatched.")).toBe(true);
+    expect(hasDispatchLanguage(`See ${WORDY_PAGE}`)).toBe(false);
+    const { deps, corrections } = setup();
+    const g = await guardReply(reply({ reply: `See ${WORDY_PAGE} for the hospitals.`, intent: "clinic" }), deps);
+    expect(corrections).toEqual([]);
+    expect(g).toMatchObject({ text: `See ${WORDY_PAGE} for the hospitals.`, replaced: false });
+  });
+
+  it("keeps the link a replaced dispatch sentence held, after the call-directly line, its token in the template", async () => {
+    const { registry, deps, corrections } = setup();
+    const h = registry.clinic("h");
+    const g = await guardReply(reply({ reply: `We are sending the team to {{MAPS:${h}}} now. Stay calm.`, intent: "clinic" }), deps);
+    expect(corrections).toEqual([{ correction: DISPATCH_CORRECTION_NOTE, purpose: "dispatch" }]);
+    expect(g).toMatchObject({
+      text: `${CALL_DIRECTLY} ${GHATKOPAR_MAP} Stay calm.`,
+      template: `${CALL_DIRECTLY} {{MAPS:${h}}} Stay calm.`,
+      replaced: true,
+    });
+  });
+
+  it("drops a MAPS token for a facility without a map link as an unknown handle's, with the helpline card when no number is left", async () => {
+    const { registry, deps, corrections } = setup();
+    const n = registry.clinic("n");
+    const g = await guardReply(reply({ reply: `Google Maps: {{MAPS:${n}}}`, intent: "clinic" }), deps);
+    expect(corrections).toEqual([]);
+    expect(g).toMatchObject({
+      text: `Google Maps:\n\n${HELPLINE_CARD}`, template: `Google Maps:\n\n${HELPLINE_TEMPLATE}`, unknownHandles: [n], staleHandles: [],
+    });
+    // With the facility's number in the reply, the number is what the reporter gets: no helpline card.
+    const withNumber = await guardReply(reply({ reply: `Call {{CLINIC:${n}}}. Google Maps: {{MAPS:${n}}}`, intent: "clinic" }), deps);
+    expect(withNumber).toMatchObject({ text: "Call +91 70000 00023. Google Maps:", template: `Call {{CLINIC:${n}}}. Google Maps:` });
+  });
+
+  it("counts malformed map syntax ({MAP:…}) as a dropped map token: the helpline card when no number is left", async () => {
+    const { deps } = setup();
+    const g = await guardReply(reply({ reply: "Google Maps: {MAP:cli_abcdefgh}", intent: "clinic" }), deps);
+    expect(g).toMatchObject({ text: `Google Maps:\n\n${HELPLINE_CARD}`, droppedSyntax: ["{MAP:cli_abcdefgh}"] });
+  });
+
+  it("asks for a fresh find_clinics when a MAPS token names a retired facility", async () => {
+    const { registry, deps, corrections } = setup();
+    const c = registry.clinic("c1");
+    const g = await guardReply(reply({ reply: `Google Maps: {{MAPS:${c}}}`, intent: "clinic" }), deps);
+    expect(corrections).toEqual([{ correction: staleHandleNote([c]), purpose: "token" }]);
+    expect(g).toMatchObject({ text: `Google Maps:\n\n${HELPLINE_CARD}`, staleHandles: [c] });
+  });
+
+  it("corrects a map link the model typed once, then strips it from the text and the template", async () => {
+    const { registry, deps, corrections } = setup();
+    const h = registry.clinic("h");
+    const g = await guardReply(reply({ reply: `Call {{CLINIC:${h}}}. Google Maps: https://maps.google.com/?q=19.1,72.9`, intent: "clinic" }), deps);
+    expect(corrections).toEqual([{ correction: LINK_CORRECTION_NOTE, purpose: "token" }]);
+    expect(g).toMatchObject({ text: "Call +91 70000 00020. Google Maps:", template: `Call {{CLINIC:${h}}}. Google Maps:`, linksStripped: 1, scrubbed: false });
+  });
+
+  it("strips a goo.gl link and a map host typed without its scheme the same way, and a reply left with nothing actionable gets the helpline card", async () => {
+    for (const typed of ["https://goo.gl/maps/AbCdEfGh", "maps.google.com/?q=19.1,72.9", "https://www.google.com/maps/search/Arham"]) {
+      const { deps, corrections } = setup();
+      const g = await guardReply(reply({ reply: `Location: ${typed} (tap to open).`, intent: "clinic" }), deps);
+      expect(corrections, typed).toEqual([{ correction: LINK_CORRECTION_NOTE, purpose: "token" }]);
+      expect(g, typed).toMatchObject({
+        text: `Location: (tap to open).\n\n${HELPLINE_CARD}`, template: `Location: (tap to open).\n\n${HELPLINE_TEMPLATE}`, linksStripped: 1,
+      });
+    }
+  });
+
+  it("leaves no empty brackets where a typed link stood", async () => {
+    const { deps } = setup();
+    const g = await guardReply(reply({ reply: "The hospital (maps.google.com/?q=19.1,72.9) is near the station.", intent: "clinic" }), deps);
+    expect(g).toMatchObject({ text: `The hospital is near the station.\n\n${HELPLINE_CARD}`, linksStripped: 1 });
+  });
+
+  it("adds no helpline card when the reply keeps a number or an inserted link", async () => {
+    const { registry, deps } = setup();
+    const h = registry.clinic("h");
+    const withNumber = await guardReply(reply({ reply: `Call {{CLINIC:${h}}}. Map: https://maps.google.com/?q=19.1,72.9`, intent: "clinic" }), deps);
+    expect(withNumber.text).toBe("Call +91 70000 00020. Map:");
+    const withLink = await guardReply(reply({ reply: `Map: {{MAPS:${h}}} or https://goo.gl/maps/AbCdEfGh`, intent: "clinic" }), deps);
+    expect(withLink.text).toBe(`Map: ${GHATKOPAR_MAP} or`);
+  });
+
+  it("lets a link on the website through, as a tool result gives it", async () => {
+    const { deps, corrections } = setup();
+    for (const page of ["https://alwayscare.org/hospitals/ghatkopar", "https://www.alwayscare.org/donate"]) {
+      const g = await guardReply(reply({ reply: `Its page: ${page}.`, intent: "clinic" }), deps);
+      expect(g, page).toMatchObject({ text: `Its page: ${page}.`, linksStripped: 0 });
+    }
+    expect(corrections).toEqual([]);
+  });
+
+  it("strips a typed map link beside the inserted one, never touching the inserted link, even when the typed one is its prefix", async () => {
+    const { registry, deps } = setup();
+    const h = registry.clinic("h");
+    const typed = "https://maps.google.com/?q=19.0";
+    const g = await guardReply(reply({ reply: `Google Maps: {{MAPS:${h}}} or ${typed}`, intent: "clinic" }), deps);
+    expect(g).toMatchObject({ text: `Google Maps: ${GHATKOPAR_MAP} or`, template: `Google Maps: {{MAPS:${h}}} or`, linksStripped: 1 });
+  });
+
+  it("strips a typed link holding a phone number whole, with one correction naming both", async () => {
+    const { deps, corrections } = setup();
+    const g = await guardReply(reply({ reply: "Message them on https://wa.me/919876543210 now.", intent: "clinic" }), deps);
+    expect(corrections).toEqual([{ correction: `${TOKEN_CORRECTION_NOTE} ${LINK_CORRECTION_NOTE}`, purpose: "token" }]);
+    expect(g).toMatchObject({
+      text: `Message them on now.\n\n${HELPLINE_CARD}`, template: `Message them on now.\n\n${HELPLINE_TEMPLATE}`, linksStripped: 1, scrubbed: true,
+    });
+  });
+
+  it("sends the corrected draft when it no longer types the link", async () => {
+    const { registry, deps } = setup();
+    const h = registry.clinic("h");
+    deps.retry = async () => reply({ reply: `Google Maps: {{MAPS:${h}}}`, intent: "clinic" });
+    const g = await guardReply(reply({ reply: "Google Maps: https://maps.google.com/?q=19.1,72.9", intent: "clinic" }), deps);
+    expect(g).toMatchObject({ text: `Google Maps: ${GHATKOPAR_MAP}`, template: `Google Maps: {{MAPS:${h}}}`, linksStripped: 0 });
   });
 
   it("returns an empty text when nothing survives and no number was inserted, for the caller to fall back", async () => {

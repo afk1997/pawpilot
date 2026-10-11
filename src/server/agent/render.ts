@@ -3,6 +3,7 @@ import type { DirectoryAmbulance, MatchType } from "../directory/matcher";
 import type { DirectoryClinic } from "../directory/repo";
 import { HandleRegistry, TOKEN_RE } from "./handles";
 import { buildAmbulanceCard, buildMultiAmbulanceCard, formatIndianPhone, renderNumberForToken } from "../messages/cards";
+import { mapsLink } from "../links";
 
 export interface RenderLookups {
   ambulance(id: string): Promise<DirectoryAmbulance | undefined>;
@@ -28,12 +29,21 @@ export interface RenderResult {
   template: string;
   /**
    * `template` with every dropped token and leftover syntax removed and the text's formatting cleanup applied: the
-   * template of what `text` says, holding a token for each number it shows (the card excepted), so a transcript built
-   * from it never shows the model writing something the reporter did not get.
+   * template of what `text` says, holding a token for each number and map link it shows (the card excepted), so a
+   * transcript built from it never shows the model writing something the reporter did not get.
    */
   sentTemplate: string;
   /** Every number in `text` as stored: the substituted tokens' in order of first use, then the card's. */
   inserted: string[];
+  /**
+   * Every map link in `text` ({{MAPS}} tokens'), in order of first use: inserted by code like the numbers, so the digit
+   * guard masks them before it reads the text.
+   */
+  links: string[];
+  /**
+   * Values of the tokens dropped (an unknown, retired or wrong-kind handle, an unknown PHONE key, a MAPS token whose
+   * hospital or clinic has no map link), then any leftover template syntax, as written.
+   */
   unknownHandles: string[];
   appendedCard: boolean;
 }
@@ -53,24 +63,24 @@ export function cleanupFormatting(text: string): string {
 
 /**
  * A token as the model may write it: whitespace or line breaks inside the braces and any case for the kind
- * ("{{ PHONE: helpline }}", "{{amb:amb_abcdefgh}}", "{{AMB:\namb_abcdefgh}}").
+ * ("{{ PHONE: helpline }}", "{{amb:amb_abcdefgh}}", "{{AMB:\namb_abcdefgh}}", "{{ Maps : cli_abcdefgh }}", "{{MAP:cli_abcdefgh}}").
  */
-const LOOSE_TOKEN_RE = /\{\{\s*(amb|clinic|phone)\s*:\s*([A-Za-z0-9_-]+)\s*\}\}/gi;
+const LOOSE_TOKEN_RE = /\{\{\s*(amb|clinic|maps?|phone)\s*:\s*([A-Za-z0-9_-]+)\s*\}\}/gi;
 
 /** A handle's 8-letter body without its kind prefix: the model sometimes writes {{AMB:kcmfpbca}} for amb_kcmfpbca. */
 const BARE_HANDLE_RE = /^[a-p]{8}$/i;
 
 /**
- * Rewrites every loosely written token as {{KIND:value}}: the kind uppercased, the value as written,
- * except that an AMB/CLINIC value that is a bare 8-letter handle body gets its amb_/cli_ prefix back
+ * Rewrites every loosely written token as {{KIND:value}}: the kind uppercased (MAP read as MAPS), the value as written,
+ * except that an AMB, CLINIC or MAPS value that is a bare 8-letter handle body gets its amb_/cli_ prefix back
  * (seen in the first real smoke run: the model dropped the prefix and the number would have been lost).
  */
 function canonicalizeTokens(text: string): string {
   return text.replace(LOOSE_TOKEN_RE, (_, kind: string, value: string) => {
-    const upper = kind.toUpperCase();
+    const upper = kind.toUpperCase() === "MAP" ? "MAPS" : kind.toUpperCase();
     let v = value;
     if (upper === "AMB" && BARE_HANDLE_RE.test(v)) v = `amb_${v.toLowerCase()}`;
-    else if (upper === "CLINIC" && BARE_HANDLE_RE.test(v)) v = `cli_${v.toLowerCase()}`;
+    else if ((upper === "CLINIC" || upper === "MAPS") && BARE_HANDLE_RE.test(v)) v = `cli_${v.toLowerCase()}`;
     return `{{${upper}:${v}}}`;
   });
 }
@@ -102,22 +112,36 @@ function dropLeftovers(text: string, dropped: string[]): string {
 }
 
 /**
- * While the model's text is cleaned and capped, each substituted number stands in as one private-use character (its
- * slot), so no cleanup and no cut can reach into a number. Private-use characters the model wrote are removed first.
+ * While the model's text is cleaned and capped, each substituted number or map link stands in as one private-use
+ * character (its slot), so no cleanup and no cut can reach into it. Private-use characters the model wrote are removed
+ * first.
  */
 const SLOT_BASE = 0xe000;
+/**
+ * What may stand glued right after an inserted link: whitespace, the end, or a run of ASCII sentence punctuation that ends
+ * there ("…). ", "…, then"), which no linker reads as part of a URL. Anything else, a letter, digit or symbol in any script
+ * ("/extra", "?x=1", a danda "।", a Devanagari word), gets a space first.
+ */
+const GLUED_AFTER_LINK = String.raw`(?=\S)(?![.,;:!?)]+(?:\s|$))`;
 const PRIVATE_USE_RE = /[\uE000-\uF8FF]/g;
 
+/** What a slot holds: a number (`value` as stored, `text` as shown) or a map link (both the link). */
+interface Slot {
+  kind: "number" | "link";
+  value: string;
+  text: string;
+}
+
 /**
- * The text with each slot expanded to its number, cut to at most `limit` UTF-16 units. A number or a surrogate pair that
- * would not fit is dropped whole, with everything after it. `kept` receives the slots that made it in.
+ * The text with each slot expanded to its number or link, cut to at most `limit` UTF-16 units. A slot or a surrogate
+ * pair that would not fit is dropped whole, with everything after it. `kept` receives the slots that made it in.
  */
-function expandWithin(text: string, numbers: string[], limit: number, kept: Set<number>): string {
+function expandWithin(text: string, pieces: string[], limit: number, kept: Set<number>): string {
   let out = "";
   for (const ch of text) {
     const slot = ch.charCodeAt(0) - SLOT_BASE;
-    const isSlot = slot >= 0 && slot < numbers.length;
-    const piece = isSlot ? numbers[slot] : ch;
+    const isSlot = slot >= 0 && slot < pieces.length;
+    const piece = isSlot ? pieces[slot] : ch;
     if (out.length + piece.length > limit) break;
     if (isSlot) kept.add(slot);
     out += piece;
@@ -131,12 +155,12 @@ export async function renderReply(input: RenderInput): Promise<RenderResult> {
   // A fresh regex: matchAll resumes from a regex's lastIndex, which a caller's TOKEN_RE.test/exec leaves advanced.
   const tokens = Array.from(template.matchAll(new RegExp(TOKEN_RE.source, TOKEN_RE.flags)));
 
-  // Each distinct token resolves once, to a slot in `numbers`, or to "" when it is dropped.
-  const numbers: { phone: string; text: string }[] = [];
+  // Each distinct token resolves once, to a slot in `slots`, or to "" when it is dropped.
+  const slots: Slot[] = [];
   const slotOf = new Map<string, string>();
-  const substitute = (key: string, phone: string, text: string) => {
-    slotOf.set(key, String.fromCharCode(SLOT_BASE + numbers.length));
-    numbers.push({ phone, text });
+  const substitute = (key: string, kind: Slot["kind"], value: string, text: string) => {
+    slotOf.set(key, String.fromCharCode(SLOT_BASE + slots.length));
+    slots.push({ kind, value, text });
   };
   const drop = (key: string, value: string) => {
     unknownHandles.push(value);
@@ -150,24 +174,33 @@ export async function renderReply(input: RenderInput): Promise<RenderResult> {
     if (slotOf.has(key)) continue;
     if (kind === "PHONE") {
       const phone = value.toLowerCase() === "helpline" ? input.helplinePhone : staticPhone(input.staticPhones, value);
-      if (phone) substitute(key, phone, formatIndianPhone(phone));
+      if (phone) substitute(key, "number", phone, formatIndianPhone(phone));
       else drop(key, value);
       continue;
     }
+    // AMB names a unit; CLINIC and MAPS name a hospital or clinic, by the same cli_ handle.
     const ref = input.registry.resolve(value);
-    if (!ref || (kind === "AMB" && ref.kind !== "ambulance") || (kind === "CLINIC" && ref.kind !== "clinic")) {
+    if (!ref || ref.kind !== (kind === "AMB" ? "ambulance" : "clinic")) {
       drop(key, value);
       continue;
     }
     if (ref.kind === "ambulance") {
       const row = await input.lookups.ambulance(ref.id);
       if (!row) { drop(key, value); continue; }
-      substitute(key, row.phone, renderNumberForToken(row, input.lang));
+      substitute(key, "number", row.phone, renderNumberForToken(row, input.lang));
       hasAmbToken = true;
+      continue;
+    }
+    const row = await input.lookups.clinic(ref.id);
+    if (!row) { drop(key, value); continue; }
+    if (kind === "MAPS") {
+      // A hospital or clinic without a map link (or with a stored value that is no MAPS_URL_RE link): the token goes, as an
+      // unknown handle's does.
+      const link = mapsLink(row.mapsUrl);
+      if (link) substitute(key, "link", link, link);
+      else drop(key, value);
     } else {
-      const row = await input.lookups.clinic(ref.id);
-      if (!row) { drop(key, value); continue; }
-      substitute(key, row.phone, formatIndianPhone(row.phone));
+      substitute(key, "number", row.phone, formatIndianPhone(row.phone));
     }
   }
 
@@ -187,7 +220,14 @@ export async function renderReply(input: RenderInput): Promise<RenderResult> {
   }
   const tail = between(template.slice(last));
   text = tidy(text + tail);
-  const sentTemplate = tidy(sent + tail);
+  let sentTemplate = tidy(sent + tail);
+  // A link ends where code ends it: text glued straight after it ("{{MAPS:x}}/extra", "{{MAPS:x}}।") goes after a space
+  // (GLUED_AFTER_LINK), so WhatsApp never links the two as one; the sent template gets the same space after the token.
+  const linkSlots = slots.flatMap((s, slot) => (s.kind === "link" ? [String.fromCharCode(SLOT_BASE + slot)] : []));
+  if (linkSlots.length > 0) {
+    text = text.replace(new RegExp(`([${linkSlots.join("")}])${GLUED_AFTER_LINK}`, "gu"), "$1 ");
+    sentTemplate = sentTemplate.replace(new RegExp(`(\\{\\{MAPS:[A-Za-z0-9_-]+\\}\\})${GLUED_AFTER_LINK}`, "gu"), "$1 ");
+  }
 
   let card = "";
   const cands = input.lastAmbulanceCandidates ?? [];
@@ -197,17 +237,19 @@ export async function renderReply(input: RenderInput): Promise<RenderResult> {
     card = cands.length === 1 ? buildAmbulanceCard(cands[0], input.lang) : buildMultiAmbulanceCard(cands, input.lang);
   }
 
-  // The model's text is cut to leave room for the card: the card and every number stay whole.
+  // The model's text is cut to leave room for the card: the card and every number and link stay whole.
   const kept = new Set<number>();
   const limit = card ? MAX_REPLY_CHARS - card.length - 2 : MAX_REPLY_CHARS;
-  const body = expandWithin(text, numbers.map((n) => n.text), limit, kept);
-  const inserted = numbers.filter((_, slot) => kept.has(slot)).map((n) => n.phone);
+  const body = expandWithin(text, slots.map((s) => s.text), limit, kept);
+  const keptValues = (kind: Slot["kind"]) => slots.filter((s, slot) => s.kind === kind && kept.has(slot)).map((s) => s.value);
+  const inserted = keptValues("number");
   if (card) inserted.push(...cands.map((c) => c.phone));
   return {
     text: card ? (body ? `${body}\n\n${card}` : card) : body,
     template,
     sentTemplate,
     inserted,
+    links: keptValues("link"),
     unknownHandles,
     appendedCard: card !== "",
   };

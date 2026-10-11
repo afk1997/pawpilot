@@ -264,6 +264,7 @@ export async function runClaudeTurn(input: {
       },
       helplinePhone: cfg.helplinePhone,
       staticPhones: getStaticPhones(),
+      websiteUrl: cfg.websiteUrl,
       toolState: () => ({ candidates: ctx.lastAmbulanceCandidates, match: ctx.lastAmbulanceMatch }),
       toolRuns: () => ctx.calls.flatMap((c) => findDigitRuns(JSON.stringify(c.output ?? ""))),
       retry: async (correction, purpose) => {
@@ -271,6 +272,13 @@ export async function runClaudeTurn(input: {
         return r?.ok ? r.structured : null;
       },
     });
+    // The reply's script overruled the model's language label (the reply holds no character of the label's script:
+    // Hinglish labelled hi, say): the reply was rendered, and its structured output is stored, with the corrected one.
+    // The event and the log line carry the labels only, never the reply.
+    if (guarded.languageCorrected) {
+      await note(conversationId, "language_corrected", { turnId: turn.id, ...guarded.languageCorrected });
+      log.info({ conversationId, ...guarded.languageCorrected }, "reply's language label corrected by its script");
+    }
     if (guarded.text.trim() === "") {
       await note(conversationId, "empty_reply", { turnId: turn.id });
       return {
@@ -322,6 +330,10 @@ export async function runClaudeTurn(input: {
     await note(conversationId, "scrub_strip", { turnId: turn.id, runs: g.foreignRuns, drops: g.digitDrops });
     log.warn({ conversationId, runs: g.foreignRuns, drops: g.digitDrops }, "stripped model-typed digits");
   }
+  if (g.linksStripped > 0) {
+    await note(conversationId, "link_strip", { turnId: turn.id, links: g.linksStripped });
+    log.warn({ conversationId, links: g.linksStripped }, "stripped links the model typed");
+  }
   if (g.replaced) {
     await note(conversationId, "dispatch_language_strip", { turnId: turn.id });
     log.warn({ conversationId }, "replaced dispatch language");
@@ -357,8 +369,8 @@ export async function runClaudeTurn(input: {
     model: first.model ?? cfg.claude.model,
     scrubbed: g.scrubbed,
   });
-  // Claude's own report of the language. The flag goes through flagConversation: a reason already set is kept unless
-  // it ranks below needs_human (claude_unavailable does).
+  // Claude's own report of the language, as the reply's script corrected it. The flag goes through flagConversation: a
+  // reason already set is kept unless it ranks below needs_human (claude_unavailable does).
   await updateConversation(conversationId, { language: g.structured.language });
   if (g.structured.needs_human) await flagConversation(conversationId, "needs_human");
   if (delivered) await recordOkTurn();

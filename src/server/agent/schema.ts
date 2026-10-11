@@ -12,7 +12,7 @@ export const REPLY_JSON_SCHEMA = {
       type: "string",
       minLength: 1,
       maxLength: REPLY_MAX_CHARS,
-      description: "The exact WhatsApp message to send, in the reporter's language. Phone numbers only as {{AMB:<handle>}}, {{CLINIC:<handle>}} or any {{PHONE:<key>}} token exactly as a tool returned it.",
+      description: "The exact WhatsApp message to send, in the reporter's language. Phone numbers only as {{AMB:<handle>}}, {{CLINIC:<handle>}} or any {{PHONE:<key>}} token exactly as a tool returned it; a map link only as {{MAPS:<handle>}}.",
     },
     language: { type: "string", enum: [...LANGUAGES] },
     intent: { type: "string", enum: [...INTENTS] },

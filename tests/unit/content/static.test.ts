@@ -72,6 +72,9 @@ describe("the website's content (2026-10-10)", () => {
     expect(answers[3]).toMatch(/^Call the hospital or clinic before visiting/);
     // The hours promise is what the code does: cards show the hours the website publishes.
     expect(answers[3]).toContain("The card shows the team's hours where the website publishes them.");
+    // What find_clinics and the {{MAPS:…}} token give: a facility's address and map location, on request.
+    expect(answers[3]).toContain("Ask here for a hospital's or clinic's address and Google Maps location, and we will share them on this chat.");
+    for (const lang of LANGUAGES) expect(faq(lang)[3].answer, lang).toContain("Google Maps");
     expect(answers[4]).toContain("Animal Helpline India at {{PHONE:faq_1}}.");
   });
 

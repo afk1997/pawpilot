@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { eq } from "drizzle-orm";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { resetDb } from "../helpers/db";
@@ -102,6 +103,56 @@ describe("tools", () => {
   it("find_clinics returns each one's address and hours", async () => {
     const out = await findClinicsImpl(ctx(), { city: "Surat" });
     expect(out.clinics.map((c) => [c.label, c.address, c.hours])).toEqual([["Arham Clinic Surat", "Vesu Main Road", "9am-7pm"]]);
+  });
+
+  it("find_clinics returns each one's phone and maps tokens, address, hours, services, notes and page, never the link itself", async () => {
+    const map = "https://maps.google.com/?q=22.48413,88.13368";
+    const [ludlowRow] = await getDb().insert(clinics).values({
+      operatorId: ids.arhamOperatorId, label: "Kolkata - Ludlow Hospital", city: "Kolkata", area: "Ludlow", state: "West Bengal",
+      phone: "+917000000092", address: "Near Chengail Railway Station, Uluberia, Howrah, West Bengal 711315", hours: "9am–6pm IST",
+      mapsUrl: map, pageUrl: "https://alwayscare.org/hospitals/ludlow", services: "IPD for cats and dogs; OPD for cats; X-ray",
+      notes: "Consultation and first-aid treatment are free; call to check charges for other treatment.",
+    }).returning();
+    const c = ctx();
+    const out = await findClinicsImpl(c, { city: "Kolkata" });
+    expect(out.city_matched).toBe(true);
+    const [ludlow] = out.clinics;
+    expect(ludlow).toEqual({
+      handle: expect.stringMatching(/^cli_[a-p]{8}$/), label: "Kolkata - Ludlow Hospital", city: "Kolkata", area: "Ludlow",
+      phone: `{{CLINIC:${ludlow.handle}}}`, maps: `{{MAPS:${ludlow.handle}}}`,
+      address: "Near Chengail Railway Station, Uluberia, Howrah, West Bengal 711315", hours: "9am-6pm IST",
+      services: "IPD for cats and dogs; OPD for cats; X-ray", notes: "Consultation and first-aid treatment are free; call to check charges for other treatment.",
+      page: "https://alwayscare.org/hospitals/ludlow",
+    });
+    // Both tokens name this facility: the renderer gives its number and its link, which never reaches the model.
+    expect(c.registry.resolve(ludlow.handle)).toEqual({ kind: "clinic", id: ludlowRow.id });
+    expect(JSON.stringify(out)).not.toContain("maps.google.com");
+    expect(leaksDigits(out)).toBe(false);
+    // A facility without a map link gets no maps token, and its unknown details are null.
+    const surat = await findClinicsImpl(c, { city: "Surat" });
+    expect(surat.clinics.map((x) => [x.label, x.phone, x.maps, x.services, x.notes, x.page])).toEqual([
+      ["Arham Clinic Surat", `{{CLINIC:${surat.clinics[0].handle}}}`, null, null, null, null],
+    ]);
+    // Nor does one whose stored Maps value is anything but a Google Maps link to coordinates: the renderer would never
+    // insert it. A stored page off the website is no page either.
+    for (const mapsUrl of ["near the station", "https://wa.me/919876543210", "https://maps.google.com/?q=22.4841312,88.1336811", "https://maps.google.com/?q=22.48413,88.13368&z=17"]) {
+      await getDb().update(clinics).set({ mapsUrl, pageUrl: "https://example.org/hospitals/ludlow" }).where(eq(clinics.id, ludlowRow.id));
+      const [stored] = (await findClinicsImpl(c, { city: "Kolkata" })).clinics;
+      expect([stored.maps, stored.page], mapsUrl).toEqual([null, null]);
+    }
+  });
+
+  it("find_clinics removes a phone-shaped run from a facility's services and notes, and flags the call", async () => {
+    vi.spyOn(log, "warn").mockImplementation(() => undefined);
+    await getDb().insert(clinics).values({
+      operatorId: ids.arhamOperatorId, label: "Arham Clinic Thane", city: "Thane", area: null, state: "Maharashtra", phone: "+917000000093",
+      services: "X-ray; call 98765 43210 for the OT", notes: "Ward desk: ९८७६५४३२१० (ask for Raju)", pageUrl: "https://alwayscare.org/clinics/thane",
+    });
+    const c = ctx();
+    const out = await findClinicsImpl(c, { city: "Thane" });
+    expect(out.clinics.map((x) => [x.services, x.notes, x.page])).toEqual([["X-ray; call for the OT", "Ward desk: (ask for Raju)", "https://alwayscare.org/clinics/thane"]]);
+    expect(leaksDigits(out)).toBe(false);
+    expect(c.calls.map((r) => r.scrubbed)).toEqual([true]);
   });
 
   it("find_ambulances returns the area list for a big city", async () => {
@@ -218,6 +269,10 @@ describe("tools", () => {
       expect(schema.find_clinics.properties).toMatchObject({ city: { description: "City as spelled in the coverage list, or null" } });
       expect(schema.find_clinics.required).toBeUndefined();
       expect(tools[1].description).toContain(CITY_MATCHED_HELP);
+      expect(tools[1].description).toContain(
+        "phone, the {{CLINIC:<handle>}} token for its number; maps, the {{MAPS:<handle>}} token for its Google Maps location (null when there is none)"
+      );
+      expect(tools[1].description).toContain("Copy the phone and maps tokens into your reply exactly as returned; never write a map link yourself.");
       expect(schema.get_info.properties).toEqual({ topic: { type: "string", enum: ["donate", "volunteer", "about", "faq", "human_emergency", "helpline"] } });
       expect(schema.get_info.required).toEqual(["topic"]);
     });

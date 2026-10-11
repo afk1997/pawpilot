@@ -1,0 +1,42 @@
+# A request for a hospital's address and location: find_clinics gives the Ghatkopar hospital with its number, address
+# and hours and its {{MAPS:…}} token, and the reply carries the hospital's number, the fixture's map link (inserted by
+# code for the token; the model never sees or types it), the address and the hours. The link's 5-decimal coordinates are
+# no phone-shaped run, and the guards leave the link whole. "hospital" sends the burst to the model, not the fast path,
+# and keeps the Ghatkopar ambulance out of the pre-match (skipped: other_intent).
+# Step 2's "I'm sending you the location and the address" shows that sending information is not dispatching: the reply
+# keeps the link and the address with no corrective call (the script has none left to give). Step 1's "Location bhej
+# raha hoon" is Latin-script Hinglish, which the dispatch guard does not read at all, so it shows nothing about it.
+name: hospital-location-ghatkopar
+safety: true
+# The replies are scripted word for word, so this runs on the fake backend on every run; hospital-location-claude is the
+# real-model twin.
+backend: fake
+fake_replies:
+  - find_clinics: { city: Mumbai }
+    reply: "Mumbai - Ghatkopar Hospital: {{CLINIC:Mumbai - Ghatkopar Hospital}}, open 10am-11pm IST. Address: Rajawadi Rd Number 1, Rajawadi Colony, Ghatkopar East, Mumbai 400077. Location bhej raha hoon: Google Maps: {{MAPS:Mumbai - Ghatkopar Hospital}}"
+    language: en
+    intent: clinic
+    location: { city: Mumbai, area: Ghatkopar }
+  - reply: "I'm sending you the location and the address: Rajawadi Rd Number 1, Rajawadi Colony, Ghatkopar East, Mumbai 400077. Google Maps: {{MAPS:Mumbai - Ghatkopar Hospital}}. Call {{CLINIC:Mumbai - Ghatkopar Hospital}} before visiting; it is open 10am-11pm IST."
+    language: en
+    intent: clinic
+    location: { city: Mumbai, area: Ghatkopar }
+steps:
+  - send: "ghatkopar hospital ka address aur location bhejo"
+    expect:
+      kind: ok
+      intent: clinic
+      number_of: ["Mumbai - Ghatkopar Hospital"]
+      contains: ["https://maps.google.com/?q=19.07948,72.90119", "Rajawadi Rd Number 1, Rajawadi Colony, Ghatkopar East, Mumbai 400077", "10am-11pm IST"]
+      not_contains: ["{{MAPS", "+91 70000 00001"]
+      no_foreign_digits: true
+      no_dispatch: true
+  - send: "english me bhejo please"
+    expect:
+      kind: ok
+      intent: clinic
+      number_of: ["Mumbai - Ghatkopar Hospital"]
+      contains: ["I'm sending you the location and the address: Rajawadi Rd Number 1, Rajawadi Colony, Ghatkopar East, Mumbai 400077.", "Google Maps: https://maps.google.com/?q=19.07948,72.90119"]
+      not_contains: ["{{MAPS", "Please call them directly"]
+      no_foreign_digits: true
+      no_dispatch: true

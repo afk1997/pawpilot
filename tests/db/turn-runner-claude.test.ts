@@ -4,12 +4,12 @@ import { resetDb, createConversation } from "../helpers/db";
 import { seedDirectory, type DirectoryIds } from "../helpers/fixtures";
 import { resetConfigForTests } from "@/server/config";
 import { getDb } from "@/server/db/client";
-import { ambulances, conversations, events, messages, turns } from "@/server/db/schema";
+import { ambulances, clinics, conversations, events, messages, turns } from "@/server/db/schema";
 import { storeReporterMessage } from "@/server/inbound/store";
 import { runTurn } from "@/server/worker/turn-runner";
 import { stopBoss } from "@/server/queue/boss";
 import { FakeBackend, okReply, errorResult } from "@/server/agent/fake-backend";
-import { findAmbulancesImpl } from "@/server/agent/tools";
+import { findAmbulancesImpl, findClinicsImpl } from "@/server/agent/tools";
 import { makeHandle } from "@/server/agent/handles";
 import { createTurn, finishTurn } from "@/server/worker/persist";
 import * as persist from "@/server/worker/persist";
@@ -55,7 +55,7 @@ describe("runTurn with a backend", () => {
   afterEach(async () => { await stopBoss(); });
 
   it("renders the token, persists the template and records the turn", async () => {
-    const c = await conv();
+    const c = await conv(null);
     await storeReporterMessage(c.id, { kind: "text", content: "ghatkopar me kutta ghayal hai" });
     const backend = new FakeBackend([ghatkoparStep]);
     const r = await runTurn(c.id, { backend });
@@ -70,7 +70,8 @@ describe("runTurn with a backend", () => {
     expect((t.toolCalls as { name: string }[]).map((x) => x.name)).toEqual(["prematch", "find_ambulances"]);
     expect(Object.keys(t.handles as object)).toHaveLength(1);
     const [row] = await getDb().select().from(conversations).where(eq(conversations.id, c.id));
-    expect(row.language).toBe("hi");
+    // Claude's report of the language, which its reply's Latin script corrected from hi.
+    expect(row.language).toBe("en");
     expect((await getWorkerState()).lastOkTurnAt).not.toBeNull();
     expect(backend.calls[0].prompt).toContain("NEW MESSAGES");
     expect(backend.calls[0].systemPrompt).toContain("- Mumbai:");
@@ -244,6 +245,45 @@ describe("the Claude turn's guards, audit and context", () => {
     vi.restoreAllMocks();
   });
 
+  it("renders a Latin-script reply labelled hi in English, stores en, and records the correction", async () => {
+    const c = await conv("hi");
+    await storeReporterMessage(c.id, { kind: "text", content: "Rajkot me gaay ghayal hai" });
+    const info = vi.spyOn(log, "info").mockImplementation(() => undefined);
+    const [blueCross, hope] = [ids.rajkotA, ids.rajkotB].map((id) => makeHandle("ambulance", c.id, id));
+    const backend = new FakeBackend([async (input: TurnInput) => {
+      await findAmbulancesImpl(input.toolContext!, { city: "Rajkot", area: null, query: "Rajkot me gaay ghayal hai" });
+      return okReply({
+        reply: `Namaste! Rajkot mein gaay ghayal hai, sun ke dukh hua. Aap in dono mein se kisi ko call kar sakte hain: {{AMB:${blueCross}}} ya {{AMB:${hope}}}`,
+        language: "hi", intent: "ambulance", location: { city: "Rajkot", area: null },
+      });
+    }]);
+    expect((await runTurn(c.id, { backend })).kind).toBe("ok");
+    expect(backend.calls).toHaveLength(1);
+    const [m] = await outbound(c.id);
+    expect(m.content).toBe(
+      "Namaste! Rajkot mein gaay ghayal hai, sun ke dukh hua. Aap in dono mein se kisi ko call kar sakte hain: " +
+        "+91 98765 00001 (operated by Blue Cross) ya +91 98765 00002 (operated by Hope for Indies Trust)"
+    );
+    const t = await lastTurn(c.id);
+    expect(t.structuredOutput).toMatchObject({ language: "en", intent: "ambulance" });
+    expect((await eventsOf("language_corrected")).map((e) => e.payload)).toEqual([{ turnId: t.id, from: "hi", to: "en" }]);
+    expect((await conversationRow(c.id)).language).toBe("en");
+    expect(info).toHaveBeenCalledWith({ conversationId: c.id, from: "hi", to: "en" }, "reply's language label corrected by its script");
+    // A Devanagari reply keeps its hi: the partner label in Hindi, no event.
+    const d = await conv("en");
+    await storeReporterMessage(d.id, { kind: "text", content: "राजकोट में गाय घायल है" });
+    const handle = makeHandle("ambulance", d.id, ids.rajkotA);
+    const devanagari = new FakeBackend([async (input: TurnInput) => {
+      await findAmbulancesImpl(input.toolContext!, { city: "Rajkot", area: null, query: "राजकोट में गाय घायल है" });
+      return okReply({ reply: `कृपया {{AMB:${handle}}} पर कॉल करें।`, language: "hi", intent: "ambulance" });
+    }]);
+    expect((await runTurn(d.id, { backend: devanagari })).kind).toBe("ok");
+    expect((await outbound(d.id))[0].content).toBe("कृपया +91 98765 00001 (Blue Cross द्वारा संचालित) पर कॉल करें।");
+    expect((await lastTurn(d.id)).structuredOutput).toMatchObject({ language: "hi" });
+    expect((await conversationRow(d.id)).language).toBe("hi");
+    expect(await eventsOf("language_corrected")).toHaveLength(1);
+  });
+
   it("folds native numerals before the digit guard, so a Devanagari number is caught and kept out of the template", async () => {
     const c = await conv("hi");
     await storeReporterMessage(c.id, { kind: "text", content: "सूरत" });
@@ -265,6 +305,51 @@ describe("the Claude turn's guards, audit and context", () => {
     expect(m.contentTemplate).toBe("Call or {{PHONE:helpline}} now.");
     const [ev] = await eventsOf("scrub_strip");
     expect(ev.payload).toEqual({ turnId: m.turnId, runs: 1, drops: 0 });
+  });
+
+  it("sends a hospital's map link for its MAPS token and stores the token, so the next transcript shows the token, never the link", async () => {
+    const map = "https://maps.google.com/?q=19.07948,72.90119";
+    const address = "Rajawadi Colony, Ghatkopar East, Mumbai 400077";
+    await getDb().update(clinics).set({ mapsUrl: map, address }).where(eq(clinics.id, ids.hospitalGhatkopar));
+    const c = await conv();
+    await storeReporterMessage(c.id, { kind: "text", content: "ghatkopar hospital ka address aur location bhejo" });
+    const backend = new FakeBackend([
+      async (input: TurnInput) => {
+        const out = await findClinicsImpl(input.toolContext!, { city: "Mumbai" });
+        const hospital = out.clinics.find((x) => x.label === "Mumbai - Ghatkopar Hospital")!;
+        return okReply({ reply: `Address: ${hospital.address}. Google Maps: ${hospital.maps}`, intent: "clinic" });
+      },
+      okReply({ reply: "You're welcome.", intent: "smalltalk" }),
+    ]);
+    expect((await runTurn(c.id, { backend })).kind).toBe("ok");
+    const handle = makeHandle("clinic", c.id, ids.hospitalGhatkopar);
+    const [m] = await outbound(c.id);
+    expect(m.content).toBe(`Address: ${address}. Google Maps: ${map}`);
+    expect(m.contentTemplate).toBe(`Address: ${address}. Google Maps: {{MAPS:${handle}}}`);
+    const t = await lastTurn(c.id);
+    expect(t.scrubbed).toBe(false);
+    expect(t.handles).toEqual({ [handle]: { kind: "clinic", id: ids.hospitalGhatkopar } });
+    await storeReporterMessage(c.id, { kind: "text", content: "thanks" });
+    expect((await runTurn(c.id, { backend })).kind).toBe("ok");
+    expect(backend.calls[1].prompt).toContain(`Assistant: Address: ${address}. Google Maps: {{MAPS:${handle}}}`);
+    expect(backend.calls[1].prompt).toContain(`Handles already shared in this chat: ${handle}`);
+    expect(backend.calls[1].prompt).not.toContain("maps.google.com");
+  });
+
+  it("strips a map link the model typed after one correction, stores no link, and records it", async () => {
+    const c = await conv();
+    await storeReporterMessage(c.id, { kind: "text", content: "ghatkopar hospital kahan hai" });
+    const typed = okReply({ reply: "Ghatkopar hospital: https://maps.google.com/?q=19.1,72.9", intent: "clinic" });
+    const backend = new FakeBackend([typed, typed]);
+    expect((await runTurn(c.id, { backend })).kind).toBe("ok");
+    expect(backend.calls).toHaveLength(2);
+    expect(backend.calls[1].prompt).toContain("SYSTEM CORRECTION: your previous draft typed a link.");
+    // Nothing actionable is left once the link goes: the helpline card follows, as for a dropped token.
+    const [m] = await outbound(c.id);
+    const card = buildHelplineCard("+919999900000", "en");
+    expect([m.content, m.contentTemplate]).toEqual([`Ghatkopar hospital:\n\n${card}`, `Ghatkopar hospital:\n\n${card.replace("+91 99999 00000", "{{PHONE:helpline}}")}`]);
+    const [ev] = await eventsOf("link_strip");
+    expect(ev.payload).toEqual({ turnId: m.turnId, links: 1 });
   });
 
   it("allows a number this turn's tool output carries, but not one retyped from an earlier reply", async () => {
@@ -428,7 +513,7 @@ describe("the Claude turn's guards, audit and context", () => {
     setFetchForTests((async () => new Response(JSON.stringify({ message: "rejected" }), { status: 400 })) as typeof fetch);
     const c = await createConversation({ phone: "+919876500993", language: "en", welcomedAt: new Date() });
     const sent = await storeReporterMessage(c.id, { kind: "text", content: "surat" });
-    const r = await runTurn(c.id, { backend: new FakeBackend([okReply({ reply: "Please call {{PHONE:helpline}}.", language: "hi" })]) });
+    const r = await runTurn(c.id, { backend: new FakeBackend([okReply({ reply: "कृपया {{PHONE:helpline}} पर कॉल करें।", language: "hi" })]) });
     expect(r.kind).toBe("failed");
     const t = await lastTurn(c.id);
     expect([t.id, t.status, t.error]).toEqual([r.turnId, "failed", "delivery_failed"]);

@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { digitsOf, findDigitRuns, foreignDigitRuns, maskDigitRuns, stripRuns, hasDispatchLanguage, replaceDispatchSentences } from "@/server/agent/scrub";
+import {
+  digitsOf, findDigitRuns, foreignDigitRuns, maskDigitRuns, stripRuns, hasDispatchLanguage, replaceDispatchSentences, stripLinks, typedLinks,
+} from "@/server/agent/scrub";
 import { DIGIT_RUN_RE } from "@/server/digits";
 import { buildAmbulanceCard, buildHelplineCard, buildMultiAmbulanceCard, partnerSuffix } from "@/server/messages/cards";
 import { callDirectlyLine } from "@/server/messages/system-replies";
@@ -186,6 +188,165 @@ describe("dispatch guard: vocabulary", () => {
     expect(hasDispatchLanguage(text)).toBe(true);
   });
 
+  it("keeps firing when an ambulance, team, vehicle, driver, van, doctor or someone is sent, also beside an information word", () => {
+    for (const t of [
+      "We are sending the ambulance now", "हम एम्बुलेंस भेज रहे हैं",
+      // Precision first: a sentence that names both still fires.
+      "We are sending the ambulance with the location.", "We are sending the location and an ambulance.", "I'm sending the location to the driver.",
+      "We're sending a doctor to the address.", "I'm sending someone to your location.", "We are sending a van.",
+      "हम एम्बुलेंस और लोकेशन भेज रहे हैं।", "हम लोकेशन पर टीम भेज रहे हैं।", "हम किसी को लोकेशन पर भेज रहे हैं।", "मैं लोकेशन भेज रहा हूँ, एम्बुलेंस भी।",
+      "आम्ही पत्ता आणि रुग्णवाहिका पाठवली आहे.", "અમે એમ્બ્યુલન્સ અને લોકેશન મોકલી રહ્યા છીએ.",
+      // "With", "for" or "to" the vehicle is no possessive: the vehicle goes too.
+      "हमने एम्बुलेंस के साथ लोकेशन भेज दी है।", "एम्बुलेंस के लिए लोकेशन भेज दी है।", "અમે એમ્બ્યુલન્સ ની સાથે લોકેશન મોકલી દીધું છે.",
+      // A vehicle named but not as whose information it is: an ambulance to wait for is on its way.
+      "एम्बुलेंस का इंतज़ार करें, लोकेशन भेज दी है।",
+      // Help, rescuers, volunteers, staff or people sent fire on their own.
+      "We are sending help.", "हम मदद भेज रहे हैं।", "आम्ही मदत पाठवत आहोत.", "અમે મદદ મોકલી રહ્યા છીએ.", "We are sending help to your location.",
+    ]) {
+      expect(hasDispatchLanguage(t), t).toBe(true);
+    }
+    // The Latin-script Hinglish gap stays as documented (CLAUDE.md, Guard residuals): no Hinglish sending is read yet,
+    // so these say nothing about the information exemption.
+    expect(hasDispatchLanguage("gaadi bhej rahe hain")).toBe(false);
+    expect(hasDispatchLanguage("Yeh raha number, location bhej raha hoon.")).toBe(false);
+    // So does the arrival, purpose and sharing gap (CLAUDE.md, Guard residuals), waiting for the eval follow-up: a claim
+    // after an exempt Indic verb or in a sentence of its own, and sharing or forwarding the reporter's location.
+    for (const t of [
+      "हम लोकेशन भेज रहे हैं ताकि कुत्ते को उठाया जा सके।", "हम लोकेशन भेज रहे हैं और वे आ रहे हैं।", "आम्ही लोकेशन पाठवत आहोत, म्हणजे ते कुत्र्याला घेऊन जातील.",
+      "અમે લોકેશન મોકલી રહ્યા છીએ જેથી તેઓ કૂતરાને લઈ જાય.", "We are sending the location. They will pick up the dog.", "एम्बुलेंस तैयार है। हम लोकेशन भेज रहे हैं।",
+      "We have shared your location with the driver.", "We are forwarding your location to the team.", "हमने आपकी लोकेशन ड्राइवर के साथ शेयर कर दी है।",
+    ]) {
+      expect(hasDispatchLanguage(t), t).toBe(false);
+    }
+  });
+
+  it.each([
+    // The reporter's own location relayed to a responder.
+    "We're sending your location to the nearest unit.", "We are sending your location to our rescuers.", "I'm sending your address to the crew.",
+    "We are sending your pin to the volunteers, they will reach you.", "हम आपकी लोकेशन यूनिट को भेज रहे हैं।", "हमने आपका पता स्वयंसेवकों को भेज दिया है।",
+    // An information word as where something else is sent, or before a clause that sends something.
+    "हम आपकी लोकेशन पर मदद भेज रहे हैं।", "आपके पते पर लोग भेज रहे हैं।", "हम आपके पते पर स्वयंसेवक भेज रहे हैं।", "लोकेशन देखकर मदद भेज रहे हैं।",
+    "लोकेशन मिलते ही भेज रहे हैं।", "तुमच्या पत्त्यावर मदत पाठवत आहोत.", "तुमच्या लोकेशनवर मदत पाठवली आहे.", "તમારા લોકેશન પર મદદ મોકલી રહ્યા છીએ.",
+    "તમારા સરનામે મદદ મોકલી દીધી છે.",
+    // "पता" inside "अस्पताल" (hospital), and "पता" as "know".
+    "हम अस्पताल से मदद भेज रहे हैं।", "हम अस्पताल का स्टाफ भेज रहे हैं।", "अस्पताल वाले भेज रहे हैं।", "मुझे पता है मदद भेज दी है।",
+    // A rescuer, volunteers or help beside the information.
+    "We are sending you the location and a rescuer.", "I'm sending the location and our volunteers.", "We're sending you the location and help is coming.",
+  ])("keeps firing on the review's sentences, which name something sent besides the information: %j", (text) => {
+    expect(hasDispatchLanguage(text)).toBe(true);
+  });
+
+  it.each([
+    "We are sending your location.", "I'm sending your address.", "We're sending your pin now.", "We are sending you your location.",
+    "हम आपकी लोकेशन भेज रहे हैं।", "हमने आपका पता भेज दिया है।", "हम आपका नंबर भेज रहे हैं।", "हम आपकी सही लोकेशन भेज रहे हैं।",
+    "आम्ही तुमचा पत्ता पाठवला आहे.", "आम्ही तुमची लोकेशन पाठवत आहोत.", "અમે તમારું સરનામું મોકલી રહ્યા છીએ.", "અમે તમારો નંબર મોકલી દીધો છે.",
+  ])("never exempts sending the reporter's own location, address or number, which only ever goes to a responder: %j", (text) => {
+    expect(hasDispatchLanguage(text)).toBe(true);
+  });
+
+  it.each([
+    "I'm sending you the location.", "We are sending you the hospital's address.", "मैं आपको नंबर भेज रहा हूँ।", "मैं आपके लिए लोकेशन भेज रहा हूँ।",
+    "मी तुम्हाला पत्ता पाठवत आहे.", "હું તમને સરનામું મોકલી રહ્યો છું.",
+  ])("still exempts information sent to the reporter, or for them: %j", (text) => {
+    expect(hasDispatchLanguage(text)).toBe(false);
+  });
+
+  it.each([
+    // The animal's or the place's location: the incident's place is only ever "sent" to a responder.
+    "We are sending the dog's location.", "We're sending the cow's location.", "हम कुत्ते की लोकेशन भेज रहे हैं।", "हमने जानवर का पता भेज दिया है।",
+    "आम्ही कुत्र्याचा पत्ता पाठवला आहे.", "आम्ही कुत्र्याचे लोकेशन पाठवत आहोत.", "અમે કૂતરાનું લોકેશન મોકલી દીધું છે.", "અમે પ્રાણીનું સરનામું મોકલી રહ્યા છીએ.",
+    // "Of" something other than a facility, or a clause after the noun.
+    "We are sending the location of the dog.", "We are sending the location you shared.", "I'm sending the location you sent us.",
+    "We are sending the pin of the spot.", "We're sending you a photo of the map.", "हम आपकी भेजी हुई लोकेशन भेज रहे हैं।",
+    // The reporter's possessive written apart, or in a chain.
+    "हम आप की लोकेशन भेज रहे हैं।", "हमने आप का पता भेज दिया है।", "हम आप लोगों की लोकेशन भेज रहे हैं।", "हम आप का नंबर भेज रहे हैं।",
+    "हम आपके घर का पता भेज रहे हैं।", "हमने आपकी गली की लोकेशन भेज दी है।",
+    // A number has the owners main allowed (a driver, ambulance, unit, helpline, clinic, hospital), and no others.
+    "We are sending someone's number.", "We are sending the dog's number.",
+  ])("exempts a place word only when nobody or a facility owns it: %j", (text) => {
+    expect(hasDispatchLanguage(text)).toBe(true);
+  });
+
+  it.each([
+    "We are sending you the location of the hospital.", "I'm sending you the hospital's location.", "I'm sending you the Ghatkopar hospital's location.",
+    "We are sending you the location of the Ghatkopar hospital.", "We are sending you the ambulance's location.",
+    "मैं आपको हॉस्पिटल का पता भेज रहा हूँ।", "हम अस्पताल की लोकेशन भेज रहे हैं।",
+    "मी तुम्हाला हॉस्पिटलचा पत्ता पाठवत आहे.", "હું તમને હોસ્પિટલનું સરનામું મોકલી રહ્યો છું.",
+  ])("keeps a facility's or a unit's location exempt: %j", (text) => {
+    expect(hasDispatchLanguage(text)).toBe(false);
+  });
+
+  it.each([
+    // A recipient other than the reporter right before the place word.
+    "हम उन्हें लोकेशन भेज रहे हैं।", "हम उन्हें अभी लोकेशन भेज रहे हैं।", "हमने उनको लोकेशन भेज दी है।", "हमने उसे लोकेशन भेज दी है।", "हमने इन्हें लोकेशन भेज दी है।",
+    "आम्ही त्यांना लोकेशन पाठवत आहोत.", "आम्ही त्याला पत्ता पाठवला आहे.", "आम्ही तिला लोकेशन पाठवली आहे.",
+    "અમે તેમને લોકેશન મોકલી રહ્યા છીએ.", "અમે તેને સરનામું મોકલી દીધું છે.", "અમે એમને લોકેશન મોકલી દીધું છે.",
+    // Ownership through वाला or વાળું.
+    "हम कुत्ते वाली लोकेशन भेज रहे हैं।", "हमने कुत्ते वाला पता भेज दिया है।", "हम घायल कुत्ते वाले लोकेशन भेज रहे हैं।",
+    "અમે કૂતરાવાળું લોકેશન મોકલી રહ્યા છીએ.", "અમે કૂતરા વાળું સરનામું મોકલી દીધું છે.",
+    // Marathi "of here" and "of there".
+    "आम्ही इथला पत्ता पाठवला आहे.", "आम्ही तिथली लोकेशन पाठवली आहे.",
+    // "For" anything but the reporter.
+    "We are sending the location for the injured dog.", "We are sending the location for pickup.",
+    // Anything else before or after the place word (precision first): another pronoun, another word after the noun.
+    "हम हमारे अस्पताल की लोकेशन भेज रहे हैं।", "I'm sending you the location pin now.",
+    // A number word nearer the verb, or a number noun first, does not lift the place word's allow-list.
+    "हम उन्हें लोकेशन और नंबर भेज रहे हैं।", "आम्ही त्यांना पत्ता आणि नंबर पाठवला आहे.", "અમે તેમને લોકેશન અને નંબર મોકલી દીધો છે.",
+    "We are sending you the number and the dog's location.", "We're sending the number with the location of the dog.",
+    // An English purpose or arrival clause in the sentence follows the place noun, so it fires too.
+    "I'm sending the location so they can pick up the dog.", "We are sending the location now, so the dog can be rescued.",
+    "We are sending the location; they will come soon.",
+  ])("fires on anything but the allow-list around a place word: %j", (text) => {
+    expect(hasDispatchLanguage(text)).toBe(true);
+  });
+
+  it.each([
+    "We are sending you the location of the hospital.", "मैं आपको हॉस्पिटल का पता भेज रहा हूँ।", "मी तुम्हाला हॉस्पिटलचा पत्ता पाठवत आहे.",
+    "હું તમને હોસ્પિટલનું સરનામું મોકલી રહ્યો છું.", "I'm sending you the location and the address.", "हम लोकेशन भेज रहे हैं।",
+    "We are sending the ambulance's location.", "हमने एम्बुलेंस का नंबर और लोकेशन भेज दी है।", "I'm sending you the Ghatkopar hospital's location.",
+    "We are sending you the Google Maps link.", "हम आपको लोकेशन भेज रहे हैं।", "आम्ही तुम्हाला लोकेशन पाठवत आहोत.", "અમે તમને લોકેશન મોકલી રહ્યા છીએ.",
+    // The rest of the allow-list: an adverb, a determiner or particle, the reporter as recipient written apart or "for you".
+    "हम आपको अभी लोकेशन भेज रहे हैं।", "हम यह लोकेशन भेज रहे हैं।", "અમે આ લોકેશન મોકલી રહ્યા છીએ.", "हम आप को लोकेशन भेज रहे हैं।",
+    "मी तुमच्यासाठी पत्ता पाठवत आहे.", "હું તમારા માટે સરનામું મોકલી રહ્યો છું.", "I'm sending the location to you.", "I'm sending you the location: {{MAPS:cli_abcdefgh}}",
+    "हम आपको लोकेशन और नंबर भेज रहे हैं।", "We are sending you the location and the driver's number.", "We are sending you the number and the hospital's address.",
+    "I'm sending you the location pin.", "I'm sending the number to you.",
+  ])("keeps the allow-list's forms exempt: %j", (text) => {
+    expect(hasDispatchLanguage(text)).toBe(false);
+  });
+
+  it.each([
+    // A third-person recipient after the verb, or before a number word.
+    "हमने लोकेशन भेज दी है उनको।", "हम लोकेशन भेज रहे हैं उन्हें।", "हम अस्पताल की लोकेशन भेज रहे हैं उनको।", "आम्ही लोकेशन पाठवली आहे त्यांना.",
+    "અમે લોકેશન મોકલી દીધું છે તેમને.", "हम उन्हें नंबर भेज रहे हैं।", "आम्ही त्यांना नंबर पाठवला आहे.", "અમે તેમને નંબર મોકલી દીધો છે.",
+    "हमने उन्हें ड्राइवर का नंबर भेज दिया है।", "हमने उसे पता भेज दिया है।", "हम इन्हें लोकेशन भेज रहे हैं।", "आम्ही तिला नंबर पाठवला आहे.",
+    "અમે એમને સરનામું મોકલી દીધું છે.", "હું તેને નંબર મોકલી રહ્યો છું.", "हम उसको नंबर भेज रहे हैं।", "आम्ही त्याला नंबर पाठवला आहे.",
+    // "That" before a place word ("this" stays allowed).
+    "हम वह लोकेशन भेज रहे हैं।", "અમે એ લોકેશન મોકલી રહ્યા છીએ.", "आम्ही तो पत्ता पाठवला आहे.",
+    // A facility's name may not be a pronoun, a possessive, वाला or more than two words.
+    "हम उनके अस्पताल की लोकेशन भेज रहे हैं।", "हम कुत्ते वाले अस्पताल की लोकेशन भेज रहे हैं।", "हम आपको मुंबई घाटकोपर ईस्ट अस्पताल का पता भेज रहे हैं।",
+  ])("fires on a recipient anywhere, on \"that\" and on a facility name off the rules: %j", (text) => {
+    expect(hasDispatchLanguage(text)).toBe(true);
+  });
+
+  it.each([
+    // Up to two words of a facility's name before the facility word.
+    "मैं आपको घाटकोपर अस्पताल का पता भेज रहा हूँ।", "हम आपको घाटकोपर हॉस्पिटल की लोकेशन भेज रहे हैं।", "मी तुम्हाला घाटकोपर हॉस्पिटलचा पत्ता पाठवत आहे.",
+    "હું તમને જૂનાગઢ હોસ્પિટલનું સરનામું મોકલી રહ્યો છું.", "हम आपको मुंबई घाटकोपर अस्पताल का पता भेज रहे हैं।", "हम आपको Ghatkopar hospital की लोकेशन भेज रहे हैं।",
+    // "This" in Marathi, and the reporter as recipient with a number word.
+    "आम्ही हे लोकेशन पाठवत आहोत.", "मी ही लिंक पाठवत आहे.", "हम आपको नंबर भेज रहे हैं।",
+  ])("keeps a named facility's location and \"this\" exempt: %j", (text) => {
+    expect(hasDispatchLanguage(text)).toBe(false);
+  });
+
+  it.each([
+    "We're sending you the location and a person.", "I'm sending the location and our men.", "We are sending the location and a worker.",
+    "We are sending you the location and our members.", "We are sending the location and a responder.", "We are sending the location and a rickshaw.",
+    "We are sending the location and the NGO.", "हम एक आदमी और लोकेशन भेज रहे हैं।", "हमने एक व्यक्ति और पता भेज दिया है।", "हम लड़का और लोकेशन भेज रहे हैं।",
+    "आम्ही एक माणूस आणि पत्ता पाठवला आहे.", "અમે એક માણસ અને લોકેશન મોકલી રહ્યા છીએ.",
+  ])("counts a person or a vehicle named beside the information as something sent: %j", (text) => {
+    expect(hasDispatchLanguage(text)).toBe(true);
+  });
+
   it("reads an Indic coming or road phrase only right after its vehicle or team subject (precision first)", () => {
     // Claims these rules now miss on purpose: a driver or a pronoun as the subject, or the vehicle after the verb.
     for (const t of ["ड्राइवर आ रहा है।", "वे आ रहे हैं, एम्बुलेंस के साथ।", "आप घबराइए मत वे रास्ते में हैं।", "ड्रायव्हर वाटेत आहे.", "ડ્રાઇવર રસ્તામાં છે."]) {
@@ -231,6 +392,25 @@ describe("dispatch guard: exclusions", () => {
     "मैंने नंबर +91 70000 00001 भेज दिया है।", "हम आपको ड्राइवर का नंबर भेज रहे हैं: +91 70000 00001", "टीम भी आपकी मदद करेगी।",
   ])("ignores %j", (text) => {
     expect(hasDispatchLanguage(text)).toBe(false);
+  });
+
+  it.each([
+    "I'm sending you the location and the address.", "मैं लोकेशन भेज रहा हूँ।", "हम लोकेशन भेज रहे हैं", "હું સરનામું મોકલી રહ્યો છું.",
+    "We are sending you the Google Maps link.", "I am sending the hospital's address and directions.",
+    "I'm sending you the hospital location and the ambulance number.",
+    "हमने अस्पताल का पता भेज दिया है।", "मैंने नक्शा भेज दिया है।", "हम लिंक भेज रहे हैं।", "हमने एम्बुलेंस का नंबर और लोकेशन भेज दी है।",
+    "आम्ही पत्ता पाठवला आहे.", "आम्ही लोकेशन पाठवत आहोत.",
+    "અમે લોકેશન મોકલી રહ્યા છીએ.", "અમે સરનામું મોકલી દીધું છે.", "હું લિંક મોકલી રહ્યો છું.", "એમ્બ્યુલન્સનો નંબર મોકલી દીધો છે.",
+    // A chain of possessives still names whose number it is.
+    "हमने एम्बुलेंस के ड्राइवर का नंबर भेज दिया है।",
+  ])("never reads sending a location, an address, a map, a link, a number or details as dispatching: %j", (text) => {
+    expect(hasDispatchLanguage(text)).toBe(false);
+  });
+
+  it("keeps a sentence that sends information, address and link included, whole", () => {
+    const link = "https://maps.google.com/?q=19.07948,72.90119";
+    const text = `I'm sending you the location and the address: Rajawadi Rd Number 1, Ghatkopar East, Mumbai 400077. Google Maps: ${link}`;
+    expect(replaceDispatchSentences(text, "R.", [link])).toBe(text);
   });
 
   it("leaves text without dispatch language as it was, whatever its punctuation", () => {
@@ -338,5 +518,65 @@ describe("digit scrubber: allow-list and layout details", () => {
     const text = `Call 9876543210  now.\n\n${card}`;
     const allowed = ["+917000000001", "+917000000007"];
     expect(stripRuns(text, foreignDigitRuns(text, allowed), allowed)).toBe(`Call now.\n\n${card}`);
+  });
+});
+
+describe("inserted map links", () => {
+  /** Seven-decimal coordinates: each holds a 7-digit run, unless the link is masked as one code inserted. */
+  const LINK = "https://maps.google.com/?q=19.0794812,72.9011934";
+  const FIVE = "https://maps.google.com/?q=19.07948,72.90119";
+
+  it("reads an allowed link as code's, never its coordinates as typed digits, while a run outside it is still found", () => {
+    expect(foreignDigitRuns(`Map: ${LINK}`, [])).toEqual(["0794812", "9011934"]);
+    expect(foreignDigitRuns(`Map: ${LINK}`, [LINK])).toEqual([]);
+    expect(foreignDigitRuns(`Map: ${LINK} or 98765 43210`, [LINK])).toEqual(["98765 43210"]);
+    // A 5-decimal link holds no run at all.
+    expect(findDigitRuns(`Map: ${FIVE}`)).toEqual([]);
+  });
+
+  it("masks an allowed link beside an allowed number, and never strips inside the link", () => {
+    const allowed = ["+917000000020", LINK];
+    const text = `Call +91 70000 00020 or 0794812. Map: ${LINK}`;
+    expect(foreignDigitRuns(text, allowed)).toEqual(["0794812"]);
+    expect(stripRuns(text, ["0794812"], allowed)).toBe(`Call +91 70000 00020 or. Map: ${LINK}`);
+  });
+
+  it("never reads a link's words as dispatch language, but still reads the words around it", () => {
+    const wordy = "https://example.org/we-are-sending/ambulance-dispatched?on+the+way";
+    expect(hasDispatchLanguage(`See ${wordy}`)).toBe(false);
+    expect(hasDispatchLanguage(`See ${wordy}. The ambulance is dispatched.`)).toBe(true);
+    // A danda glued to the link ends it: what follows is read.
+    expect(hasDispatchLanguage(`Google Maps: ${FIVE}।एम्बुलेंस आ रही है।`)).toBe(true);
+    expect(replaceDispatchSentences(`See ${wordy}. Stay calm.`, "R.")).toBe(`See ${wordy}. Stay calm.`);
+  });
+
+  it("appends an allowed link a replaced sentence held, once, after the replacement, with no partner label", () => {
+    const allowed = ["+917000000020", FIVE];
+    expect(replaceDispatchSentences(`We are sending the team to ${FIVE} now. Stay calm.`, "R.", allowed)).toBe(`R. ${FIVE} Stay calm.`);
+    expect(replaceDispatchSentences(`Call +91 70000 00020, we are sending help to ${FIVE} (operated by Blue Cross).`, "R.", allowed))
+      .toBe(`R. +91 70000 00020 ${FIVE}`);
+    // A link the kept text already shows is not appended again.
+    expect(replaceDispatchSentences(`Map: ${FIVE}. They're on the way to ${FIVE}!`, "R.", allowed)).toBe(`Map: ${FIVE}. R.`);
+  });
+});
+
+describe("links the model typed", () => {
+  const INSERTED = "https://maps.google.com/?q=19.07948,72.90119";
+
+  it("finds each link without its trailing punctuation, and never a link code inserted", () => {
+    expect(typedLinks("See https://example.org/a. Or *https://goo.gl/maps/x*, then maps.google.com/?q=1.5,2.5!", [])).toEqual([
+      "https://example.org/a", "https://goo.gl/maps/x", "maps.google.com/?q=1.5,2.5",
+    ]);
+    // A danda or a word glued to a link is never part of it.
+    expect(typedLinks("https://example.org/a।आगे", [])).toEqual(["https://example.org/a"]);
+    expect(typedLinks(`Google Maps: ${INSERTED}.`, [INSERTED])).toEqual([]);
+    expect(typedLinks(`Google Maps: ${INSERTED} or https://maps.google.com/?q=19.0`, [INSERTED])).toEqual(["https://maps.google.com/?q=19.0"]);
+  });
+
+  it("strips typed links and tidies the gap, leaving inserted links whole", () => {
+    expect(stripLinks("Open https://example.org/a now.", ["https://example.org/a"], [])).toBe("Open now.");
+    expect(stripLinks("Map (maps.google.com/?q=1.5,2.5) here, [https://goo.gl/maps/x].", ["maps.google.com/?q=1.5,2.5", "https://goo.gl/maps/x"], []))
+      .toBe("Map here,.");
+    expect(stripLinks(`Map: ${INSERTED} or https://maps.google.com/?q=19.0`, ["https://maps.google.com/?q=19.0"], [INSERTED])).toBe(`Map: ${INSERTED} or`);
   });
 });

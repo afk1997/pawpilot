@@ -8,6 +8,10 @@ const MARATHI_RE = new RegExp(
   `${SCRIPT_START}(?:आहे|आहेत|आहोत|नाही|काय|कुठे|कुत्रा|जखमी|मांजर|(?:बघितल|पाहिल|करायच)[\u093E-\u094C]?[\u0901\u0902]?)${SCRIPT_END}`
 );
 
+/** Any character of the Devanagari block (U+0900–U+097F), and of the Gujarati block (U+0A80–U+0AFF). */
+const DEVANAGARI_RE = /[\u0900-\u097F]/;
+const GUJARATI_RE = /[\u0A80-\u0AFF]/;
+
 /**
  * By script: Devanagari is Marathi when it holds a Marathi marker, else Hindi; Gujarati script is Gujarati; anything
  * else is English, Latin-script Hinglish included ("kutta ghayal hai"), so the system's own lines go out in English
@@ -15,9 +19,22 @@ const MARATHI_RE = new RegExp(
  */
 export function detectLanguage(text: string): Language {
   if (!text) return "en";
-  if (/[ऀ-ॿ]/.test(text)) return MARATHI_RE.test(text) ? "mr" : "hi";
-  if (/[઀-૿]/.test(text)) return "gu";
+  if (DEVANAGARI_RE.test(text)) return MARATHI_RE.test(text) ? "mr" : "hi";
+  if (GUJARATI_RE.test(text)) return "gu";
   return "en";
+}
+
+/**
+ * The language of the system's own lines (partner labels, cards, the call-directly line) for a reply Claude labelled
+ * `label`: the reply's script decides, not the label. A reply labelled hi or mr that holds no Devanagari character, or
+ * gu with no Gujarati one, is not written in that script (Latin-script Hinglish, which the model sometimes labels hi),
+ * so its lines go out in English. Never the other way: a label that matches the reply's script stands, a Devanagari
+ * reply labelled en keeps en, and hi against mr stays Claude's call.
+ */
+export function languageForScript(label: Language, reply: string): Language {
+  if ((label === "hi" || label === "mr") && !DEVANAGARI_RE.test(reply)) return "en";
+  if (label === "gu" && !GUJARATI_RE.test(reply)) return "en";
+  return label;
 }
 
 const MENU_WORDS = /^(menu|options?|help|sahaay|मेन्यू|पर्याय|मेनू|menyu|મેનુ|પર્યાય|વિકલ્પ)$/i;

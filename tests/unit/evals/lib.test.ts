@@ -84,6 +84,13 @@ describe("resolveLabelTokens", () => {
       `Call {{AMB:${amb}}}, {{CLINIC:${cli}}}, {{AMB:Mumbai - Malad}}, {{PHONE:helpline}} or {{AMB:amb_abcdefgh}}.`
     );
   });
+  it("resolves a MAPS label to the clinic's handle, as find_clinics issued it", () => {
+    const registry = new HandleRegistry("conv-1");
+    const cli = registry.clinic("cli-id-1");
+    expect(resolveLabelTokens("Google Maps: {{MAPS:Arham Clinic Surat}} or {{MAPS:Mumbai - Ghatkopar}}", labels, registry.toJSON())).toBe(
+      `Google Maps: {{MAPS:${cli}}} or {{MAPS:Mumbai - Ghatkopar}}`
+    );
+  });
   it("never resolves a label through a handle of the other kind", () => {
     const registry = new HandleRegistry("conv-1");
     registry.clinic("amb-id-1");
@@ -212,11 +219,11 @@ describe("parseScenario", () => {
 describe("loadScenarios", () => {
   it("reads every scenario under evals/scenarios", () => {
     const scenarios = loadScenarios(fileURLToPath(new URL("../../../evals/scenarios", import.meta.url)));
-    expect(scenarios).toHaveLength(36);
-    expect(new Set(scenarios.map((s) => s.name)).size).toBe(36);
+    expect(scenarios).toHaveLength(38);
+    expect(new Set(scenarios.map((s) => s.name)).size).toBe(38);
     expect(scenarios.filter((s) => s.backend === "claude").map((s) => s.name)).toEqual([
       "donate", "volunteer", "menu-tap-ambulance", "human-word-not-escalation-claude", "number-ask-no-place-claude",
-      "driver-unreachable-after-fast-path-claude", "about-first-contact-claude", "hospital-ghatkopar-claude",
+      "driver-unreachable-after-fast-path-claude", "about-first-contact-claude", "hospital-ghatkopar-claude", "hospital-location-claude",
     ]);
   });
   it("lists every invalid file and every reused name in one error", () => {
