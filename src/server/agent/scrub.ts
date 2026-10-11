@@ -155,7 +155,7 @@ export function stripRuns(text: string, runs: string[], allowed: string[]): stri
   return collapseSpaces(stripped).replace(/ +([.,!?।])/g, "$1").trim();
 }
 
-// Building blocks of DISPATCH_RE. JS's \b only knows ASCII letters, so word edges in Indic scripts are spelled out.
+// Building blocks of DISPATCH_PATTERNS. JS's \b only knows ASCII letters, so word edges in Indic scripts are spelled out.
 /** Horizontal whitespace between two words. Never a line break: a line break ends a sentence here. */
 const GAP = String.raw`[^\S\n]+`;
 const WORD_START = String.raw`(?<![\p{L}\p{M}\p{Nd}])`;
@@ -377,8 +377,17 @@ const DISPATCH_PATTERNS = [
  * whose subject is the reporter (a second-person subject within two words before it), or an Indic "is coming" or "on
  * the way" without an ambulance or team word right before it (one adverb such as अभी may stand between). Each Indic
  * sending pattern checks for its verb first, so the lookarounds before it run only where the verb stands.
+ *
+ * One regex per pattern, tried in turn: V8 takes seconds to compile their alternation for a text outside Latin-1 (any
+ * Indic script, a curly quote, an en dash) the first time, which would stall the first such reply after every worker
+ * start; each pattern alone compiles in milliseconds.
  */
-export const DISPATCH_RE = new RegExp(DISPATCH_PATTERNS.join("|"), "iu");
+const DISPATCH_RES = DISPATCH_PATTERNS.map((pattern) => new RegExp(pattern, "iu"));
+
+/** Whether any DISPATCH_PATTERNS pattern matches the text. */
+function matchesDispatch(s: string): boolean {
+  return DISPATCH_RES.some((re) => re.test(s));
+}
 
 /**
  * A link in a reply, printable ASCII up to the next space or other character, so a danda or a word glued to it ("…।एम्बुलेंस
@@ -394,9 +403,9 @@ function withoutLinks(s: string): string {
   return s.replace(LINK_IN_TEXT_RE, "#");
 }
 
-/** DISPATCH_RE on the text, its links skipped (withoutLinks). */
+/** matchesDispatch on the text, its links skipped (withoutLinks). */
 export function hasDispatchLanguage(text: string): boolean {
-  return DISPATCH_RE.test(withoutLinks(normalizeDigits(text)));
+  return matchesDispatch(withoutLinks(normalizeDigits(text)));
 }
 
 /**
@@ -443,12 +452,12 @@ const PARTNER_LABEL_RE = (() => {
  */
 function partnerLabelAt(text: string): string | null {
   const label = PARTNER_LABEL_RE.exec(text)?.[1];
-  if (label === undefined || DISPATCH_RE.test(label) || runsIn(label).length > 0) return null;
+  if (label === undefined || matchesDispatch(label) || runsIn(label).length > 0) return null;
   return label;
 }
 
 /**
- * Replaces each sentence that matches DISPATCH_RE (its links skipped, as hasDispatchLanguage reads it), keeping the
+ * Replaces each sentence that matches a dispatch pattern (its links skipped, as hasDispatchLanguage reads it), keeping the
  * whitespace after it, so paragraph breaks survive. Adjacent matching sentences share one replacement. The allowed
  * numbers a replaced sentence held are appended after the replacement, as they were written and each with the partner
  * label that followed it, so the reporter never loses a number code inserted or the label that says a partner NGO runs
@@ -458,7 +467,7 @@ function partnerLabelAt(text: string): string | null {
 export function replaceDispatchSentences(text: string, replacement: string, allowed: string[] = []): string {
   const normalized = normalizeDigits(text);
   const parts = normalized.match(SENTENCE_RE) ?? [normalized];
-  const replaced = parts.map((part) => DISPATCH_RE.test(withoutLinks(part)));
+  const replaced = parts.map((part) => matchesDispatch(withoutLinks(part)));
   const numbersIn = (part: string) => splitAllowed(part, allowed).filter((_, k) => k % 2 === 1);
   /** One key per number (numberKey) or link (itself). */
   const keyOf = (piece: string) => (isLinkEntry(piece) ? piece : numberKey(piece));
