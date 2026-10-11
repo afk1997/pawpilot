@@ -240,14 +240,36 @@ const SENTENCE_START = String.raw`(?:^|[।.!?\n])(?:[^\S\n]|${CLOSER}|["“‘(
 /** "And", joining two information words ("नंबर और लोकेशन", "पत्ता आणि लोकेशन", "નંબર અને લોકેશન"). */
 const AND = String.raw`(?:और|तथा|आणि|व|અને)`;
 /**
- * What may stand before an Indic place word in its sentence, up to the verb: an allow-list, so anything else (a recipient
- * other than the reporter, उन्हें, त्यांना, તેમને; वाला or વાળું; इथला, तिथली; any other noun or pronoun) fires. Allowed:
- * the subject (हम, मैं, हमने, आम्ही, मी, અમે, હું, મેં); the reporter as recipient (आपको, आप को, तुम्हें, तुम्हाला,
- * आपल्याला, તમને, आपके लिए, तुमच्यासाठी, તમારા માટે); a facility as owner (अस्पताल की, हॉस्पिटलचा, હોસ્પિટલનું,
- * एम्बुलेंस का); an adverb (अभी, आता, तुरंत, लगेच, હમણાં); another information word and "and" ("नंबर और"); and the
- * determiners and particles यह, ये, वह, ही, हे, तो, આ, એ, તો.
+ * Help, or a vehicle or people sent to help, in every script: an ambulance, vehicle, van, team, unit or crew, a driver,
+ * doctor, vet or paramedic, a rescuer, volunteer, staff or people, help itself, or someone. An Indic word may carry a
+ * plural or dative ending ("स्वयंसेवकों", "ड्रायव्हरला", "કર્મચારીઓ"), never a glued possessive ("ड्रायव्हरचा").
  */
-const PLACE_PREFIX_WORD = String.raw`(?:${FIRST_PERSON}|आपको|आप${GAP}को|तुम्हें|तुमको|तुम्हाला|आपल्याला|તમને|તને|आपके${GAP}लि(?:ए|ये)|तुम्हारे${GAP}लि(?:ए|ये)|तुमच्यासाठी|आपल्यासाठी|તમારા${GAP}માટે|તારા${GAP}માટે|${FACILITY}(?:${GAP})?${OWNER_MARK}|${PLACE_ADVERB}|आता|${INFO_WORD}${GAP}${AND}|यह|ये|वह|ही|हे|तो|આ|એ|તો)${WORD_END}`;
+const AGENT = String.raw`${WORD_START}(?:ambulances?|vehicles?|vans?|gaadi|gadi|teams?|units?|crews?|drivers?|doctors?|vets?|paravets?|paramedics?|rescue|rescuers?|volunteers?|staff|people|personnel|persons?|man|men|workers?|members?|responders?|rickshaws?|autos?|cars?|bikes?|ngos?|help|someone|somebody|(?:${INDIC_VEHICLE}|आदमी|आदमियों|व्यक्ति|व्यक्तियों|इंसान|ल(?:\u0921\u093C|\u095C)(?:का|के|कों)|कार्यकर्ता|कार्यकर्ताओं|सदस्य|रिक्शा|माणूस|माणसे|माणसं|व्यक्ती|कार्यकर्ते|रिक्षा|માણસ|માણસો|વ્યક્તિ|કાર્યકર|કાર્યકરો|રિક્ષા|ड्राइवर|ड्रायव्हर|ડ્રાઇવર|डॉक्टर|ડૉક્ટર|ડોક્ટર|वैन|वॅन|વાન|मदद|मदत|મદદ|सहायता|बचाव|બચાવ|रेस्क्यू|स्वयंसेवक|स्वयंसेवी|સ્વયંસેવક|वॉलंटियर|वालंटियर|यूनिट|युनिट|યુનિટ|स्टाफ|સ્ટાફ|कर्मचारी|कर्मचारियों|કર્મચારી|लोग|लोक|લોકો|किसी${GAP}को|कोणाला(?:${GAP}तरी)?|कुणाला|કોઈને)(?:ों|ें|े|ां|ांना|ांनी|ला|ना|ने|ને|ો|ોને|ઓ|ઓને)?)${WORD_END}`;
+/**
+ * A third-person recipient (उन्हें, उनको, उसे, उसको, इन्हें, त्यांना, त्याला, तिला, તેમને, તેને, એમને): what is sent to "them"
+ * is relayed to a responder, so the word counts in AGENT_MENTION wherever it stands in the sentence, before the verb or after
+ * it, a number word next to it included ("हम उन्हें नंबर भेज रहे हैं", "हमने लोकेशन भेज दी है उनको").
+ */
+const RECIPIENT = String.raw`${WORD_START}(?:उन्हें|उनको|उसे|उसको|इन्हें|त्यांना|त्याला|तिला|તેમને|તેને|એમને)${WORD_END}`;
+/** Personal, possessive and demonstrative pronouns in Hindi, Marathi and Gujarati: never a word of a facility's name. */
+const PRONOUN = String.raw`(?:मैं|मैंने|मुझे|मुझको|मेरा|मेरी|मेरे|हम|हमने|हमें|हमको|हमारा|हमारी|हमारे|आप|आपने|आपको|आपका|आपकी|आपके|तुम|तुमने|तुम्हें|तुमको|तुम्हारा|तुम्हारी|तुम्हारे|तू|तेरा|तेरी|तेरे|वह|वो|वे|उस|उसने|उसका|उसकी|उसके|उन|उन्होंने|उनका|उनकी|उनके|यह|ये|इस|इसने|इसका|इसकी|इसके|इसे|इन|इन्होंने|इनका|इनकी|इनके|इनको|कोई|किसी|अपना|अपनी|अपने|मी|मला|माझा|माझी|माझे|माझ्या|आम्ही|आम्हाला|आमचा|आमची|आमचे|आमच्या|आपण|आपला|आपली|आपले|आपल्या|आपल्याला|तुम्ही|तुम्हाला|तुमचा|तुमची|तुमचे|तुमच्या|तुला|तुझा|तुझी|तुझे|तो|ती|ते|त्या|हा|ही|हे|या|कोणी|હું|મેં|મને|મારું|મારો|મારી|મારા|અમે|અમને|અમારું|અમારો|અમારી|અમારા|તમે|તમને|તમારું|તમારો|તમારી|તમારા|તું|તને|તારું|તારો|તારી|તારા|તે|તેઓ|તેમણે|તેનું|તેની|તેનો|તેના|તેમનું|તેમની|તેમનો|તેમના|એ|એણે|એને|એનું|એની|એનો|એના|એમનું|એમની|એમનો|એમના|આ|આપણે|આપણું|આપણી|આપણો|આપણા|કોઈ)`;
+/** वाला or વાળું and their forms, separate ("कुत्ते वाले") or glued ("કૂતરાવાળું"). */
+const WALA = String.raw`(?:वाला|वाली|वाले|वाल्या|વાળું|વાળા|વાળી|વાળો)`;
+/**
+ * A word of a facility's name before the facility word, as English NAME_TOKEN ("घाटकोपर अस्पताल का", "જૂનાગઢ હોસ્પિટલનું"):
+ * never a pronoun, a possessive (a word ending in OWNER_MARK: "उनके", "कुत्र्याचा"), वाला or વાળું, a marker or
+ * postposition, "and", or an AGENT or RECIPIENT word.
+ */
+const FACILITY_NAME_WORD = String.raw`${WORD_START}(?!(?:${PRONOUN}|${AND}|${WALA})${WORD_END}|${PHRASE_END}|${AGENT}|${RECIPIENT})(?![\p{L}\p{M}]*(?:${OWNER_MARK}|${WALA})${WORD_END})[\p{L}\p{M}]+${WORD_END}`;
+/**
+ * What may stand before an Indic place word in its sentence, up to the verb: an allow-list, so anything else (a recipient
+ * other than the reporter, उन्हें, त्यांना, તેમને; वाला or વાળું; इथला, तिथली; "that", वह, તે, એ, Marathi तो; any other
+ * noun or pronoun) fires. Allowed: the subject (हम, मैं, हमने, आम्ही, मी, અમે, હું, મેં); the reporter as recipient
+ * (आपको, आप को, तुम्हें, तुम्हाला, आपल्याला, તમને, आपके लिए, तुमच्यासाठी, તમારા માટે); a facility as owner, up to two
+ * words of its name before it (अस्पताल की, घाटकोपर हॉस्पिटलचा, જૂનાગઢ હોસ્પિટલનું, एम्बुलेंस का; FACILITY_NAME_WORD); an
+ * adverb (अभी, आता, तुरंत, लगेच, હમણાં); another information word and "and" ("नंबर और"); and "this", यह, ये, ही, हे, આ.
+ */
+const PLACE_PREFIX_WORD = String.raw`(?:${FIRST_PERSON}|आपको|आप${GAP}को|तुम्हें|तुमको|तुम्हाला|आपल्याला|તમને|તને|आपके${GAP}लि(?:ए|ये)|तुम्हारे${GAP}लि(?:ए|ये)|तुमच्यासाठी|आपल्यासाठी|તમારા${GAP}માટે|તારા${GAP}માટે|(?:${FACILITY_NAME_WORD}${GAP}){0,2}${FACILITY}(?:${GAP})?${OWNER_MARK}|${PLACE_ADVERB}|आता|${INFO_WORD}${GAP}${AND}|यह|ये|ही|हे|આ)${WORD_END}`;
 /** A place word with nothing but PLACE_PREFIX_WORDs before it in its sentence. */
 const PLACE_PREFIX_OK = String.raw`(?<=${SENTENCE_START}(?:${PLACE_PREFIX_WORD}${GAP})*)`;
 /**
@@ -309,21 +331,15 @@ const PLACE_OBJECT = String.raw`(?:you${GAP})?${PLACE_CORE}(?:${GAP}(?:${AND_INF
 const NUMBER_OBJECT = String.raw`(?:you${GAP})?${NUMBER_CORE}(?:${GAP}(?:${AND_INFO_EN}|${TO_YOU_EN})){0,3}(?![^.!?\n]{0,400}\b${PLACE_NOUN}\b)`;
 /** The direct object of "sending" when it is information: a place noun (PLACE_OBJECT) or a number noun (NUMBER_OBJECT). */
 const INFO_OBJECT = String.raw`${GAP}(?:${PLACE_OBJECT}|${NUMBER_OBJECT})`;
-/**
- * Help, or a vehicle or people sent to help, in every script: an ambulance, vehicle, van, team, unit or crew, a driver,
- * doctor, vet or paramedic, a rescuer, volunteer, staff or people, help itself, or someone. An Indic word may carry a
- * plural or dative ending ("स्वयंसेवकों", "ड्रायव्हरला", "કર્મચારીઓ"), never a glued possessive ("ड्रायव्हरचा").
- */
-const AGENT = String.raw`${WORD_START}(?:ambulances?|vehicles?|vans?|gaadi|gadi|teams?|units?|crews?|drivers?|doctors?|vets?|paravets?|paramedics?|rescue|rescuers?|volunteers?|staff|people|personnel|persons?|man|men|workers?|members?|responders?|rickshaws?|autos?|cars?|bikes?|ngos?|help|someone|somebody|(?:${INDIC_VEHICLE}|आदमी|आदमियों|व्यक्ति|व्यक्तियों|इंसान|ल(?:\u0921\u093C|\u095C)(?:का|के|कों)|कार्यकर्ता|कार्यकर्ताओं|सदस्य|रिक्शा|माणूस|माणसे|माणसं|व्यक्ती|कार्यकर्ते|रिक्षा|માણસ|માણસો|વ્યક્તિ|કાર્યકર|કાર્યકરો|રિક્ષા|ड्राइवर|ड्रायव्हर|ડ્રાઇવર|डॉक्टर|ડૉક્ટર|ડોક્ટર|वैन|वॅन|વાન|मदद|मदत|મદદ|सहायता|बचाव|બચાવ|रेस्क्यू|स्वयंसेवक|स्वयंसेवी|સ્વયંસેવક|वॉलंटियर|वालंटियर|यूनिट|युनिट|યુનિટ|स्टाफ|સ્ટાફ|कर्मचारी|कर्मचारियों|કર્મચારી|लोग|लोक|લોકો|किसी${GAP}को|कोणाला(?:${GAP}तरी)?|कुणाला|કોઈને)(?:ों|ें|े|ां|ांना|ांनी|ला|ना|ने|ને|ો|ોને|ઓ|ઓને)?)${WORD_END}`;
 /** A possessive after a word ("एम्बुलेंस का", "ड्राइवर ची", "ડ્રાઇવર નો"). */
 const POSSESSIVE = String.raw`${OWNER_MARK}${WORD_END}`;
 /**
  * An AGENT named as something sent. Not when it only says whose information it is: before a possessive and an information
  * word ("the ambulance's number", "ड्राइवर का नंबर", "एम्बुलेंस के ड्राइवर का नंबर"), or right before a number word or an
  * English information noun ("the ambulance number", "यूनिट नंबर"). Anything else counts, "with", "for" or "to" it
- * included ("एम्बुलेंस के साथ", "एम्बुलेंस का इंतज़ार").
+ * included ("एम्बुलेंस के साथ", "एम्बुलेंस का इंतज़ार"), and so does a RECIPIENT, always.
  */
-const AGENT_MENTION = String.raw`${AGENT}(?!(?:['\u2019]s)?${GAP}(?:${INFO_MODIFIER}${GAP}){0,2}${INFO_NOUN}\b)(?!${GAP}${POSSESSIVE}(?:${GAP}[^\s।.!?,]+${GAP}${POSSESSIVE})?${GAP}${INFO_WORD})(?!${GAP}${NUMBER_WORD})`;
+const AGENT_MENTION = String.raw`(?:${AGENT}(?!(?:['\u2019]s)?${GAP}(?:${INFO_MODIFIER}${GAP}){0,2}${INFO_NOUN}\b)(?!${GAP}${POSSESSIVE}(?:${GAP}[^\s।.!?,]+${GAP}${POSSESSIVE})?${GAP}${INFO_WORD})(?!${GAP}${NUMBER_WORD})|${RECIPIENT})`;
 /**
  * The Hindi, Marathi and Gujarati sending verbs' information exemption, narrow (precision first: when in doubt, the guard
  * fires). It holds only when an information word stands as the verb's object (INFO_BEFORE_VERB), no place word off the

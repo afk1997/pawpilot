@@ -315,6 +315,30 @@ describe("dispatch guard: vocabulary", () => {
   });
 
   it.each([
+    // A third-person recipient after the verb, or before a number word.
+    "हमने लोकेशन भेज दी है उनको।", "हम लोकेशन भेज रहे हैं उन्हें।", "हम अस्पताल की लोकेशन भेज रहे हैं उनको।", "आम्ही लोकेशन पाठवली आहे त्यांना.",
+    "અમે લોકેશન મોકલી દીધું છે તેમને.", "हम उन्हें नंबर भेज रहे हैं।", "आम्ही त्यांना नंबर पाठवला आहे.", "અમે તેમને નંબર મોકલી દીધો છે.",
+    "हमने उन्हें ड्राइवर का नंबर भेज दिया है।", "हमने उसे पता भेज दिया है।", "हम इन्हें लोकेशन भेज रहे हैं।", "आम्ही तिला नंबर पाठवला आहे.",
+    "અમે એમને સરનામું મોકલી દીધું છે.", "હું તેને નંબર મોકલી રહ્યો છું.", "हम उसको नंबर भेज रहे हैं।", "आम्ही त्याला नंबर पाठवला आहे.",
+    // "That" before a place word ("this" stays allowed).
+    "हम वह लोकेशन भेज रहे हैं।", "અમે એ લોકેશન મોકલી રહ્યા છીએ.", "आम्ही तो पत्ता पाठवला आहे.",
+    // A facility's name may not be a pronoun, a possessive, वाला or more than two words.
+    "हम उनके अस्पताल की लोकेशन भेज रहे हैं।", "हम कुत्ते वाले अस्पताल की लोकेशन भेज रहे हैं।", "हम आपको मुंबई घाटकोपर ईस्ट अस्पताल का पता भेज रहे हैं।",
+  ])("fires on a recipient anywhere, on \"that\" and on a facility name off the rules: %j", (text) => {
+    expect(hasDispatchLanguage(text)).toBe(true);
+  });
+
+  it.each([
+    // Up to two words of a facility's name before the facility word.
+    "मैं आपको घाटकोपर अस्पताल का पता भेज रहा हूँ।", "हम आपको घाटकोपर हॉस्पिटल की लोकेशन भेज रहे हैं।", "मी तुम्हाला घाटकोपर हॉस्पिटलचा पत्ता पाठवत आहे.",
+    "હું તમને જૂનાગઢ હોસ્પિટલનું સરનામું મોકલી રહ્યો છું.", "हम आपको मुंबई घाटकोपर अस्पताल का पता भेज रहे हैं।", "हम आपको Ghatkopar hospital की लोकेशन भेज रहे हैं।",
+    // "This" in Marathi, and the reporter as recipient with a number word.
+    "आम्ही हे लोकेशन पाठवत आहोत.", "मी ही लिंक पाठवत आहे.", "हम आपको नंबर भेज रहे हैं।",
+  ])("keeps a named facility's location and \"this\" exempt: %j", (text) => {
+    expect(hasDispatchLanguage(text)).toBe(false);
+  });
+
+  it.each([
     "We're sending you the location and a person.", "I'm sending the location and our men.", "We are sending the location and a worker.",
     "We are sending you the location and our members.", "We are sending the location and a responder.", "We are sending the location and a rickshaw.",
     "We are sending the location and the NGO.", "हम एक आदमी और लोकेशन भेज रहे हैं।", "हमने एक व्यक्ति और पता भेज दिया है।", "हम लड़का और लोकेशन भेज रहे हैं।",
