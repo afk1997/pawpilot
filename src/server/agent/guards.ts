@@ -4,6 +4,8 @@ import { foldDigits } from "../content/static";
 import { buildHelplineCard, formatIndianPhone, renderNumberForToken } from "../messages/cards";
 import { callDirectlyLine, DISPATCH_CORRECTION_NOTE, LINK_CORRECTION_NOTE, staleHandleNote, TOKEN_CORRECTION_NOTE } from "../messages/system-replies";
 import { isWebsiteLink } from "../links";
+import { languageForScript } from "../lang";
+import type { Language } from "../types";
 import { extractTokens, type HandleRegistry } from "./handles";
 import { renderReply, type RenderLookups, type RenderResult } from "./render";
 import {
@@ -13,8 +15,9 @@ import type { StructuredReply } from "./types";
 
 /**
  * The guards a reply meets before it is sent (spec §5.9), free of the database and the backend: the caller supplies
- * the directory lookups and the corrective call. Every draft is rendered, then checked by the digit guard, a stale
- * handle check and the dispatch guard, and the numbers code inserted in any draft are kept.
+ * the directory lookups and the corrective call. Every draft gets its language label checked against its script, is
+ * rendered, then checked by the digit guard, a stale handle check and the dispatch guard, and the numbers code
+ * inserted in any draft are kept.
  */
 
 const DIGIT_RE = /\p{Nd}/u;
@@ -51,8 +54,17 @@ export interface GuardedReply {
   text: string;
   /** Its template: a token for each number it shows (the card excepted), nothing the reporter did not get. */
   template: string;
-  /** The last draft's structured reply, with needs_human set when any draft of the turn set it. */
+  /**
+   * The last draft's structured reply, with needs_human set when any draft of the turn set it and the language its
+   * script decides (languageForScript): the one the reply was rendered with.
+   */
   structured: StructuredReply;
+  /**
+   * The sent draft's language label as the model wrote it and as its script corrected it, when the two differ: a reply
+   * holding no character of its label's script (Hinglish labelled hi, say), whose system lines went out in English.
+   * Null when the label stood.
+   */
+  languageCorrected: { from: Language; to: Language } | null;
   /** The sent draft had digits the model typed removed: phone-shaped runs, or dropped pieces holding a digit. */
   scrubbed: boolean;
   /** Links the model typed (to anywhere but the website) that were removed from the sent draft. */
@@ -73,7 +85,10 @@ export interface GuardedReply {
 
 /** One reply the model wrote, rendered, with what the guards found in it. */
 interface Draft {
+  /** The reply as the model wrote it, but for its language: the one its script decides (languageForScript). */
   structured: StructuredReply;
+  /** The language label the model wrote. */
+  reportedLanguage: Language;
   rendered: RenderResult;
   /**
    * The digit guard's allow-list: the numbers and the map links code inserted (a link is masked as written, so its
@@ -113,9 +128,10 @@ function replaceDispatchInTemplate(template: string, line: string, allowed: stri
 const appendLine = (text: string, line: string) => (text.trim() === "" ? line : `${text}\n\n${line}`);
 
 /**
- * The guard pipeline for one reply (spec §5.9). Each draft is rendered from its native-numeral-folded reply. The digit
- * guard (typed runs, or dropped pieces holding a digit) and a stale handle get one corrective call, then typed runs are
- * stripped; the dispatch guard gets one, whose draft meets the digit guard again, then its sentences are replaced.
+ * The guard pipeline for one reply (spec §5.9). Each draft is rendered from its native-numeral-folded reply, in the
+ * language its script decides (languageForScript). The digit guard (typed runs, or dropped pieces holding a digit) and
+ * a stale handle get one corrective call, then typed runs are stripped; the dispatch guard gets one, whose draft meets
+ * the digit guard again, then its sentences are replaced.
  * Every number any draft inserted must reach the reporter (the numbers are code-inserted, so safe): one the final
  * reply lacks goes out again after the call-directly line. A map link code inserted for a {{MAPS}} token is masked from
  * the digit guard like an inserted number and kept by the dispatch replacement; it is not sent again when the final
@@ -148,7 +164,12 @@ export async function guardReply(first: StructuredReply, deps: GuardDeps): Promi
   /** Some draft dropped an AMB, CLINIC or MAPS token: retired, invented, malformed, or a facility without a map link. */
   let entityDropped = false;
 
-  const draft = async (structured: StructuredReply): Promise<Draft> => {
+  const draft = async (reported: StructuredReply): Promise<Draft> => {
+    // The reply's script decides the language of the lines code adds (a partner's label, a card, the call-directly
+    // line), not the model's label, before anything renders with it: a Hinglish reply labelled hi would get them in
+    // Devanagari.
+    const language = languageForScript(reported.language, reported.reply);
+    const structured = language === reported.language ? reported : { ...reported, language };
     needsHuman ||= structured.needs_human;
     const { candidates, match } = deps.toolState();
     const rendered = await renderReply({
@@ -181,6 +202,7 @@ export async function guardReply(first: StructuredReply, deps: GuardDeps): Promi
     }
     return {
       structured,
+      reportedLanguage: reported.language,
       rendered,
       allowed,
       foreign: foreignDigitRuns(rendered.text, allowed),
@@ -289,6 +311,7 @@ export async function guardReply(first: StructuredReply, deps: GuardDeps): Promi
     text,
     template,
     structured: { ...d.structured, needs_human: needsHuman },
+    languageCorrected: d.reportedLanguage === d.structured.language ? null : { from: d.reportedLanguage, to: d.structured.language },
     scrubbed: typedDigits(d),
     linksStripped: d.foreignLinks.length,
     foreignRuns: d.foreign.length,

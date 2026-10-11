@@ -55,7 +55,7 @@ describe("runTurn with a backend", () => {
   afterEach(async () => { await stopBoss(); });
 
   it("renders the token, persists the template and records the turn", async () => {
-    const c = await conv();
+    const c = await conv(null);
     await storeReporterMessage(c.id, { kind: "text", content: "ghatkopar me kutta ghayal hai" });
     const backend = new FakeBackend([ghatkoparStep]);
     const r = await runTurn(c.id, { backend });
@@ -70,7 +70,8 @@ describe("runTurn with a backend", () => {
     expect((t.toolCalls as { name: string }[]).map((x) => x.name)).toEqual(["prematch", "find_ambulances"]);
     expect(Object.keys(t.handles as object)).toHaveLength(1);
     const [row] = await getDb().select().from(conversations).where(eq(conversations.id, c.id));
-    expect(row.language).toBe("hi");
+    // Claude's report of the language, which its reply's Latin script corrected from hi.
+    expect(row.language).toBe("en");
     expect((await getWorkerState()).lastOkTurnAt).not.toBeNull();
     expect(backend.calls[0].prompt).toContain("NEW MESSAGES");
     expect(backend.calls[0].systemPrompt).toContain("- Mumbai:");
@@ -242,6 +243,45 @@ describe("the Claude turn's guards, audit and context", () => {
     await stopBoss();
     setFetchForTests(null);
     vi.restoreAllMocks();
+  });
+
+  it("renders a Latin-script reply labelled hi in English, stores en, and records the correction", async () => {
+    const c = await conv("hi");
+    await storeReporterMessage(c.id, { kind: "text", content: "Rajkot me gaay ghayal hai" });
+    const info = vi.spyOn(log, "info").mockImplementation(() => undefined);
+    const [blueCross, hope] = [ids.rajkotA, ids.rajkotB].map((id) => makeHandle("ambulance", c.id, id));
+    const backend = new FakeBackend([async (input: TurnInput) => {
+      await findAmbulancesImpl(input.toolContext!, { city: "Rajkot", area: null, query: "Rajkot me gaay ghayal hai" });
+      return okReply({
+        reply: `Namaste! Rajkot mein gaay ghayal hai, sun ke dukh hua. Aap in dono mein se kisi ko call kar sakte hain: {{AMB:${blueCross}}} ya {{AMB:${hope}}}`,
+        language: "hi", intent: "ambulance", location: { city: "Rajkot", area: null },
+      });
+    }]);
+    expect((await runTurn(c.id, { backend })).kind).toBe("ok");
+    expect(backend.calls).toHaveLength(1);
+    const [m] = await outbound(c.id);
+    expect(m.content).toBe(
+      "Namaste! Rajkot mein gaay ghayal hai, sun ke dukh hua. Aap in dono mein se kisi ko call kar sakte hain: " +
+        "+91 98765 00001 (operated by Blue Cross) ya +91 98765 00002 (operated by Hope for Indies Trust)"
+    );
+    const t = await lastTurn(c.id);
+    expect(t.structuredOutput).toMatchObject({ language: "en", intent: "ambulance" });
+    expect((await eventsOf("language_corrected")).map((e) => e.payload)).toEqual([{ turnId: t.id, from: "hi", to: "en" }]);
+    expect((await conversationRow(c.id)).language).toBe("en");
+    expect(info).toHaveBeenCalledWith({ conversationId: c.id, from: "hi", to: "en" }, "reply's language label corrected by its script");
+    // A Devanagari reply keeps its hi: the partner label in Hindi, no event.
+    const d = await conv("en");
+    await storeReporterMessage(d.id, { kind: "text", content: "राजकोट में गाय घायल है" });
+    const handle = makeHandle("ambulance", d.id, ids.rajkotA);
+    const devanagari = new FakeBackend([async (input: TurnInput) => {
+      await findAmbulancesImpl(input.toolContext!, { city: "Rajkot", area: null, query: "राजकोट में गाय घायल है" });
+      return okReply({ reply: `कृपया {{AMB:${handle}}} पर कॉल करें।`, language: "hi", intent: "ambulance" });
+    }]);
+    expect((await runTurn(d.id, { backend: devanagari })).kind).toBe("ok");
+    expect((await outbound(d.id))[0].content).toBe("कृपया +91 98765 00001 (Blue Cross द्वारा संचालित) पर कॉल करें।");
+    expect((await lastTurn(d.id)).structuredOutput).toMatchObject({ language: "hi" });
+    expect((await conversationRow(d.id)).language).toBe("hi");
+    expect(await eventsOf("language_corrected")).toHaveLength(1);
   });
 
   it("folds native numerals before the digit guard, so a Devanagari number is caught and kept out of the template", async () => {
@@ -473,7 +513,7 @@ describe("the Claude turn's guards, audit and context", () => {
     setFetchForTests((async () => new Response(JSON.stringify({ message: "rejected" }), { status: 400 })) as typeof fetch);
     const c = await createConversation({ phone: "+919876500993", language: "en", welcomedAt: new Date() });
     const sent = await storeReporterMessage(c.id, { kind: "text", content: "surat" });
-    const r = await runTurn(c.id, { backend: new FakeBackend([okReply({ reply: "Please call {{PHONE:helpline}}.", language: "hi" })]) });
+    const r = await runTurn(c.id, { backend: new FakeBackend([okReply({ reply: "कृपया {{PHONE:helpline}} पर कॉल करें।", language: "hi" })]) });
     expect(r.kind).toBe("failed");
     const t = await lastTurn(c.id);
     expect([t.id, t.status, t.error]).toEqual([r.turnId, "failed", "delivery_failed"]);

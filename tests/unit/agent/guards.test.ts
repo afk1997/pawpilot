@@ -177,12 +177,12 @@ describe("guardReply", () => {
   it("appends the helpline card when a stale handle leaves an ambulance reply with no number", async () => {
     const { registry, deps, corrections } = setup({ active: ["r"] });
     const h = registry.ambulance("g");
-    const g = await guardReply(reply({ reply: `Is number par call karein: {{AMB:${h}}}`, intent: "ambulance", language: "hi" }), deps);
+    const g = await guardReply(reply({ reply: `इस नंबर पर कॉल करें: {{AMB:${h}}}`, intent: "ambulance", language: "hi" }), deps);
     expect(corrections).toHaveLength(1);
     const card = buildHelplineCard("+919999900000", "hi");
     expect(g).toMatchObject({
-      text: `Is number par call karein:\n\n${card}`,
-      template: `Is number par call karein:\n\n${card.replace("+91 99999 00000", "{{PHONE:helpline}}")}`,
+      text: `इस नंबर पर कॉल करें:\n\n${card}`,
+      template: `इस नंबर पर कॉल करें:\n\n${card.replace("+91 99999 00000", "{{PHONE:helpline}}")}`,
       staleHandles: [h], restored: 0,
     });
   });
@@ -234,6 +234,70 @@ describe("guardReply", () => {
       text: `Please call the Rajkot ambulance.\n\n${CALL_DIRECTLY} +91 98765 00001 (operated by Blue Cross)`,
       template: `Please call the Rajkot ambulance.\n\n${CALL_DIRECTLY} {{AMB:${h}}}`,
       restored: 1, scrubbed: false,
+    });
+  });
+
+  it("renders a reply with no character of its label's script in English: the partner label, the card and the call-directly line", async () => {
+    const { registry, deps, corrections } = setup();
+    const h = registry.ambulance("r");
+    const hinglish = await guardReply(reply({ reply: `Rajkot mein ye unit hai: {{AMB:${h}}}`, intent: "ambulance", language: "hi" }), deps);
+    expect(hinglish).toMatchObject({
+      text: "Rajkot mein ye unit hai: +91 98765 00001 (operated by Blue Cross)", structured: { language: "en" }, languageCorrected: { from: "hi", to: "en" },
+    });
+    for (const language of ["mr", "gu"] as const) {
+      const g = await guardReply(reply({ reply: `Call karo: {{AMB:${h}}}`, intent: "ambulance", language }), deps);
+      expect(g, language).toMatchObject({
+        text: "Call karo: +91 98765 00001 (operated by Blue Cross)", structured: { language: "en" }, languageCorrected: { from: language, to: "en" },
+      });
+    }
+    const dispatch = await guardReply(reply({ reply: `We are sending {{AMB:${h}}} to you now. Stay calm.`, intent: "ambulance", language: "hi" }), deps);
+    expect(corrections.map((c) => c.purpose)).toEqual(["dispatch"]);
+    expect(dispatch).toMatchObject({ text: `${CALL_DIRECTLY} +91 98765 00001 (operated by Blue Cross) Stay calm.`, replaced: true, languageCorrected: { from: "hi", to: "en" } });
+    const stale = setup({ active: ["r"] });
+    const gone = stale.registry.ambulance("g");
+    const card = await guardReply(reply({ reply: `Is number par call karein: {{AMB:${gone}}}`, intent: "ambulance", language: "hi" }), stale.deps);
+    expect(card).toMatchObject({ text: `Is number par call karein:\n\n${HELPLINE_CARD}`, template: `Is number par call karein:\n\n${HELPLINE_TEMPLATE}`, staleHandles: [gone] });
+  });
+
+  it("keeps a label the reply's script carries, and never changes one the other way", async () => {
+    const { registry, deps } = setup();
+    const h = registry.ambulance("r");
+    const cases = [
+      ["hi", `कृपया {{AMB:${h}}} पर कॉल करें।`, "कृपया +91 98765 00001 (Blue Cross द्वारा संचालित) पर कॉल करें।"],
+      ["mr", `कृपया {{AMB:${h}}} वर कॉल करा.`, "कृपया +91 98765 00001 (Blue Cross द्वारे चालवले जाते) वर कॉल करा."],
+      ["gu", `કૃપા કરીને {{AMB:${h}}} પર કૉલ કરો.`, "કૃપા કરીને +91 98765 00001 (Blue Cross દ્વારા સંચાલિત) પર કૉલ કરો."],
+      // A Devanagari reply labelled en keeps en, and a Devanagari one labelled mr keeps mr: hi against mr is the model's call.
+      ["en", `कृपया {{AMB:${h}}} पर कॉल करें।`, "कृपया +91 98765 00001 (operated by Blue Cross) पर कॉल करें।"],
+      ["mr", `कृपया {{AMB:${h}}} पर कॉल करें।`, "कृपया +91 98765 00001 (Blue Cross द्वारे चालवले जाते) पर कॉल करें।"],
+    ] as const;
+    for (const [language, written, text] of cases) {
+      const g = await guardReply(reply({ reply: written, intent: "ambulance", language }), deps);
+      expect(g, `${language}: ${written}`).toMatchObject({ text, structured: { language }, languageCorrected: null });
+    }
+  });
+
+  it("checks every draft's label against its script, and reports the sent draft's correction", async () => {
+    const { registry, deps } = setup();
+    const h = registry.ambulance("r");
+    const answer = (corrected: StructuredReply) => {
+      deps.retry = async () => corrected;
+    };
+    // A Devanagari draft typed digits; the corrected draft, Hinglish labelled hi, goes out in English.
+    answer(reply({ reply: `Call karein: {{AMB:${h}}}`, intent: "ambulance", language: "hi" }));
+    expect(await guardReply(reply({ reply: "कॉल करें 9876543210", intent: "ambulance", language: "hi" }), deps)).toMatchObject({
+      text: "Call karein: +91 98765 00001 (operated by Blue Cross)", structured: { language: "en" }, languageCorrected: { from: "hi", to: "en" },
+    });
+    // The other way round: the sent draft is Devanagari, so its hi stands.
+    answer(reply({ reply: `कृपया {{AMB:${h}}} पर कॉल करें।`, intent: "ambulance", language: "hi" }));
+    expect(await guardReply(reply({ reply: "Call karein 9876543210", intent: "ambulance", language: "hi" }), deps)).toMatchObject({
+      text: "कृपया +91 98765 00001 (Blue Cross द्वारा संचालित) पर कॉल करें।", structured: { language: "hi" }, languageCorrected: null,
+    });
+    // A number an earlier draft gave goes out again in the sent draft's corrected language: the line and the label.
+    answer(reply({ reply: "Rajkot ambulance ko turant call karein.", intent: "ambulance", language: "hi" }));
+    expect(await guardReply(reply({ reply: `कृपया {{AMB:${h}}} या 9876543210 पर कॉल करें।`, intent: "ambulance", language: "hi" }), deps)).toMatchObject({
+      text: `Rajkot ambulance ko turant call karein.\n\n${CALL_DIRECTLY} +91 98765 00001 (operated by Blue Cross)`,
+      template: `Rajkot ambulance ko turant call karein.\n\n${CALL_DIRECTLY} {{AMB:${h}}}`,
+      restored: 1, languageCorrected: { from: "hi", to: "en" },
     });
   });
 
