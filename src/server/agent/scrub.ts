@@ -226,33 +226,41 @@ const REPORTERS = String.raw`(?:आपकी|आपका|आपके|आप${G
 const PHRASE_END = String.raw`(?:${MARKER}|(?:लिए|लिये|साथ|पास|बारे|साठी|सोबत|માટે|સાથે|પાસે)${WORD_END})`;
 /** Up to two words between an owner and what it owns, none of which ends the phrase ("आपकी भेजी हुई लोकेशन"). */
 const OWNED_GAP = String.raw`(?:${GAP}(?!${PHRASE_END})[^\s।.!?,]+){0,2}`;
-/** Not the reporter's: no REPORTERS word right before, or within OWNED_GAP ("आपकी सही लोकेशन", "आपकी भेजी हुई लोकेशन"). */
+/** Not the reporter's: no REPORTERS word right before, or within OWNED_GAP ("आपका नंबर", "आप का नंबर"). */
 const NOT_REPORTERS = String.raw`(?<!${WORD_START}${REPORTERS}${OWNED_GAP}${GAP})`;
 /** A possessive marker, separate ("कुत्ते की") or glued ("कुत्र्याचा", "કૂતરાનું", "उसकी"). */
 const OWNER_MARK = String.raw`(?:का|की|के|चा|ची|चे|च्या|નો|ની|નું|ના|નાં)`;
-/** Possessive pronouns that carry no OWNER_MARK: मेरा, हमारा, माझा, મારું, અમારું and their forms. */
-const OWNER_PRONOUN = String.raw`(?:मेरा|मेरी|मेरे|हमारा|हमारी|हमारे|माझा|माझी|माझे|माझ्या|મારું|મારો|મારી|મારા|અમારું|અમારો|અમારી|અમારા)`;
 /**
  * A hospital, clinic, unit or ambulance, in every script (Latin words too, inside an Indic sentence): the only owner a place
  * word may have and stay exempt ("अस्पताल की लोकेशन", "हॉस्पिटलचा पत्ता", "હોસ્પિટલનું સરનામું").
  */
 const FACILITY = String.raw`(?:अस्पताल|हॉस्पिटल|हास्पिटल|क्लिनिक|दवाखाना|दवाखाने|दवाखान्या|रुग्णालय|रुग्णालया|यूनिट|युनिट|एम्बुलेंस|एंबुलेंस|ऐम्बुलेंस|एम्बुलेन्स|एम्बुलन्स|एम्ब्युलन्स|ॲम्ब्युलन्स|रुग्णवाहिका|रुग्णवाहिके|હોસ્પિટલ|ક્લિનિક|દવાખાનું|દવાખાના|યુનિટ|એમ્બ્યુલન્સ|ઍમ્બ્યુલન્સ|hospital|clinic|unit|ambulance)`;
-/** Any owner word: a separate possessive marker, a word with one glued, or a possessive pronoun. */
-const OWNED_BY = String.raw`${WORD_START}(?:${OWNER_MARK}|[\p{L}\p{M}]+${OWNER_MARK}|${OWNER_PRONOUN})${WORD_END}`;
-/** A facility as the owner: "अस्पताल की", "हॉस्पिटलचा", "હોસ્પિટલનું". */
-const FACILITY_OWNED_BY = String.raw`${WORD_START}${FACILITY}(?:${GAP})?${OWNER_MARK}${WORD_END}`;
+/** Where a sentence starts: the text's start or a sentence end, then spaces, WhatsApp closers, emoji or opening quotes. */
+const SENTENCE_START = String.raw`(?:^|[।.!?\n])(?:[^\S\n]|${CLOSER}|["“‘(])*`;
+/** "And", joining two information words ("नंबर और लोकेशन", "पत्ता आणि लोकेशन", "નંબર અને લોકેશન"). */
+const AND = String.raw`(?:और|तथा|आणि|व|અને)`;
 /**
- * A place word with no owner, or a facility for owner: any other possessive within OWNED_GAP before it ("कुत्ते की
- * लोकेशन", "कुत्र्याचा पत्ता", "કૂતરાનું લોકેશન", "आपके घर का पता", "आपकी गली की लोकेशन") makes it the incident's place,
- * which is only ever "sent" to a responder.
+ * What may stand before an Indic place word in its sentence, up to the verb: an allow-list, so anything else (a recipient
+ * other than the reporter, उन्हें, त्यांना, તેમને; वाला or વાળું; इथला, तिथली; any other noun or pronoun) fires. Allowed:
+ * the subject (हम, मैं, हमने, आम्ही, मी, અમે, હું, મેં); the reporter as recipient (आपको, आप को, तुम्हें, तुम्हाला,
+ * आपल्याला, તમને, आपके लिए, तुमच्यासाठी, તમારા માટે); a facility as owner (अस्पताल की, हॉस्पिटलचा, હોસ્પિટલનું,
+ * एम्बुलेंस का); an adverb (अभी, आता, तुरंत, लगेच, હમણાં); another information word and "and" ("नंबर और"); and the
+ * determiners and particles यह, ये, वह, ही, हे, तो, આ, એ, તો.
  */
-const NOT_OWNED = String.raw`(?:(?<!${OWNED_BY}${OWNED_GAP}${GAP})|(?<=${FACILITY_OWNED_BY}${OWNED_GAP}${GAP}))`;
+const PLACE_PREFIX_WORD = String.raw`(?:${FIRST_PERSON}|आपको|आप${GAP}को|तुम्हें|तुमको|तुम्हाला|आपल्याला|તમને|તને|आपके${GAP}लि(?:ए|ये)|तुम्हारे${GAP}लि(?:ए|ये)|तुमच्यासाठी|आपल्यासाठी|તમારા${GAP}માટે|તારા${GAP}માટે|${FACILITY}(?:${GAP})?${OWNER_MARK}|${PLACE_ADVERB}|आता|${INFO_WORD}${GAP}${AND}|यह|ये|वह|ही|हे|तो|આ|એ|તો)${WORD_END}`;
+/** A place word with nothing but PLACE_PREFIX_WORDs before it in its sentence. */
+const PLACE_PREFIX_OK = String.raw`(?<=${SENTENCE_START}(?:${PLACE_PREFIX_WORD}${GAP})*)`;
 /**
- * What a sending verb may follow without dispatching anything: a number word within two words of it, or a place word
- * right before it (one PLACE_ADVERB may stand between), the word never the reporter's own (NOT_REPORTERS) and a place
- * word owned by nobody or a facility (NOT_OWNED).
+ * What a sending verb may follow without dispatching anything: a number word within two words of it, never the reporter's
+ * (NOT_REPORTERS); or a place word right before it (one PLACE_ADVERB may stand between) with only the allow-list before it
+ * in its sentence (PLACE_PREFIX_OK).
  */
-const INFO_BEFORE_VERB = String.raw`(?:${NOT_REPORTERS}${NUMBER_WORD}(?:${GAP}${WINDOW_WORD}){0,2}|${NOT_REPORTERS}${NOT_OWNED}${PLACE_WORD}(?:${GAP}${PLACE_ADVERB})?)${GAP}`;
+const INFO_BEFORE_VERB = String.raw`(?:${NOT_REPORTERS}${NUMBER_WORD}(?:${GAP}${WINDOW_WORD}){0,2}|${PLACE_PREFIX_OK}${PLACE_WORD}(?:${GAP}${PLACE_ADVERB})?)${GAP}`;
+/**
+ * A place word off the allow-list (PLACE_PREFIX_OK fails) within four words before the verb, no comma or sentence end
+ * between: the verb's object even when a number word stands nearer the verb ("हम उन्हें लोकेशन और नंबर भेज रहे हैं").
+ */
+const PLACE_OFF_LIST_BEFORE_VERB = String.raw`(?<=(?<!${SENTENCE_START}(?:${PLACE_PREFIX_WORD}${GAP})*)${PLACE_WORD}(?:${GAP}[^\s।.!?,]+){0,4}${GAP})`;
 /** An English number, contact or details noun. */
 const NUMBER_NOUN = String.raw`(?:numbers?|contacts?|details|info(?:rmation)?)`;
 /** An English location, address, map, link, pin, photo or directions noun. */
@@ -274,21 +282,31 @@ const FACILITY_EN = String.raw`(?:hospitals?|clinics?|units?|ambulances?)`;
 const NAME_TOKEN = String.raw`(?!(?:and|or|with|of|to|for|from|the|a|an|your|my|our|their|his|her|its|vehicles?|vans?|teams?|crews?|drivers?|doctors?|vets?|rescuers?|volunteers?|staff|people|persons?|men|man|workers?|members?|responders?|help|someone|somebody|ngos?|rickshaws?|autos?|cars?|bikes?)\b)[\p{L}-]+`;
 /** A facility owning a place noun: "(the Ghatkopar) hospital's", or "hospital" naming whose it is ("the hospital location"). */
 const FACILITY_OWNER_EN = String.raw`(?:${NAME_TOKEN}${GAP}){0,3}?${FACILITY_EN}(?:['\u2019]s)?`;
+/** A place noun owned by nobody or a facility: "(the|a|an|this) (Ghatkopar hospital's) (Google) (Maps|location) link". */
+const PLACE_CORE = String.raw`(?:(?:the|a|an|this)${GAP})?(?:${FACILITY_OWNER_EN}${GAP})?(?:google${GAP})?(?:${PLACE_NOUN}${GAP})?${PLACE_NOUN}\b`;
+/** A number noun as main reads it: a determiner (never "your") and main's naming words before it ("the driver's number"). */
+const NUMBER_CORE = String.raw`(?:(?:the|a|an|this|its|that|our|his|her|their)${GAP})?(?:${INFO_MODIFIER}${GAP}){0,3}${NUMBER_NOUN}\b`;
+/** "And" another information noun ("and the address", "and the ambulance number", "and the driver's number"). */
+const AND_INFO_EN = String.raw`and${GAP}(?:${PLACE_CORE}|${NUMBER_CORE})`;
+/** "Of" a facility ("of the Ghatkopar hospital"). */
+const OF_FACILITY_EN = String.raw`of${GAP}(?:the${GAP})?(?:${NAME_TOKEN}${GAP}){0,3}?${FACILITY_EN}\b`;
+/** "For you" or "to you": the reporter as recipient. */
+const TO_YOU_EN = String.raw`(?:for|to)${GAP}you\b`;
+/** Where a place object may end: the sentence's end, a WhatsApp closer or emoji, a colon, a link (masked as "#") or a token. */
+const OBJECT_END_EN = String.raw`[^\S\n]*(?:$|[.!?।\n]|${CLOSER}|:|#|\{\{)`;
 /**
- * After a place noun: no owner but a facility ("of the dog" fires, "of the Ghatkopar hospital" does not), and no clause
- * about the noun ("the location you shared", "… you sent us").
+ * A place noun as the direct object of "sending", an allow-list on both sides: before it only "you" and a PLACE_CORE (a
+ * determiner, a facility owner, "Google Maps"); after it only "and" another information noun, "of" a facility, or "for
+ * you"/"to you", up to the object's end (OBJECT_END_EN). Anything else fires: "your location", "the dog's location",
+ * "them the location", "the location of the dog", "the location for pickup", "the location you shared", "the location now".
  */
-const NO_OWNER_AFTER_EN = String.raw`(?!${GAP}(?:of\b(?!${GAP}(?:the${GAP})?(?:${NAME_TOKEN}${GAP}){0,3}?${FACILITY_EN}\b)|(?:you|we|they|he|she|i|it|that|which|who|whom|whose|where|sent|shared|given|from)\b))`;
+const PLACE_OBJECT = String.raw`(?:you${GAP})?${PLACE_CORE}(?:${GAP}(?:${AND_INFO_EN}|${OF_FACILITY_EN}|${TO_YOU_EN})){0,3}(?=${OBJECT_END_EN})`;
 /**
- * A place noun as the direct object of "sending", owned by nobody or a facility: "(you) (the|a|an|this|that) (the
- * hospital's) (Google Maps) location". Never with a possessive pronoun ("your", "its", "our") or another owner ("the dog's").
+ * A number noun as the direct object, as main reads it: anything may follow but "to" or an AGENT (NOT_SENDING_INFO_EN), so
+ * "the number below" stays exempt. A place noun later in its sentence must be joined to it by "and" (AND_INFO_EN), so the
+ * place allow-list holds there too: "the number and the dog's location" fires.
  */
-const PLACE_OBJECT = String.raw`(?:you${GAP})?(?:(?:the|a|an|this|that)${GAP})?(?:${FACILITY_OWNER_EN}${GAP})?(?:google${GAP})?(?:maps?${GAP})?${PLACE_NOUN}\b${NO_OWNER_AFTER_EN}`;
-/**
- * A number noun as the direct object, as main reads it: possessives and naming words may stand before it ("the driver's
- * number", "the ambulance driver's phone number"), but never "your".
- */
-const NUMBER_OBJECT = String.raw`(?:you${GAP})?(?:(?:the|a|an|this|its|that|our|his|her|their)${GAP})?(?:${INFO_MODIFIER}${GAP}){0,3}${NUMBER_NOUN}\b`;
+const NUMBER_OBJECT = String.raw`(?:you${GAP})?${NUMBER_CORE}(?:${GAP}(?:${AND_INFO_EN}|${TO_YOU_EN})){0,3}(?![^.!?\n]{0,400}\b${PLACE_NOUN}\b)`;
 /** The direct object of "sending" when it is information: a place noun (PLACE_OBJECT) or a number noun (NUMBER_OBJECT). */
 const INFO_OBJECT = String.raw`${GAP}(?:${PLACE_OBJECT}|${NUMBER_OBJECT})`;
 /**
@@ -308,14 +326,15 @@ const POSSESSIVE = String.raw`${OWNER_MARK}${WORD_END}`;
 const AGENT_MENTION = String.raw`${AGENT}(?!(?:['\u2019]s)?${GAP}(?:${INFO_MODIFIER}${GAP}){0,2}${INFO_NOUN}\b)(?!${GAP}${POSSESSIVE}(?:${GAP}[^\s।.!?,]+${GAP}${POSSESSIVE})?${GAP}${INFO_WORD})(?!${GAP}${NUMBER_WORD})`;
 /**
  * The Hindi, Marathi and Gujarati sending verbs' information exemption, narrow (precision first: when in doubt, the guard
- * fires). It holds only when an information word stands as the verb's object (INFO_BEFORE_VERB) and the sentence names
- * no AGENT as sent anywhere, before the verb or after it. Each scan stops at 400 characters, so a long reply costs a few
- * milliseconds at most; no reply sentence is that long.
+ * fires). It holds only when an information word stands as the verb's object (INFO_BEFORE_VERB), no place word off the
+ * allow-list stands in that object (PLACE_OFF_LIST_BEFORE_VERB), and the sentence names no AGENT as sent anywhere, before
+ * the verb or after it. Each scan stops at 400 characters, so a long reply costs a few milliseconds at most; no reply
+ * sentence is that long.
  */
-const NOT_SENDING_INFO = String.raw`(?:(?<!${INFO_BEFORE_VERB})|(?<=${AGENT_MENTION}[^.!?।\n]{0,400})|(?=[^.!?।\n]{0,400}${AGENT_MENTION}))`;
+const NOT_SENDING_INFO = String.raw`(?:(?<!${INFO_BEFORE_VERB})|${PLACE_OFF_LIST_BEFORE_VERB}|(?<=${AGENT_MENTION}[^.!?।\n]{0,400})|(?=[^.!?।\n]{0,400}${AGENT_MENTION}))`;
 /**
  * The English exemption, as narrow: "we are/I'm sending" fires unless its direct object is an information noun
- * (INFO_OBJECT), no "to" follows it in the sentence ("…your location to the crew"), and the sentence names no AGENT as
+ * (INFO_OBJECT), no "to" follows the object in the sentence ("the number to call"), and the sentence names no AGENT as
  * sent, before "sending" or after the object.
  */
 const NOT_SENDING_INFO_EN = String.raw`(?:(?<=${AGENT_MENTION}[^.!?\n]{0,400})|(?!${INFO_OBJECT}(?![^.!?\n]{0,400}(?:\bto\b|${AGENT_MENTION}))))`;

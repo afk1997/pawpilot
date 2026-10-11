@@ -261,9 +261,47 @@ describe("dispatch guard: vocabulary", () => {
   it.each([
     "We are sending you the location of the hospital.", "I'm sending you the hospital's location.", "I'm sending you the Ghatkopar hospital's location.",
     "We are sending you the location of the Ghatkopar hospital.", "We are sending you the ambulance's location.",
-    "मैं आपको हॉस्पिटल का पता भेज रहा हूँ।", "हम अस्पताल की लोकेशन भेज रहे हैं।", "हम हमारे अस्पताल की लोकेशन भेज रहे हैं।",
+    "मैं आपको हॉस्पिटल का पता भेज रहा हूँ।", "हम अस्पताल की लोकेशन भेज रहे हैं।",
     "मी तुम्हाला हॉस्पिटलचा पत्ता पाठवत आहे.", "હું તમને હોસ્પિટલનું સરનામું મોકલી રહ્યો છું.",
   ])("keeps a facility's or a unit's location exempt: %j", (text) => {
+    expect(hasDispatchLanguage(text)).toBe(false);
+  });
+
+  it.each([
+    // A recipient other than the reporter right before the place word.
+    "हम उन्हें लोकेशन भेज रहे हैं।", "हम उन्हें अभी लोकेशन भेज रहे हैं।", "हमने उनको लोकेशन भेज दी है।", "हमने उसे लोकेशन भेज दी है।", "हमने इन्हें लोकेशन भेज दी है।",
+    "आम्ही त्यांना लोकेशन पाठवत आहोत.", "आम्ही त्याला पत्ता पाठवला आहे.", "आम्ही तिला लोकेशन पाठवली आहे.",
+    "અમે તેમને લોકેશન મોકલી રહ્યા છીએ.", "અમે તેને સરનામું મોકલી દીધું છે.", "અમે એમને લોકેશન મોકલી દીધું છે.",
+    // Ownership through वाला or વાળું.
+    "हम कुत्ते वाली लोकेशन भेज रहे हैं।", "हमने कुत्ते वाला पता भेज दिया है।", "हम घायल कुत्ते वाले लोकेशन भेज रहे हैं।",
+    "અમે કૂતરાવાળું લોકેશન મોકલી રહ્યા છીએ.", "અમે કૂતરા વાળું સરનામું મોકલી દીધું છે.",
+    // Marathi "of here" and "of there".
+    "आम्ही इथला पत्ता पाठवला आहे.", "आम्ही तिथली लोकेशन पाठवली आहे.",
+    // "For" anything but the reporter.
+    "We are sending the location for the injured dog.", "We are sending the location for pickup.",
+    // Anything else before or after the place word (precision first): another pronoun, another word after the noun.
+    "हम हमारे अस्पताल की लोकेशन भेज रहे हैं।", "I'm sending you the location pin now.",
+    // A number word nearer the verb, or a number noun first, does not lift the place word's allow-list.
+    "हम उन्हें लोकेशन और नंबर भेज रहे हैं।", "आम्ही त्यांना पत्ता आणि नंबर पाठवला आहे.", "અમે તેમને લોકેશન અને નંબર મોકલી દીધો છે.",
+    "We are sending you the number and the dog's location.", "We're sending the number with the location of the dog.",
+    // An English purpose or arrival clause in the sentence follows the place noun, so it fires too.
+    "I'm sending the location so they can pick up the dog.", "We are sending the location now, so the dog can be rescued.",
+    "We are sending the location; they will come soon.",
+  ])("fires on anything but the allow-list around a place word: %j", (text) => {
+    expect(hasDispatchLanguage(text)).toBe(true);
+  });
+
+  it.each([
+    "We are sending you the location of the hospital.", "मैं आपको हॉस्पिटल का पता भेज रहा हूँ।", "मी तुम्हाला हॉस्पिटलचा पत्ता पाठवत आहे.",
+    "હું તમને હોસ્પિટલનું સરનામું મોકલી રહ્યો છું.", "I'm sending you the location and the address.", "हम लोकेशन भेज रहे हैं।",
+    "We are sending the ambulance's location.", "हमने एम्बुलेंस का नंबर और लोकेशन भेज दी है।", "I'm sending you the Ghatkopar hospital's location.",
+    "We are sending you the Google Maps link.", "हम आपको लोकेशन भेज रहे हैं।", "आम्ही तुम्हाला लोकेशन पाठवत आहोत.", "અમે તમને લોકેશન મોકલી રહ્યા છીએ.",
+    // The rest of the allow-list: an adverb, a determiner or particle, the reporter as recipient written apart or "for you".
+    "हम आपको अभी लोकेशन भेज रहे हैं।", "हम यह लोकेशन भेज रहे हैं।", "અમે આ લોકેશન મોકલી રહ્યા છીએ.", "हम आप को लोकेशन भेज रहे हैं।",
+    "मी तुमच्यासाठी पत्ता पाठवत आहे.", "હું તમારા માટે સરનામું મોકલી રહ્યો છું.", "I'm sending the location to you.", "I'm sending you the location: {{MAPS:cli_abcdefgh}}",
+    "हम आपको लोकेशन और नंबर भेज रहे हैं।", "We are sending you the location and the driver's number.", "We are sending you the number and the hospital's address.",
+    "I'm sending you the location pin.", "I'm sending the number to you.",
+  ])("keeps the allow-list's forms exempt: %j", (text) => {
     expect(hasDispatchLanguage(text)).toBe(false);
   });
 
@@ -326,7 +364,7 @@ describe("dispatch guard: exclusions", () => {
   it.each([
     "I'm sending you the location and the address.", "मैं लोकेशन भेज रहा हूँ।", "हम लोकेशन भेज रहे हैं", "હું સરનામું મોકલી રહ્યો છું.",
     "We are sending you the Google Maps link.", "I am sending the hospital's address and directions.",
-    "I'm sending you the location pin now.", "I'm sending you the hospital location and the ambulance number.",
+    "I'm sending you the hospital location and the ambulance number.",
     "हमने अस्पताल का पता भेज दिया है।", "मैंने नक्शा भेज दिया है।", "हम लिंक भेज रहे हैं।", "हमने एम्बुलेंस का नंबर और लोकेशन भेज दी है।",
     "आम्ही पत्ता पाठवला आहे.", "आम्ही लोकेशन पाठवत आहोत.",
     "અમે લોકેશન મોકલી રહ્યા છીએ.", "અમે સરનામું મોકલી દીધું છે.", "હું લિંક મોકલી રહ્યો છું.", "એમ્બ્યુલન્સનો નંબર મોકલી દીધો છે.",
