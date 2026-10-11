@@ -1,8 +1,8 @@
 # The model's own answer to "where is the hospital?": find_clinics, then a clinic reply with the Ghatkopar hospital's
-# number, its Google Maps link, its address and its hours (the fixture publishes 10am–11pm IST, so the hours themselves,
-# never only a "call" line, which the number line would satisfy anyway). The link is the
-# fixture's, which the model never sees: it reaches the reply only through the {{MAPS:…}} token find_clinics returned.
-# Needs the real model.
+# number, its hours (the fixture publishes 10am–11pm IST, so the hours themselves, never only a "call" line, which the
+# number line would satisfy anyway), its Google Maps link and its address: the order the prompt's hospitals rule asks
+# for, which the step does not check. The link is the fixture's, which the model never sees: it reaches the reply only
+# through the {{MAPS:…}} token find_clinics returned. Needs the real model.
 name: hospital-location-claude
 backend: claude
 steps:

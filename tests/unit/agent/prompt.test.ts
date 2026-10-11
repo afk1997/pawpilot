@@ -64,14 +64,15 @@ describe("prompts", () => {
     expect(p).toContain("rule 9's immediate-danger line");
   });
 
-  it("system prompt always gives a hospital's or clinic's number, then the map link and address asked for, with its hours or a call-first line", () => {
+  it("system prompt always gives a hospital's or clinic's number, then its hours or a call-first line, then the map link and address asked for", () => {
     const p = systemPrompt();
     expect(p).toContain(
-      "For a hospital or clinic, always give its number as {{CLINIC:<handle>}}, then what the reporter asked for, each copied from the find_clinics result: a reporter who asks where it is, for the address, the location, the map or directions gets its {{MAPS:<handle>}} token (write 'Google Maps:' before it) and the address; the services or the notes when asked."
+      "For a hospital or clinic, always give, in this order: its number as {{CLINIC:<handle>}}; its hours as the result gives them, or a line asking to call before visiting when it has none; then what the reporter asked for, each copied from the find_clinics result (a reporter who asks where it is, for the address, the location, the map or directions gets its {{MAPS:<handle>}} token after 'Google Maps:' and the address; the services or the notes when asked), in about three short lines."
     );
-    expect(p).toContain("Add its hours when the result has them, or a line asking to call before visiting when it has none.");
-    expect(p).toContain("Keep it to about three short lines, and never say you do not have the location when the result carries maps.");
+    expect(p).toContain("Never say you do not have the location when the result carries maps.");
     expect(p).toContain("When the reporter asks about more than two hospitals or clinics, ask which city first, or give one short line each.");
+    // The hours come right after the number: placed last, they were sometimes left out.
+    expect(p).not.toContain("Add its hours when the result has them");
     expect(p).not.toContain("and nothing more");
     expect(p).not.toContain("Give the hours and address the result carries.");
   });
