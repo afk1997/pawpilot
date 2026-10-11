@@ -209,6 +209,15 @@ describe("dispatch guard: vocabulary", () => {
     // so these say nothing about the information exemption.
     expect(hasDispatchLanguage("gaadi bhej rahe hain")).toBe(false);
     expect(hasDispatchLanguage("Yeh raha number, location bhej raha hoon.")).toBe(false);
+    // So does the arrival, purpose and sharing gap (CLAUDE.md, Guard residuals), waiting for the eval follow-up: a claim
+    // after an exempt Indic verb or in a sentence of its own, and sharing or forwarding the reporter's location.
+    for (const t of [
+      "हम लोकेशन भेज रहे हैं ताकि कुत्ते को उठाया जा सके।", "हम लोकेशन भेज रहे हैं और वे आ रहे हैं।", "आम्ही लोकेशन पाठवत आहोत, म्हणजे ते कुत्र्याला घेऊन जातील.",
+      "અમે લોકેશન મોકલી રહ્યા છીએ જેથી તેઓ કૂતરાને લઈ જાય.", "We are sending the location. They will pick up the dog.", "एम्बुलेंस तैयार है। हम लोकेशन भेज रहे हैं।",
+      "We have shared your location with the driver.", "We are forwarding your location to the team.", "हमने आपकी लोकेशन ड्राइवर के साथ शेयर कर दी है।",
+    ]) {
+      expect(hasDispatchLanguage(t), t).toBe(false);
+    }
   });
 
   it.each([

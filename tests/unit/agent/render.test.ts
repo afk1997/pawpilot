@@ -286,7 +286,7 @@ describe("renderReply: map links", () => {
     expect(out.unknownHandles).toEqual([h]);
   });
 
-  it("puts a space between an inserted link and text glued to it that a URL could continue, in the text and the template", async () => {
+  it("puts a space between an inserted link and any text glued to it but sentence punctuation, in the text and the template", async () => {
     const r = new HandleRegistry("conv");
     const hh = r.clinic("h");
     const glued = await renderReply(base(r, { replyTemplate: `Google Maps: {{MAPS:${hh}}}/extra and {{MAPS:${hh}}}?x=1`, intent: "clinic" }));
@@ -295,6 +295,15 @@ describe("renderReply: map links", () => {
     // Punctuation that ends a sentence or a bracket is no part of a URL: no space.
     const ended = await renderReply(base(r, { replyTemplate: `Map ({{MAPS:${hh}}}). Or {{MAPS:${hh}}}, then call.`, intent: "clinic" }));
     expect(ended.text).toBe(`Map (${GHATKOPAR_MAP}). Or ${GHATKOPAR_MAP}, then call.`);
+    expect(ended.sentTemplate).toBe(`Map ({{MAPS:${hh}}}). Or {{MAPS:${hh}}}, then call.`);
+    const last = await renderReply(base(r, { replyTemplate: `Google Maps: {{MAPS:${hh}}}.`, intent: "clinic" }));
+    expect(last.text).toBe(`Google Maps: ${GHATKOPAR_MAP}.`);
+    // A danda, a word in another script or punctuation that more text follows gets the space.
+    const indic = await renderReply(
+      base(r, { replyTemplate: `नक्शा: {{MAPS:${hh}}}। अस्पताल {{MAPS:${hh}}}पर है, {{MAPS:${hh}}}.में`, intent: "clinic" }),
+    );
+    expect(indic.text).toBe(`नक्शा: ${GHATKOPAR_MAP} । अस्पताल ${GHATKOPAR_MAP} पर है, ${GHATKOPAR_MAP} .में`);
+    expect(indic.sentTemplate).toBe(`नक्शा: {{MAPS:${hh}}} । अस्पताल {{MAPS:${hh}}} पर है, {{MAPS:${hh}}} .में`);
   });
 
   it("keeps a map link whole or drops it whole at the cap", async () => {
