@@ -102,10 +102,16 @@ function parseJsonString(v: unknown): Record<string, unknown> | null {
   }
 }
 
+/**
+ * Reads Interakt's webhook body, which must be the top-level JSON. `non_object`: not a JSON object at all (an array,
+ * a string, null). `no_type`: an object with no string `type`, such as an n8n node forwarding its own envelope
+ * (`{ headers, params, query, body }`) instead of Interakt's body. Neither is unwrapped or repaired: the route reports it.
+ */
 export function parseInteraktPayload(raw: unknown): ParseOutcome {
-  if (typeof raw !== "object" || raw === null) return { kind: "ignored", reason: "non_object", eventType: "(none)" };
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return { kind: "ignored", reason: "non_object", eventType: "(none)" };
   const p = raw as InteraktPayload;
-  const eventType = typeof p.type === "string" ? p.type : "(none)";
+  if (typeof p.type !== "string") return { kind: "ignored", reason: "no_type", eventType: "(none)" };
+  const eventType = p.type;
   if (!INBOUND_TYPES.some((re) => re.test(eventType.trim()))) return { kind: "ignored", reason: "event_type", eventType };
 
   const customer = p.data?.customer;

@@ -136,6 +136,35 @@ describe("POST /api/webhook", () => {
     expect(await getDb().select().from(events).where(eq(events.kind, "inbound_unusable"))).toHaveLength(2);
   });
 
+  it("warns and records a payload with no top-level type (an n8n envelope) or that is not an object, with key names only", async () => {
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
+    const unusableEvents = () => getDb().select().from(events).where(eq(events.kind, "inbound_unusable")).orderBy(events.createdAt);
+    // A relay node forwarding its own envelope instead of Interakt's body: the reporter's message sits under `body`
+    // and is never unwrapped, so nothing is stored; the diagnostics name the keys, never a value.
+    const envelope = { headers: { "interakt-signature": "sha256=x" }, params: {}, query: {}, body: inbound("m1", "hi") };
+    const res = await POST(signed(envelope));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: "ignored", reason: "no_type", event_type: "(none)" });
+    const envelopeFields = { eventType: "(none)", reason: "no_type", keys: ["body", "headers", "params", "query"], envelope: true };
+    expect(warn.mock.calls).toEqual([[envelopeFields, "webhook ignored"]]);
+    expect((await unusableEvents()).map((e) => [e.conversationId, e.payload])).toEqual([[null, envelopeFields]]);
+    expect(await getDb().select().from(conversations)).toHaveLength(0);
+    expect(await getDb().select().from(messages)).toHaveLength(0);
+
+    warn.mockClear();
+    const array = await POST(signed([]));
+    expect(array.status).toBe(200);
+    expect(await array.json()).toEqual({ status: "ignored", reason: "non_object", event_type: "(none)" });
+    const arrayFields = { eventType: "(none)", reason: "non_object", jsonType: "array" };
+    expect(warn.mock.calls).toEqual([[arrayFields, "webhook ignored"]]);
+    expect((await unusableEvents()).map((e) => [e.conversationId, e.payload])).toEqual([[null, envelopeFields], [null, arrayFields]]);
+
+    warn.mockClear();
+    await POST(signed({ type: "message_api_delivered", data: {} }));
+    expect(warn).not.toHaveBeenCalled();
+    expect(await unusableEvents()).toHaveLength(2);
+  });
+
   it("refuses phones that belong to a test conversation", async () => {
     const c = await createConversation({ phone: "+917003705584", isTest: true });
     const res = await POST(signed(inbound("m9", "hi")));
