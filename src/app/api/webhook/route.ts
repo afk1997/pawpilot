@@ -16,6 +16,15 @@ const KNOWN_CONTENT_TYPES = ["Text", "Image", "Video", "Audio", "Document", "Loc
 const UNUSABLE_MESSAGE_REASONS = ["missing_fields", "no_phone", "no_type", "non_object"];
 const MAX_DIAGNOSTIC_KEYS = 20;
 const MAX_DIAGNOSTIC_KEY_LENGTH = 40;
+/**
+ * A key name as code writes one: an identifier (the dot and hyphen of a header name or a dotted path allowed) of at
+ * most MAX_DIAGNOSTIC_KEY_LENGTH characters. A relay node keyed by a field makes the key a value (a map keyed by the
+ * sender's number, or by the message text), so any other key, and one holding a phone-shaped run (7+ digits joined
+ * by at most one hyphen, the shape the digit scrubber reads within these characters), is reported as OTHER_KEY.
+ */
+const SAFE_KEY_RE = new RegExp(`^[A-Za-z_$][\\w$.-]{0,${MAX_DIAGNOSTIC_KEY_LENGTH - 1}}$`);
+const KEY_DIGIT_RUN_RE = /\d(?:-?\d){6,}/;
+const OTHER_KEY = "(other)";
 const seenUnknownTypes = new Set<string>();
 
 export async function GET() {
@@ -113,7 +122,7 @@ export async function POST(request: Request) {
  * A reporter's message the route cannot use (no sender phone, no message id), or a body that is not Interakt's
  * (`no_type`: no top-level `type`, as when an n8n node forwards its own envelope; `non_object`: an array, a string),
  * is never answered: an event without a conversation makes it visible, with the event type, the reason and, for those
- * two, the body's shape (`shapeDiagnostics`: key names only, never a value). Never fails the webhook.
+ * two, the body's shape (`shapeDiagnostics`: identifier-shaped key names only, never a value). Never fails the webhook.
  */
 async function recordUnusable(fields: { eventType: string; reason: string } & Record<string, unknown>): Promise<void> {
   try {
@@ -124,16 +133,18 @@ async function recordUnusable(fields: { eventType: string; reason: string } & Re
 }
 
 /**
- * The shape of a body that is not Interakt's, never a value from it. `no_type`: the top-level key names, sorted, each
- * cut to MAX_DIAGNOSTIC_KEY_LENGTH characters and at most MAX_DIAGNOSTIC_KEYS of them (`keysTruncated` when there were
- * more), and `envelope`, whether `body` is an object with a string `type` (an n8n node forwarding its own envelope: the
- * parser would have accepted `body`). `non_object`: the JSON type. Any other reason adds nothing.
+ * The shape of a body that is not Interakt's, never a value from it. `no_type`: the top-level key names, sorted, at
+ * most MAX_DIAGNOSTIC_KEYS of them (`keysTruncated` when there were more), each as written while identifier-shaped
+ * (SAFE_KEY_RE, so at most MAX_DIAGNOSTIC_KEY_LENGTH characters) and OTHER_KEY otherwise, so a key that is itself a
+ * number or a sentence never reaches a log line or the events table; and `envelope`, whether `body` is an object with
+ * a string `type` (an n8n node forwarding its own envelope: the parser would have accepted `body`). `non_object`: the
+ * JSON type. Any other reason adds nothing.
  */
 function shapeDiagnostics(reason: string, payload: unknown): Record<string, unknown> {
   if (reason === "non_object") return { jsonType: jsonTypeOf(payload) };
   if (reason !== "no_type" || typeof payload !== "object" || payload === null || Array.isArray(payload)) return {};
   const names = Object.keys(payload).sort();
-  const keys = names.slice(0, MAX_DIAGNOSTIC_KEYS).map((k) => k.slice(0, MAX_DIAGNOSTIC_KEY_LENGTH));
+  const keys = names.slice(0, MAX_DIAGNOSTIC_KEYS).map((k) => (SAFE_KEY_RE.test(k) && !KEY_DIGIT_RUN_RE.test(k) ? k : OTHER_KEY));
   const body = (payload as { body?: unknown }).body;
   const envelope = typeof body === "object" && body !== null && !Array.isArray(body) && typeof (body as { type?: unknown }).type === "string";
   return { keys, ...(names.length > MAX_DIAGNOSTIC_KEYS && { keysTruncated: true }), envelope };
