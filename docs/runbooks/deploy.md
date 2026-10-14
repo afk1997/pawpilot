@@ -73,7 +73,7 @@ Fill in every value the template asks for, with its production value, including 
 - `POSTGRES_PASSWORD`: `openssl rand -hex 24` (hex only: it also goes into the database URL). Postgres takes it when its volume is first created; to change it later, see Routine operations;
 - `PUBLIC_HOSTNAME=helpline.arhamalwayscare.org` and `ACME_EMAIL` (the Let's Encrypt account);
 - `AZURE_BACKUP_SAS_URL`: see [Backups](#backups);
-- `INTERAKT_API_KEY` and `INTERAKT_WEBHOOK_SECRET`: the real values are safe before go-live, since nothing reaches Interakt until its webhook points at this host (test-chat conversations never do);
+- `INTERAKT_API_KEY` (the account's API key, used to send) and `INTERAKT_WEBHOOK_SECRET` (the account's webhook Secret Key from Developer Settings; the relay passes Interakt's signature through unchanged, so every consumer holds the same key). Paste the secret without quotes or spaces (whitespace at the ends is trimmed, nothing else). Both are safe before go-live: nothing reaches Interakt until the relay forwards to this host (test-chat conversations never do);
 - `HELPLINE_PHONE`, `ADMIN_PASSWORD` and `SESSION_SECRET` (`openssl rand -hex 32`);
 - **(owner)** `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token` on the laptop) and `LLM_TOKEN_ISSUED_AT`. Leave the token empty while an agent runs the deploys.
 
@@ -135,8 +135,16 @@ Do the same after every edit of the spreadsheet (README, Operations, "Directory"
 
 ### 8. Go live (owner)
 
-- Interakt's webhook: `https://helpline.arhamalwayscare.org/api/webhook`, with the secret in `INTERAKT_WEBHOOK_SECRET`.
-- An uptime monitor (UptimeRobot, free) on `https://helpline.arhamalwayscare.org/api/health` every 5 minutes, alerting the owner when it is not 200. Nothing in the stack alerts by itself.
+- **The inbound path.** Interakt allows one webhook URL per account, and the account's URL points at the owner's n8n workflow (a Mac mini at home), which forwards every event to each consumer. The bot is one destination. Interakt never retries a failed webhook and disables the account's webhook after five failures within ten minutes (alert email; re-enabled by hand; events meanwhile are lost), so the n8n workflow must answer Interakt at once and retry towards this host itself.
+- **The n8n node** (pass-through: Interakt's bytes and signature reach the bot unchanged, so `INTERAKT_WEBHOOK_SECRET` is the account's Secret Key):
+  1. Webhook trigger node: Options → "Raw Body" on; "Respond" = "Immediately". The output then carries the untouched request bytes in the binary property `data`.
+  2. A new HTTP Request node connected straight to the Webhook node as its own branch, topmost on the canvas (branches run top to bottom): POST `https://helpline.arhamalwayscare.org/api/webhook` (until the DNS record exists, `https://arham-helpline.centralindia.cloudapp.azure.com/api/webhook`).
+  3. Send Headers on, "Using Fields Below": name `Interakt-Signature`, value as an expression `{{ $('Webhook').item.json.headers['interakt-signature'] }}` (the trigger node's real name in place of `Webhook`).
+  4. Send Body on, Body Content Type "n8n Binary File", Input Data Field Name `data`. Never the "JSON" body type with `{{ $json.body }}`: n8n re-serialises it, the bytes differ from what Interakt signed, and every event gets 403.
+  5. Settings: Retry On Fail on, Max Tries 5, Wait Between Tries 5000 ms; On Error "Continue (using error output)" with an alert node on the error output; Options → Timeout 35000 ms (Caddy holds a request for up to 30 s while the app is re-created during a deploy).
+  Forward every event type: a reporter message is answered 200 `{"status":"queued",…}` (or `{"status":"duplicate"}` on a retry), and every other event type 200 `{"status":"ignored","reason":"event_type","event_type":"<its type>"}`. A node that sends n8n's envelope instead of Interakt's body gets 200 `{"status":"ignored","reason":"no_type","event_type":"(none)"}`, and the bot logs it at warn and records an `inbound_unusable` event with the body's identifier-shaped top-level key names (`keys`, with `envelope: true` when the Interakt payload sits under `body`; any other key is `(other)`); `arham logs app | grep '"reason":"no_type"'` shows it.
+- **Check it with one real message** from the owner's phone: the conversation appears in `/admin` and the n8n execution shows the bot's `{"status":"queued"}`.
+- **Monitors** (UptimeRobot, free, every 5 minutes, alerting the owner): `https://helpline.arhamalwayscare.org/api/health` not 200; the n8n instance's URL (its `/healthz`) not 200. Nothing in the stack alerts by itself, and the bot cannot tell a quiet night from a relay that stopped: `checks.lastInboundAgeS` in the health JSON is the age of the last reporter message, for a monitor that knows the helpline's traffic.
 
 ## Routine operations
 

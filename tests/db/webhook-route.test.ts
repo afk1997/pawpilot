@@ -28,6 +28,11 @@ const inbound = (id: string, text: string, phone = "917003705584") => ({
   },
 });
 
+/** An n8n Webhook node's own output, forwarded in place of Interakt's body: the reporter's message sits under `body`. */
+const envelope = () => ({ headers: { "interakt-signature": "sha256=x" }, params: {}, query: {}, body: inbound("m1", "hi") });
+
+const ignored = (reason: string) => ({ status: "ignored", reason, event_type: "(none)" });
+
 describe("POST /api/webhook", () => {
   beforeEach(async () => { await stopBoss(); await resetDb(); });
   afterEach(async () => {
@@ -41,9 +46,11 @@ describe("POST /api/webhook", () => {
     expect(await (await GET()).text()).toBe("ok");
   });
 
-  it("rejects a bad signature", async () => {
-    const res = await POST(signed(inbound("m1", "hi"), { sign: false }));
-    expect(res.status).toBe(403);
+  it("rejects a bad signature, and writes no event for it", async () => {
+    // Verification comes before the ignored branch: an unauthenticated sender cannot fill the events table, not even
+    // with a body the route would otherwise record.
+    for (const body of [inbound("m1", "hi"), envelope()]) expect((await POST(signed(body, { sign: false }))).status).toBe(403);
+    expect(await getDb().select().from(events)).toHaveLength(0);
   });
 
   it("rejects a present but wrong signature and stores nothing", async () => {
@@ -134,6 +141,81 @@ describe("POST /api/webhook", () => {
     await POST(signed({ type: "message_api_delivered", data: {} }));
     expect(warn).not.toHaveBeenCalled();
     expect(await getDb().select().from(events).where(eq(events.kind, "inbound_unusable"))).toHaveLength(2);
+  });
+
+  it("warns and records a payload with no top-level type (an n8n envelope) or that is not an object, with key names only", async () => {
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
+    const unusableEvents = () => getDb().select().from(events).where(eq(events.kind, "inbound_unusable")).orderBy(events.createdAt);
+    // The envelope is never unwrapped, so nothing is stored; the diagnostics name the keys, never a value.
+    const res = await POST(signed(envelope()));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(ignored("no_type"));
+    const envelopeFields = { eventType: "(none)", reason: "no_type", keys: ["body", "headers", "params", "query"], envelope: true };
+    expect(warn.mock.calls).toStrictEqual([[envelopeFields, "webhook ignored"]]);
+    expect((await unusableEvents()).map((e) => [e.conversationId, e.payload])).toStrictEqual([[null, envelopeFields]]);
+    expect(await getDb().select().from(conversations)).toHaveLength(0);
+    expect(await getDb().select().from(messages)).toHaveLength(0);
+
+    warn.mockClear();
+    const array = await POST(signed([]));
+    expect(array.status).toBe(200);
+    expect(await array.json()).toEqual(ignored("non_object"));
+    const arrayFields = { eventType: "(none)", reason: "non_object", jsonType: "array" };
+    expect(warn.mock.calls).toStrictEqual([[arrayFields, "webhook ignored"]]);
+    expect((await unusableEvents()).map((e) => [e.conversationId, e.payload])).toStrictEqual([[null, envelopeFields], [null, arrayFields]]);
+
+    warn.mockClear();
+    await POST(signed({ type: "message_api_delivered", data: {} }));
+    expect(warn).not.toHaveBeenCalled();
+    expect(await unusableEvents()).toHaveLength(2);
+  });
+
+  it("reports a key name that is not identifier-shaped, or holds a phone-like run, as (other)", async () => {
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
+    // A relay node keyed by a field makes the key a value: the sender's number, the message text, or an id built on
+    // the number. Only a key as code writes one is named; the rest are counted, never shown.
+    const digits = "9".repeat(12);
+    const keyed = {
+      [digits]: {}, "dog injured near the station": {}, [`id_${digits}`]: {}, body: inbound("m1", "hi"),
+      [`ph_${digits.slice(0, 5)}_${digits.slice(5)}`]: {}, // the digits joined by an underscore, as the scrubber reads a hyphen
+    };
+    expect(await (await POST(signed(keyed))).json()).toEqual(ignored("no_type"));
+    const fields = { eventType: "(none)", reason: "no_type", keys: ["(other)", "body", "(other)", "(other)", "(other)"], envelope: true };
+    expect(warn.mock.calls).toStrictEqual([[fields, "webhook ignored"]]);
+    const unusable = await getDb().select().from(events).where(eq(events.kind, "inbound_unusable"));
+    expect(unusable.map((e) => [e.conversationId, e.payload])).toStrictEqual([[null, fields]]);
+    const written = JSON.stringify([warn.mock.calls, unusable.map((e) => e.payload)]);
+    expect(written).not.toMatch(/\d{7,}/);
+    expect(written).not.toContain("dog injured");
+  });
+
+  it("lists at most twenty key names of at most forty characters, and says when there were more", async () => {
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
+    const unusablePayloads = async () =>
+      (await getDb().select().from(events).where(eq(events.kind, "inbound_unusable")).orderBy(events.createdAt)).map((e) => e.payload);
+    const short = Array.from({ length: 20 }, (_, i) => `k${String(i + 1).padStart(2, "0")}`);
+    const twentyTwo = Object.fromEntries(["a".repeat(41), "b".repeat(40), ...short].map((k) => [k, 1]));
+    expect(await (await POST(signed(twentyTwo))).json()).toEqual(ignored("no_type"));
+    // Sorted, then cut: the 41-character name is too long to be named, the 40-character one is not; the last two fall off.
+    const truncated = { eventType: "(none)", reason: "no_type", keys: ["(other)", "b".repeat(40), ...short.slice(0, 18)], keysTruncated: true, envelope: false };
+    expect(warn.mock.calls).toStrictEqual([[truncated, "webhook ignored"]]);
+    expect(await unusablePayloads()).toStrictEqual([truncated]);
+
+    warn.mockClear();
+    expect(await (await POST(signed(Object.fromEntries(short.map((k) => [k, 1]))))).json()).toEqual(ignored("no_type"));
+    const exact = { eventType: "(none)", reason: "no_type", keys: short, envelope: false }; // no keysTruncated key at exactly twenty
+    expect(warn.mock.calls).toStrictEqual([[exact, "webhook ignored"]]);
+    expect(await unusablePayloads()).toStrictEqual([truncated, exact]);
+  });
+
+  it("names the JSON type of a body that is not an object", async () => {
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
+    const cases = [["text", "string"], [null, "null"], [42, "number"], [true, "boolean"]] as const;
+    for (const [body] of cases) expect(await (await POST(signed(body))).json()).toEqual(ignored("non_object"));
+    const expected = cases.map(([, jsonType]) => ({ eventType: "(none)", reason: "non_object", jsonType }));
+    expect(warn.mock.calls).toStrictEqual(expected.map((fields) => [fields, "webhook ignored"]));
+    const unusable = await getDb().select().from(events).where(eq(events.kind, "inbound_unusable")).orderBy(events.createdAt);
+    expect(unusable.map((e) => e.payload)).toStrictEqual(expected);
   });
 
   it("refuses phones that belong to a test conversation", async () => {
@@ -231,7 +313,7 @@ describe("POST /api/webhook", () => {
       { phone: maskPhone("+917003705584"), providerMessageId: "m7", stage: "enqueue", code: "ECONNREFUSED" },
       "webhook inbound failed"
     );
-    // Stored: the worker's sweep answers it, and Interakt's retry is a duplicate.
+    // Stored: the worker's sweep answers it, and the sender's retry (the relay's; Interakt never retries) is a duplicate.
     expect(await getDb().select().from(messages)).toHaveLength(1);
   });
 

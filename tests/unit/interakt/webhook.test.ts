@@ -57,8 +57,16 @@ describe("parseInteraktPayload", () => {
     const unknown = parseInteraktPayload(base({ message_content_type: "Reaction", message: "👍" }));
     expect(unknown.kind === "inbound" && unknown.message).toMatchObject({ kind: "text", content: "👍", rawContentType: "Reaction" });
   });
-  it("ignores a non-string event type instead of throwing", () => {
-    expect(parseInteraktPayload({ type: 42, data: {} })).toEqual({ kind: "ignored", reason: "event_type", eventType: "(none)" });
+  it("ignores a non-string event type as no_type instead of throwing", () => {
+    expect(parseInteraktPayload({ type: 42, data: {} })).toEqual({ kind: "ignored", reason: "no_type", eventType: "(none)" });
+  });
+  it("reports an n8n envelope as no_type, and an array or a string as non_object, while Interakt's own body still parses", () => {
+    // A relay node forwarding its own envelope instead of Interakt's body: the event sits under `body`, never unwrapped.
+    const envelope = { headers: { "interakt-signature": "sha256=x" }, params: {}, query: {}, body: base({ message_content_type: "Text", message: "hi" }) };
+    expect(parseInteraktPayload(envelope)).toEqual({ kind: "ignored", reason: "no_type", eventType: "(none)" });
+    expect(parseInteraktPayload([])).toEqual({ kind: "ignored", reason: "non_object", eventType: "(none)" });
+    expect(parseInteraktPayload("text")).toEqual({ kind: "ignored", reason: "non_object", eventType: "(none)" });
+    expect(parseInteraktPayload(base({ message_content_type: "Text", message: "hi" })).kind).toBe("inbound");
   });
   it("takes the sender phone from country_code + phone_number, else from channel_phone_number without adding +91", () => {
     expect(senderPhone({})).toBe("+917003705584");

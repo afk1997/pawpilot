@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, gte, inArray, lt } from "drizzle-orm";
+import { and, desc, eq, gt, gte, inArray, lt, max } from "drizzle-orm";
 import { getConfig } from "./config";
 import { getDb, getSql } from "./db/client";
 import { conversations, events, messages } from "./db/schema";
@@ -91,6 +91,12 @@ export async function computeHealth(now: Date = new Date()) {
     clockSkew: false,
     lastOkTurnAgeS: null as number | null,
     lastDeliveredAgeS: null as number | null,
+    /**
+     * Age of the last message a real reporter sent, from `conversations.last_inbound_at` over non-test conversations;
+     * null before the first. Informational: the stack cannot tell a quiet night from a relay that stopped forwarding,
+     * so it never gates `ok`.
+     */
+    lastInboundAgeS: null as number | null,
     /** Null when the worker state could not be read. */
     delivery: null as "ok" | "degraded" | null,
     claudePaused: false,
@@ -136,6 +142,12 @@ export async function computeHealth(now: Date = new Date()) {
       checks.queue = await turnQueueCounts();
     } catch (err) {
       log.warn(safeErrorFields(err), "health: queue check failed");
+    }
+    try {
+      const [{ last }] = await getDb().select({ last: max(conversations.lastInboundAt) }).from(conversations).where(eq(conversations.isTest, false));
+      checks.lastInboundAgeS = last ? Math.round((now.getTime() - last.getTime()) / 1000) : null;
+    } catch (err) {
+      log.warn(safeErrorFields(err), "health: inbound check failed");
     }
   }
   if (tokenIssuedAt) {

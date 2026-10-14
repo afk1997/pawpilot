@@ -5,7 +5,7 @@ import { getDb } from "@/server/db/client";
 import { conversations, messages, workerState } from "@/server/db/schema";
 import { computeHealth } from "@/server/health";
 import { heartbeat, pauseClaude, recordOkTurn } from "@/server/worker/pause";
-import { recordEvent } from "@/server/inbound/store";
+import { recordEvent, upsertConversationByPhone } from "@/server/inbound/store";
 import { enqueueTurn, stopBoss } from "@/server/queue/boss";
 import { resetConfigForTests } from "@/server/config";
 import * as dbClient from "@/server/db/client";
@@ -87,6 +87,27 @@ describe("computeHealth", () => {
     const age = (await computeHealth(new Date(Date.now() + 90_000))).checks.lastOkTurnAgeS;
     expect(age).toBeGreaterThanOrEqual(90);
     expect(age).toBeLessThan(95);
+  });
+
+  it("reports the age of the last message a real reporter sent, as information that never gates the status", async () => {
+    await heartbeat();
+    expect(await computeHealth()).toMatchObject({ status: 200, checks: { lastInboundAgeS: null } });
+    // A test conversation's traffic never counts.
+    const t = await createConversation({ isTest: true });
+    await getDb().update(conversations).set({ lastInboundAt: new Date() }).where(eq(conversations.id, t.id));
+    expect((await computeHealth()).checks.lastInboundAgeS).toBeNull();
+    // A quiet three hours is reported, and is not a failure: the stack cannot tell it from a relay that stopped.
+    const c = await createConversation({ isTest: false });
+    await getDb().update(conversations).set({ lastInboundAt: new Date(Date.now() - 3 * 3_600_000) }).where(eq(conversations.id, c.id));
+    const quiet = await computeHealth();
+    expect(quiet.status).toBe(200);
+    expect(quiet.checks.lastInboundAgeS).toBeGreaterThanOrEqual(10795);
+    expect(quiet.checks.lastInboundAgeS).toBeLessThanOrEqual(10805);
+    // The webhook's upsert is what stamps last_inbound_at.
+    await upsertConversationByPhone({ phone: "+919999900001", name: null });
+    const fresh = (await computeHealth()).checks.lastInboundAgeS;
+    expect(fresh).not.toBeNull();
+    expect(fresh).toBeLessThan(5);
   });
 
   it("is 503 when the database does not answer, and logs no error detail", async () => {
