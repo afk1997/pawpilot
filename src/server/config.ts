@@ -7,7 +7,8 @@ const envSchema = z.object({
   NODE_ENV: z.string().default("development"),
   DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
   INTERAKT_API_KEY: z.string().min(1),
-  INTERAKT_WEBHOOK_SECRET: z.string().default(""),
+  // A secret pasted with a space or newline at either end would reject every webhook (403) while the app looks healthy.
+  INTERAKT_WEBHOOK_SECRET: z.string().default("").transform((v) => v.trim()),
   INTERAKT_WEBHOOK_VERIFY_MODE: z.enum(["hmac", "off"]).default("hmac"),
   INTERAKT_API_BASE: z.string().url().default("https://api.interakt.ai/v1/public/message/"),
   LLM_BACKEND: z.enum(["claude-code", "fake"]).default("claude-code"),
@@ -44,8 +45,9 @@ const envSchema = z.object({
     message: "INTERAKT_WEBHOOK_VERIFY_MODE=off is not allowed when NODE_ENV=production",
     path: ["INTERAKT_WEBHOOK_VERIFY_MODE"],
   })
-  // With no secret, "hmac" refuses every webhook (403) while the app looks healthy: the bot would ignore every message.
-  .refine((e) => !(e.NODE_ENV === "production" && e.INTERAKT_WEBHOOK_SECRET.trim() === ""), {
+  // With no secret (the value is already trimmed), "hmac" refuses every webhook (403) while the app looks healthy: the
+  // bot would ignore every message.
+  .refine((e) => !(e.NODE_ENV === "production" && e.INTERAKT_WEBHOOK_SECRET === ""), {
     message: "INTERAKT_WEBHOOK_SECRET must be set when NODE_ENV=production (without it every webhook is refused)",
     path: ["INTERAKT_WEBHOOK_SECRET"],
   });

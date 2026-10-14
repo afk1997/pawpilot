@@ -131,6 +131,17 @@ describe("getConfig", () => {
     }
   });
 
+  it("trims the webhook secret, so one pasted with a space at either end still verifies", () => {
+    try {
+      vi.stubEnv("INTERAKT_WEBHOOK_SECRET", " abc ");
+      resetConfigForTests();
+      expect(getConfig().interakt.webhookSecret).toBe("abc");
+    } finally {
+      vi.unstubAllEnvs();
+      resetConfigForTests();
+    }
+  });
+
   it("trims the OAuth token, and reads one that is only whitespace as unset", () => {
     try {
       vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "  sk-ant-oat01-test\n");
