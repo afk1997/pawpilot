@@ -175,9 +175,12 @@ describe("POST /api/webhook", () => {
     // A relay node keyed by a field makes the key a value: the sender's number, the message text, or an id built on
     // the number. Only a key as code writes one is named; the rest are counted, never shown.
     const digits = "9".repeat(12);
-    const keyed = { [digits]: {}, "dog injured near the station": {}, [`id_${digits}`]: {}, body: inbound("m1", "hi") };
+    const keyed = {
+      [digits]: {}, "dog injured near the station": {}, [`id_${digits}`]: {}, body: inbound("m1", "hi"),
+      [`ph_${digits.slice(0, 5)}_${digits.slice(5)}`]: {}, // the digits joined by an underscore, as the scrubber reads a hyphen
+    };
     expect(await (await POST(signed(keyed))).json()).toEqual(ignored("no_type"));
-    const fields = { eventType: "(none)", reason: "no_type", keys: ["(other)", "body", "(other)", "(other)"], envelope: true };
+    const fields = { eventType: "(none)", reason: "no_type", keys: ["(other)", "body", "(other)", "(other)", "(other)"], envelope: true };
     expect(warn.mock.calls).toStrictEqual([[fields, "webhook ignored"]]);
     const unusable = await getDb().select().from(events).where(eq(events.kind, "inbound_unusable"));
     expect(unusable.map((e) => [e.conversationId, e.payload])).toStrictEqual([[null, fields]]);

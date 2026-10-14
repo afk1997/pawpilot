@@ -20,10 +20,10 @@ const MAX_DIAGNOSTIC_KEY_LENGTH = 40;
  * A key name as code writes one: an identifier (the dot and hyphen of a header name or a dotted path allowed) of at
  * most MAX_DIAGNOSTIC_KEY_LENGTH characters. A relay node keyed by a field makes the key a value (a map keyed by the
  * sender's number, or by the message text), so any other key, and one holding a phone-shaped run (7+ digits joined
- * by at most one hyphen, the shape the digit scrubber reads within these characters), is reported as OTHER_KEY.
+ * by at most one hyphen, dot or underscore each, the joiners SAFE_KEY_RE admits), is reported as OTHER_KEY.
  */
 const SAFE_KEY_RE = new RegExp(`^[A-Za-z_$][\\w$.-]{0,${MAX_DIAGNOSTIC_KEY_LENGTH - 1}}$`);
-const KEY_DIGIT_RUN_RE = /\d(?:-?\d){6,}/;
+const KEY_DIGIT_RUN_RE = /\d(?:[-._]?\d){6,}/;
 const OTHER_KEY = "(other)";
 const seenUnknownTypes = new Set<string>();
 
@@ -103,8 +103,8 @@ export async function POST(request: Request) {
       return Response.json({ status: "duplicate" });
     }
 
-    // Stored: a failure from here on is answered by the worker's sweep, and the sender's retry (Interakt's, or the
-    // relay's) is a duplicate.
+    // Stored: a failure from here on is answered by the worker's sweep, and the relay's retry (Interakt itself never
+    // retries) is a duplicate.
     stage = "enqueue";
     const jobId = await enqueueTurn(conversation.id);
     if (jobId === null) log.info({ conversationId: conversation.id }, "turn deduplicated");
