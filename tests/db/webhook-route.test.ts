@@ -310,7 +310,7 @@ describe("POST /api/webhook", () => {
       { phone: maskPhone("+917003705584"), providerMessageId: "m7", stage: "enqueue", code: "ECONNREFUSED" },
       "webhook inbound failed"
     );
-    // Stored: the worker's sweep answers it, and Interakt's retry is a duplicate.
+    // Stored: the worker's sweep answers it, and the sender's retry (the relay's; Interakt never retries) is a duplicate.
     expect(await getDb().select().from(messages)).toHaveLength(1);
   });
 

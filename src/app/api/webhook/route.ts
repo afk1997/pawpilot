@@ -78,7 +78,7 @@ export async function POST(request: Request) {
 
   // A DrizzleQueryError carries the query's values (phone, name, text) in its message and params; if it escaped,
   // Next would print it to stderr unmasked. Failures are logged as a hand-picked summary, with the stage that failed,
-  // and answered 500 so Interakt retries.
+  // and answered 500 so the sender tries again (the relay's Retry On Fail; Interakt itself never retries a webhook).
   let stage: "upsert" | "store" | "enqueue" = "upsert";
   try {
     const conversation = await upsertConversationByPhone({ phone: m.fromPhone, name: m.fromName });
